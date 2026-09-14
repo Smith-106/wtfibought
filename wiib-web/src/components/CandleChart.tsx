@@ -22,7 +22,7 @@ import type { ChartCtx } from '../lib/chartDrawings';
 import { useDrawings } from './chart/useDrawings';
 import { DrawToolPopover, DrawToolRail } from './chart/DrawToolPicker';
 import { EconMarkersLayer } from './chart/EconMarkersLayer';
-import { flagHtml } from './CountryFlag';
+import { flagHtml } from '../lib/countryFlags';
 
 /** 一根 K：series 只用 OHLC，量/额留给读数和成交量柱。 */
 interface Bar { time: number; openMs: number; open: number; high: number; low: number; close: number; volume: number; quote: number; }
