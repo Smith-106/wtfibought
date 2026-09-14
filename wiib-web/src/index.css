@@ -22,6 +22,8 @@
   --color-ring: #f25f0a;
   --color-success: #0b8a5c;
   --color-warning: #c98a00;
+  /* 冷色：和主色橙配成一对，只表示方向（如低于预期），不表示好坏 */
+  --color-info: #2563eb;
   --color-gain: #0b8a5c;
   --color-loss: #d63b2f;
   --color-surface: #fafaf7;
@@ -69,6 +71,7 @@ html.dark {
   --color-ring: #f97316;
   --color-success: #3ecf8e;
   --color-warning: #f3b73d;
+  --color-info: #60a5fa;
   --color-gain: #3ecf8e;
   --color-loss: #ff6b6b;
   --color-surface: #0f1012;

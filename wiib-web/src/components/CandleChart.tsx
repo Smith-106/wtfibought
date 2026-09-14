@@ -896,14 +896,14 @@ export function CandleChart({
     };
   }, [tradeMarks, showMarks, interval, chartEpoch, isDark]);
 
-  // 财经日历标记：High 级事件按 K 线时间桶聚合，日历图标悬在所属那根上方，点开看实际/预测/前值。
+  // 财经日历标记：美国 High 级事件按 K 线时间桶聚合，日历图标悬在所属那根上方，点开看实际/预测/前值。
   // 语义是"这根K线覆盖的时间段内公布了什么"——按公布时刻定位，不承诺行情因果。
   // 标记画在主图画布上（EconMarkersLayer 挂蜡烛 series）：与蜡烛同帧渲染，平移缩放零延迟；
   // 弹窗仍是 DOM（国旗与换行画布画不了），点击命中在 pointerdown 里主动 pick
   useEffect(() => {
-    const wrap = wrapRef.current, candle = candleRef.current;
+    const wrap = wrapRef.current, candle = candleRef.current, chart = chartRef.current;
     const econTip = econTipRef.current;
-    if (!econMarks || !showEcon || !wrap || !candle) return;
+    if (!econMarks || !showEcon || !wrap || !candle || !chart) return;
     let disposed = false;
     const bucketMs = BUCKET_MS[interval];
     /** time → 该桶的事件组，点击标记时按命中的时间桶取内容 */
@@ -940,18 +940,30 @@ export function CandleChart({
       tip.style.top = `${iy - th - 8 >= 4 ? iy - th - 8 : iy + 26}px`;
     };
 
-    // 窗口按内存上限的最远可翻历史算：翻到底标记也都在
-    quantApi.econCalendarEvents(Date.now() - bucketMs * MAX_BARS, Date.now() + bucketMs).then(events => {
-      if (disposed || !events.length) return;
-      for (const e of events) {
-        const time = toBarTime(Math.floor(e.eventTime / bucketMs) * bucketMs);
-        const g = groups.get(time) ?? [];
-        g.push(e);
-        groups.set(time, g);
-      }
-      layer.markers = [...groups.entries()].map(([time, g]) => ({ time, count: g.length }));
-      layer.update();
-    }).catch(() => { /* 接口失败：没有标记而已，图表照常 */ });
+    // 事件跟着已加载的 K 线拉：首屏画完、往左翻出新一页，补拉 [最早一根, 已拉起点) 这段
+    // 起点先挪再发请求；失败的段不重拉
+    let fetchedFrom = Infinity;
+    const loadEvents = () => {
+      const first = barsRef.current[0];
+      if (!first || first.openMs >= fetchedFrom) return;
+      // 右端退 1ms，与上一段不重叠
+      const to = Number.isFinite(fetchedFrom) ? fetchedFrom - 1 : Date.now() + bucketMs;
+      fetchedFrom = first.openMs;
+      quantApi.econCalendarEvents(first.openMs, to).then(events => {
+        if (disposed) return;
+        // BTC 只挂美国数据
+        for (const e of events.filter(ev => ev.country === 'US')) {
+          const time = toBarTime(Math.floor(e.eventTime / bucketMs) * bucketMs);
+          const g = groups.get(time) ?? [];
+          g.push(e);
+          groups.set(time, g);
+        }
+        layer.markers = [...groups.entries()].map(([time, g]) => ({ time, count: g.length }));
+        layer.update();
+      }).catch(() => { /* 接口失败：没有标记而已，图表照常 */ });
+    };
+    loadEvents();
+    chart.timeScale().subscribeVisibleLogicalRangeChange(loadEvents);
 
     // 点击命中：capture 在 document 上——点中标记时截住事件（LWC 的拖拽别跟着起步），
     // 点在标记与弹窗之外的任何地方都收起弹窗
@@ -976,7 +988,8 @@ export function CandleChart({
       disposed = true;
       document.removeEventListener('pointerdown', onDown, true);
       econLayerRef.current = null;
-      // 图整体重建时 series 已死，detach 会抛，吞掉即可（同成交标记的清理）
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(loadEvents);
+      // 图已销毁时 detach 会抛，吞掉
       try { candle.detachPrimitive(layer); } catch { /* chart disposed */ }
       if (econTip) econTip.style.display = 'none';
     };

@@ -692,10 +692,11 @@ COMMENT ON COLUMN news_event.title_en IS '标题英文译文;NULL=没译成(模�
 COMMENT ON COLUMN news_event.content_en IS '正文英文译文;NULL 同 title_en。正文超过译文输入上限(NewsTranslator.CONTENT_CLIP)的那条不留译文:半截译文比原文更糟';
 
 -- ============================================
--- 25. 财经日历（TradingView 日历接口只收 High 级，唤醒开场白注入 + BTC K线标记）
+-- 25. 财经日历（TradingView 日历接口只收 High 级，唤醒开场白注入 + BTC K线标记 + 日历页历史）
 -- ============================================
 -- 采集轨 EconCalendarCollector 每 4h 同步 [now-3d, now+7d]，按 TradingView 事件 id upsert（改期改时刻、公布填实际值、
 -- 前值修正落同一行），窗口内不在回包里的行删掉（改期出窗/取消）；公布时刻等待闸 EconCalendarGate 窄窗口轮询补 actual。
+-- 启动后一次性回填 2022-01-01 起的历史（库里最早一条没到起点才补），日历页按周翻、按指标标题查历次公布。
 -- EconCalendarAssembler 注入"刚公布 / 过去3天已公布 / 今天剩余即将公布"
 CREATE TABLE IF NOT EXISTS econ_calendar_event (
     id         BIGSERIAL    PRIMARY KEY,
@@ -711,7 +712,7 @@ CREATE TABLE IF NOT EXISTS econ_calendar_event (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_econ_calendar_source ON econ_calendar_event (source_id);
 CREATE INDEX IF NOT EXISTS idx_econ_calendar_time ON econ_calendar_event (event_time);
-COMMENT ON TABLE econ_calendar_event IS '财经日历:TradingView日历接口只收High级,按事件id upsert;唤醒注入过去3天+当天剩余,BTC K线挂日历标记';
+COMMENT ON TABLE econ_calendar_event IS '财经日历:TradingView日历接口只收High级,按事件id upsert,2022-01-01起回填历史;唤醒注入过去3天+当天剩余,BTC K线挂日历标记,日历页按周翻与按指标查';
 COMMENT ON COLUMN econ_calendar_event.source_id IS 'TradingView事件id,幂等键';
 COMMENT ON COLUMN econ_calendar_event.event_time IS '公布/开始时刻epoch毫秒(接口的UTC ISO时间换算)';
 COMMENT ON COLUMN econ_calendar_event.country IS 'ISO国家码(US/EU/GB/DE…),前端配国旗';

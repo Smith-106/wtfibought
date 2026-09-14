@@ -34,6 +34,7 @@ public class SaTokenConfig extends BaseSaTokenConfig {
                 "/api/ai/quant/news",
                 "/api/ai/quant/econ-calendar",
                 "/api/ai/quant/econ-calendar/events",
+                "/api/ai/quant/econ-calendar/series",
                 "/api/ai/trader/arena",
                 "/api/ai/trader/*",
                 "/api/ai/trader/*/decisions",

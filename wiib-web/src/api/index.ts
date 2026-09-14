@@ -548,6 +548,8 @@ export interface NewsEventItem {
 
 /** 财经日历一条（TradingView 全球 High 级事件，标题是接口英文原文） */
 export interface EconCalendarEvent {
+  /** TradingView 事件 id；同一时刻可能有多条 */
+  sourceId: string;
   /** 公布/开始时刻 epoch 毫秒 */
   eventTime: number;
   /** ISO 国家码，如 US / EU */
@@ -573,6 +575,10 @@ export const quantApi = {
   /** 财经日历事件：时间窗内全部（BTC K 线标记数据源） */
   econCalendarEvents: (from: number, to: number) =>
     api.get<unknown, EconCalendarEvent[]>('/ai/quant/econ-calendar/events', { params: { from, to } }),
+  /** 日历页单指标历次公布：同一指标换过名的新旧标题一起传，发成 titles=a&titles=b */
+  econCalendarSeries: (country: string, titles: string[]) =>
+    api.get<unknown, EconCalendarEvent[]>('/ai/quant/econ-calendar/series',
+      { params: { country, titles }, paramsSerializer: { indexes: null } }),
   /**
    * 快讯（news_event 存档，中英两套一起到）。不带参＝最新 100 条；
    * from/to 都给＝该区间 [from, to) 内按发稿时间倒序最多 300 条（按天翻看用）
