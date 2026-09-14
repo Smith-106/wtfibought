@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, ChevronLeft, Target } from 'lucide-react';
-import { cryptoApi, cryptoOrderApi, futuresApi } from '../api';
+import { cryptoApi, cryptoOrderApi, futuresApi, quantApi, type WhaleCoinDetail } from '../api';
 import { useUserStore } from '../stores/userStore';
 import { useCryptoStream } from '../hooks/useCryptoStream';
 import { useToast } from '../components/ui/use-toast';
@@ -14,6 +14,7 @@ import { FuturesOpenPanel } from '../components/coin/FuturesOpenPanel';
 import { FuturesPositionsCard } from '../components/coin/FuturesPositionsCard';
 import { CoinOrdersCard } from '../components/coin/CoinOrdersCard';
 import { MarketSessionBadge } from '../components/coin/MarketSessionBadge';
+import { WhaleBlock } from '../components/coin/WhaleBlock';
 import { LoginPrompt } from '../components/LoginPrompt';
 import { cn, fmtNum } from '../lib/utils';
 import { COIN_MAP, getCoin, DEFAULT_SYMBOL, formatCoinPrice } from '../lib/coinConfig';
@@ -71,6 +72,21 @@ export function Coin({ symbol = DEFAULT_SYMBOL }: { symbol?: string }) {
     const timer = setInterval(pull, 10 * 60 * 1000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [symbol, isFuturesMode]);
+
+  // 大户持仓：Hyperliquid 只有加密币，大宗/TradFi 与现货模式不拉。
+  // 后端 10 分钟一轮快照，60 秒重拉一次；不在盯盘列表/没快照/没仓位都回 null，整块不渲染
+  const whaleOn = isFuturesMode && !cfg.category;
+  const [whale, setWhale] = useState<WhaleCoinDetail | null>(null);
+  useEffect(() => {
+    if (!whaleOn) return;
+    let cancelled = false;
+    const pull = () => quantApi.whaleCoin(symbol.replace(/USDT$/, ''))
+      .then(d => { if (!cancelled) setWhale(d); })
+      .catch(() => { if (!cancelled) setWhale(null); });
+    pull();
+    const timer = setInterval(pull, 60 * 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [symbol, whaleOn]);
 
   // 实物换算币种: USD/CNY 汇率
   const [usdCny, setUsdCny] = useState(0);
@@ -307,6 +323,8 @@ export function Coin({ symbol = DEFAULT_SYMBOL }: { symbol?: string }) {
               indicators
             />
           </div>
+
+          {whaleOn && whale && <WhaleBlock data={whale} symbol={symbol} />}
 
           {/* BTC涨跌预测入口 */}
           {symbol === 'BTCUSDT' && (

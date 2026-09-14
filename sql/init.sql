@@ -984,3 +984,79 @@ CREATE TABLE IF NOT EXISTS user_llm_binding (
     UNIQUE (user_id, purpose)
 );
 COMMENT ON TABLE  user_llm_binding IS '用途→端点绑定：CHAT_MAIN 对话主模型 / CHAT_LIGHT 对话轻模型 / TRADER 交易员；无行=跟随默认端点。端点删除时其绑定连带删';
+
+-- ============================================
+-- 34. Hyperliquid 大户持仓（纯展示 + 落库，不进 trader；方案见 docs/hyperliquid-whale.md）
+-- ============================================
+-- WhalePoolTask 每日：排行榜出新候选实体 → subAccounts 展开成交易账户 → 按链上净值/持仓数/角色认证 → upsert whale_address；
+-- WhalePositionTask 每 10 分钟：metaAndAssetCtxs 拿标记价与全市场持仓量 → 轮询池内地址 clearinghouseState →
+-- 每币聚合写 whale_snapshot（前端读它），(address, coin) 的 szi/entryPx 变了才写 whale_position（研究用）
+
+-- Hyperliquid 大户地址池：交易账户为单位，主地址与子账户各一行；只存过了门 1 的账户
+CREATE TABLE IF NOT EXISTS whale_address (
+    address              VARCHAR(42)  PRIMARY KEY,
+    parent_address       VARCHAR(42),                 -- 子账户的主地址；主地址为 NULL
+    role                 VARCHAR(16),                 -- user / subAccount / vault；主地址查一次，子账户直接写 subAccount
+    in_pool              BOOLEAN      NOT NULL DEFAULT FALSE,
+    account_value        NUMERIC(20,2),
+    position_count       INT,
+    tracked_max_position NUMERIC(20,2),               -- 盯盘币里最大一笔仓位名义；门 1 的仓位口径与入池排序看它
+    reject_reason        VARCHAR(32),                 -- 最近一次不合格的原因（SMALL / TOO_MANY_POSITIONS / VAULT / OVER_CAP）；NULL=合格
+    first_seen_at        BIGINT       NOT NULL,
+    qualified_at         BIGINT,                      -- 最近一次合格的时刻
+    updated_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_whale_address_pool ON whale_address (in_pool, account_value DESC);
+COMMENT ON TABLE whale_address IS 'Hyperliquid大户地址池:交易账户为单位(主地址与子账户各一行),每日重新认证,合格进池不合格出池但保留行;只存过了门1(持仓≤10,且净值≥100万或盯盘币仓位≥10万)的账户';
+COMMENT ON COLUMN whale_address.role IS '主地址查userRole存一次以后不再查;子账户天然subAccount不查;vault不合格';
+COMMENT ON COLUMN whale_address.in_pool IS '是否在轮询池:合格账户按"有盯盘币大仓位优先→净值降序"取前cap个';
+COMMENT ON COLUMN whale_address.tracked_max_position IS '盯盘币里最大一笔仓位名义(美元);它≥min-position-value的净值不够也过门1,入池排序也看它';
+COMMENT ON COLUMN whale_address.reject_reason IS '最近一次不合格原因:SMALL净值不够且没有大仓位/TOO_MANY_POSITIONS持仓超10/VAULT/OVER_CAP超池上限;NULL=合格';
+
+-- 每币每轮一行的聚合快照：前端读它，回测也读它
+CREATE TABLE IF NOT EXISTS whale_snapshot (
+    id                 BIGSERIAL     PRIMARY KEY,
+    observed_at        BIGINT        NOT NULL,
+    coin               VARCHAR(16)   NOT NULL,
+    price              NUMERIC(20,8) NOT NULL,   -- Hyperliquid 标记价
+    hl_open_interest   NUMERIC(20,2) NOT NULL,   -- 全市场持仓量名义，覆盖率分母
+    pool_size          INT           NOT NULL,   -- 本轮成功查到的地址数
+    long_count         INT           NOT NULL,
+    long_notional      NUMERIC(20,2) NOT NULL,
+    long_wavg_entry    NUMERIC(20,8),
+    long_median_entry  NUMERIC(20,8),
+    long_top1_share    NUMERIC(6,4),
+    long_upnl          NUMERIC(20,2),
+    short_count        INT           NOT NULL,
+    short_notional     NUMERIC(20,2) NOT NULL,
+    short_wavg_entry   NUMERIC(20,8),
+    short_median_entry NUMERIC(20,8),
+    short_top1_share   NUMERIC(6,4),
+    short_upnl         NUMERIC(20,2),
+    entry_buckets_json TEXT          NOT NULL,   -- 按开仓价分桶的多空名义
+    liq_buckets_json   TEXT          NOT NULL,   -- 按强平价分桶的多空名义
+    UNIQUE (observed_at, coin)
+);
+CREATE INDEX IF NOT EXISTS idx_whale_snapshot_coin_time ON whale_snapshot (coin, observed_at DESC);
+COMMENT ON TABLE whale_snapshot IS '大户持仓每币每轮聚合快照(10分钟一轮,对齐整10分钟):多空地址数/名义/加权均价/中位数/前一名占比/浮盈亏+开仓价与强平价分桶;只算盯盘币且单笔名义≥min-position-value的仓位';
+COMMENT ON COLUMN whale_snapshot.price IS 'Hyperliquid标记价markPx:强平按它算,强平桶与快照价同口径';
+COMMENT ON COLUMN whale_snapshot.hl_open_interest IS '全市场持仓量名义=openInterest×markPx;覆盖率=long_notional/它、short_notional/它(永续OI=全部多头=全部空头)';
+COMMENT ON COLUMN whale_snapshot.entry_buckets_json IS '{"width":桶宽,"buckets":[[下界,多头名义,空头名义],...]},桶宽=标记价×0.25%,只存非空桶;桶宽跟当轮价走,跨轮不对齐';
+COMMENT ON COLUMN whale_snapshot.liq_buckets_json IS '同entry_buckets_json,按liquidationPx分桶,桶宽=标记价×0.5%;liquidationPx为空的仓位不进这里';
+
+-- 单地址仓位变化流水：只在 szi/entryPx 变化时写，szi=0 表示已平
+CREATE TABLE IF NOT EXISTS whale_position (
+    id             BIGSERIAL     PRIMARY KEY,
+    observed_at    BIGINT        NOT NULL,
+    address        VARCHAR(42)   NOT NULL,
+    coin           VARCHAR(16)   NOT NULL,
+    szi            NUMERIC(24,8) NOT NULL,
+    entry_px       NUMERIC(20,8),
+    position_value NUMERIC(20,2),
+    leverage       INT,
+    liquidation_px NUMERIC(20,8),
+    unrealized_pnl NUMERIC(20,2)
+);
+CREATE INDEX IF NOT EXISTS idx_whale_position_addr ON whale_position (address, coin, observed_at DESC);
+COMMENT ON TABLE whale_position IS '池内地址在盯盘币上的仓位变化流水:(address,coin)的szi/entryPx变了才写一行,上轮有本轮没有写szi=0;不论大小全记,研究用;首轮轮询每键取最近一行当基线';
+COMMENT ON COLUMN whale_position.szi IS '币数量,正多负空,0=已平';
