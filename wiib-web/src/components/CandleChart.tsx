@@ -51,8 +51,8 @@ const fmtBarTime = (d: Date, interval: string) =>
 
 /** 读数容器：绝对定位在 pane 左上，穿透点击 */
 const LG_BASE = 'position:absolute;left:10px;z-index:3;pointer-events:none;white-space:nowrap;font-size:11.5px;line-height:1.55';
-/** 每格之间 9px；格内标签灰、值跟着外层色走 */
-const LG_SP = 'margin-right:9px';
+/** 每格之间 9px，一格整体换行；格内标签灰、值跟着外层色走 */
+const LG_SP = 'display:inline-block;margin-right:9px';
 const LG_LABEL = 'font-style:normal;margin-right:3px';
 /** 三条线的固定配色（同 lwcTheme().col3），走 CSS 变量所以切主题不用重刷读数 */
 const LG_COL3 = ['var(--color-primary)', '#2f8fd6', '#7c5cff'];
@@ -290,6 +290,9 @@ const SCROLL_OPTS: DeepPartial<HandleScrollOptions> =
 
 /** 触屏设备判定：竖屏全屏的"转横屏"提示只该出现在真能转的设备上（桌面竖屏显示器转不了） */
 const IS_TOUCH = window.matchMedia('(pointer: coarse)').matches;
+
+/** 手机竖屏画布高：主图 360，每开一个副图加 120，和主图:副图 3:1 的 stretch 对上 */
+const PHONE_PLOT_H = ['phone:h-[360px]', 'phone:h-[480px]', 'phone:h-[600px]'];
 
 /** 快讯是外部内容，进 innerHTML 前必须转义（标题/正文/URL 都不可信） */
 const esc = (s: string) => s.replace(/[&<>"']/g, c =>
@@ -603,8 +606,11 @@ export function CandleChart({
         if (on.ema) row3 += MA_PERIODS.map((p, k) => cell(`EMA${p}`, nv(pick(ov.ema[k], ov.last.ema[k])), LG_COL3[k])).join('');
         if (on.boll) row3 += BOLL_LABELS.map((n, k) => cell(`BOLL ${n}`, nv(pick(ov.boll[k], ov.last.boll[k])), 'var(--color-muted-foreground)')).join('');
       }
+      // 窄屏：读数按格折行、右边让出价格轴，第一行不带市场名
+      els.main.style.whiteSpace = compact ? 'normal' : 'nowrap';
+      els.main.style.right = compact ? `${chart.priceScale('right').width() + 4}px` : '';
       els.main.innerHTML =
-        `<div><b style="font-weight:800;font-size:12.5px">${symbol}</b> <span class="mute">${interval} · ${marketLabel}</span></div>`
+        `<div><b style="font-weight:800;font-size:12.5px">${symbol}</b> <span class="mute">${compact ? interval : `${interval} · ${marketLabel}`}</span></div>`
         + `<div class="num ${up ? 'up' : 'dn'}">`
         + cell(i18n.t('market:chart.open'), fmtNum(bar.open, decimals))
         + cell(i18n.t('market:chart.high'), fmtNum(bar.high, decimals))
@@ -828,20 +834,20 @@ export function CandleChart({
     const th = lwcTheme();
     const lines: IPriceLine[] = [];
     const labels: { el: HTMLDivElement; price: number }[] = [];
+    const add = (price: number | null | undefined, title: string, color: string) => {
+      if (price == null || !(price > 0)) return;
+      lines.push(series.createPriceLine({ price, color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: '' }));
+      const el = document.createElement('div');
+      el.textContent = `${title} ${fmtNum(price, decimals)}`;
+      el.className = 'num';
+      el.style.cssText = 'position:absolute;display:none;transform:translateY(-50%);z-index:4;pointer-events:none;'
+        + 'padding:0 5px;font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap;'
+        + `background:var(--color-background);border:1px solid currentColor;color:${color}`;
+      wrap.appendChild(el);
+      labels.push({ el, price });
+    };
     for (const p of positionOverlays) {
       if (hiddenPosIds.has(p.id)) continue;
-      const add = (price: number | null | undefined, title: string, color: string) => {
-        if (price == null || !(price > 0)) return;
-        lines.push(series.createPriceLine({ price, color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: '' }));
-        const el = document.createElement('div');
-        el.textContent = `${title} ${fmtNum(price, decimals)}`;
-        el.className = 'num';
-        el.style.cssText = 'position:absolute;display:none;transform:translateY(-50%);z-index:4;pointer-events:none;'
-          + 'padding:0 5px;font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap;'
-          + `background:var(--color-background);border:1px solid currentColor;color:${color}`;
-        wrap.appendChild(el);
-        labels.push({ el, price });
-      };
       add(p.entry, `${p.label} ${t('chart.entry')}`, th.fg);
       p.tps.forEach((tp, i) => add(tp, `${p.label} TP${p.tps.length > 1 ? i + 1 : ''}`, th.gain));
       p.sls.forEach((s, i) => add(s, `${p.label} SL${p.sls.length > 1 ? i + 1 : ''}`, th.loss));
@@ -1111,18 +1117,9 @@ export function CandleChart({
       'w-full h-full flex flex-col',
       fs.active && 'fixed inset-0 z-50 bg-background p-4 pb-7',
     )}>
-      {/* 顶栏：周期 / 图型 / 指标入口 —— 撑开 —— 显示开关 / 全屏。画线工具收进左侧竖栏（手机放这行最前） */}
+      {/* 顶栏：周期 / 图型 / 画线（手机）/ 指标入口 —— 撑开 —— 显示开关 / 全屏。
+          画线工具桌面收进左侧竖栏；手机上周期和图型占第一行，画线、指标、开关折到第二行 */}
       <div className="flex items-center gap-2.5 mb-2.5 flex-wrap">
-        {!advMode && (
-          <DrawToolPopover
-            className="md:hidden" tool={tool} onSelect={setTool}
-            magnet={magnet} onToggleMagnet={() => setMagnet(!magnet)}
-            hiddenAll={hiddenAll} onToggleHidden={() => setHiddenAll(!hiddenAll)} hideDisabled={!drawCount}
-            onTrash={trash} trashDisabled={!hasSelection && !drawCount}
-            trashTitle={hasSelection ? t('chart.deleteSelected') : t('chart.clearAll')}
-          />
-        )}
-
         <div className="seg num">
           {(Object.keys(BUCKET_MS) as Interval[]).map(k => (
             <button key={k} type="button" className={cn(!advMode && interval === k && 'on')}
@@ -1147,6 +1144,16 @@ export function CandleChart({
             <ChartLine className="w-[15px] h-[15px]" />
           </button>
         </div>
+
+        {!advMode && (
+          <DrawToolPopover
+            className="md:hidden" tool={tool} onSelect={setTool}
+            magnet={magnet} onToggleMagnet={() => setMagnet(!magnet)}
+            hiddenAll={hiddenAll} onToggleHidden={() => setHiddenAll(!hiddenAll)} hideDisabled={!drawCount}
+            onTrash={trash} trashDisabled={!hasSelection && !drawCount}
+            trashTitle={hasSelection ? t('chart.deleteSelected') : t('chart.clearAll')}
+          />
+        )}
 
         {/* 指标弹层：主图三组、副图两组，chip 填墨=开 */}
         {indicators && (
@@ -1245,9 +1252,11 @@ export function CandleChart({
         </button>
       </div>
 
-      {/* 左竖栏 34px + 画布。高级档整块盖住 plot，竖栏也收起来 */}
+      {/* 左竖栏 34px + 画布。高级档整块盖住 plot，竖栏也收起来。
+          手机竖屏非全屏：高度按副图数定，副图往下加高不挤主图 */}
       <div className={cn('grid grid-cols-1 border-t border-foreground flex-1 min-h-0',
-        advMode ? 'md:grid-cols-1' : 'md:grid-cols-[34px_1fr]')}>
+        advMode ? 'md:grid-cols-1' : 'md:grid-cols-[34px_1fr]',
+        !fs.active && ['phone:flex-none', PHONE_PLOT_H[indicators ? Number(subs.macd) + Number(subs.rsi) : 0]])}>
         {!advMode && (
           <DrawToolRail
             className="hidden md:flex" tool={tool} onSelect={setTool}

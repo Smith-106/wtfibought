@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
+/* 手机竖屏：窄且不矮；横屏手机高度 ≤600 走各处的矮视口规则 */
+@custom-variant phone (@media (max-width: 767px) and (min-height: 601px));
 
 /* ===== 海报数字 · Light (default) ===== */
 @theme {

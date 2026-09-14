@@ -303,8 +303,8 @@ export function Coin({ symbol = DEFAULT_SYMBOL }: { symbol?: string }) {
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 mt-7 border-t-2 border-foreground pt-[18px]">
         <div className="xl:col-span-8 flex flex-col gap-5">
           {/* 周期/图型/指标/画线全在图表组件里；「高级」档把 plot 区换成 TradingView。
-              矮视口(手机横屏)收到 360，否则整张图顶出屏幕外 */}
-          <div className="h-[600px] xl:h-[822px] [@media(max-height:600px)]:h-[360px]">
+              矮视口(手机横屏)收到 360；手机竖屏高度由图表按副图数自己定 */}
+          <div className="h-[600px] xl:h-[822px] [@media(max-height:600px)]:h-[360px] phone:h-auto">
             <CandleChart
               key={mode}
               symbol={symbol}
