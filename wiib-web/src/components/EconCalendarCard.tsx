@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Skeleton } from './ui/skeleton';
 import { CountryFlag } from './CountryFlag';
@@ -56,35 +56,47 @@ function Column({ title, rows, empty, boldFirst }: {
         </div>
       ) : rows.length === 0 ? (
         <div className="py-8 text-center text-sm text-muted-foreground">{empty}</div>
-      ) : rows.map((r, i) => (
-        <div key={`${r.eventTime}-${r.country}-${r.title}`}
-             className={cn('grid grid-cols-[92px_1fr_auto] gap-3 items-baseline py-2.5 border-b border-border text-[14px]',
-               boldFirst && i === 0 && 'font-semibold')}>
-          <span className="num text-[13px] text-muted-foreground">{fmtDateTime(r.eventTime)}</span>
-          <span className="min-w-0 flex items-baseline gap-2">
-            <CountryFlag code={r.country} className="self-center" />
-            <b className="shrink-0 text-[12px] font-bold">{r.country} / {r.currency}</b>
-            <span className="truncate">{r.title}</span>
-          </span>
-          <Values row={r} />
-        </div>
-      ))}
+      ) : rows.map((r, i) => {
+        // 手机（<640px）一行塞不下三列：时间列缩成上下两行、数值挪到标题下一行；sm 起恢复三列单行
+        const [date, time] = fmtDateTime(r.eventTime).split(' ');
+        return (
+          <div key={`${r.eventTime}-${r.country}-${r.title}`}
+               className={cn('grid grid-cols-[44px_1fr] sm:grid-cols-[92px_1fr_auto] gap-x-3 gap-y-1 items-baseline py-2.5 border-b border-border text-[14px]',
+                 boldFirst && i === 0 && 'font-semibold')}>
+            <span className="num text-[13px] text-muted-foreground">
+              <span className="block sm:inline">{date}</span>{' '}
+              <span className="block sm:inline">{time}</span>
+            </span>
+            <span className="min-w-0 flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+              <CountryFlag code={r.country} className="self-center" />
+              <b className="shrink-0 text-[12px] font-bold">{r.country} / {r.currency}</b>
+              {/* 手机上跟国旗同行放不下就整个掉到下一行，不切半截出省略号 */}
+              <span className="min-w-0 flex-auto sm:truncate">{r.title}</span>
+            </span>
+            <Values row={r} className="col-start-2 sm:col-start-auto" />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 /** 实际 · 预测 · 前值，有哪个显示哪个，实际值加深；讲话类三个都没有就不占位 */
-function Values({ row }: { row: EconCalendarEvent }) {
+function Values({ row, className }: { row: EconCalendarEvent; className?: string }) {
   const { t } = useTranslation('home');
   const parts = ([['actual', row.actual], ['forecast', row.forecast], ['previous', row.previous]] as const)
     .filter(([, v]) => v);
   if (!parts.length) return null;
   return (
-    <span className="num whitespace-nowrap text-[12px] text-muted-foreground">
+    // 手机上只允许在 · 处折行，"实际 3.1%" 这种标签和数值不拆开
+    <span className={cn('num sm:whitespace-nowrap text-[12px] text-muted-foreground', className)}>
       {parts.map(([k, v], i) => (
-        <span key={k} className={cn(k === 'actual' && 'text-foreground font-bold')}>
-          {i > 0 && ' · '}{t(`calendar.${k}`)} {v}
-        </span>
+        <Fragment key={k}>
+          {i > 0 && ' · '}
+          <span className={cn('whitespace-nowrap', k === 'actual' && 'text-foreground font-bold')}>
+            {t(`calendar.${k}`)} {v}
+          </span>
+        </Fragment>
       ))}
     </span>
   );
