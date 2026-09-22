@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
-import { BookOpen, Bot, ChevronDown, ChevronLeft, Database, GraduationCap, Loader2, Pause, Play, RotateCcw, Save, Trash2, Wrench } from 'lucide-react';
+import { BookOpen, Bot, ChevronDown, ChevronLeft, Database, GraduationCap, Loader2, Pause, Play, RotateCcw, Save, Sparkles, Trash2, Wrench } from 'lucide-react';
 import { llmEndpointApi, traderApi } from '../api';
 import { DATA_TOOLS, TRADE_TOOLS, toolName } from '../components/arena/traderTools';
 import { GuidedTour, type TourStep } from '../components/GuidedTour';
@@ -520,8 +520,13 @@ export function MyTrader() {
         </details>
 
         <div className="space-y-1 text-xs">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <label htmlFor="custom-prompt" className="text-muted-foreground font-bold">{t('cfg.customPrompt')}</label>
+            {/* 引导式生成器：在那边写完复制回这个框 */}
+            <Link to="/prompt-gen"
+                  className="inline-flex items-center gap-1 text-[11px] text-primary font-bold hover:underline shrink-0 ml-auto">
+              <Sparkles className="w-3 h-3" />{t('cfg.genPrompt')}
+            </Link>
             {/* 整段换回平台默认；框里有字先确认 */}
             <button type="button" disabled={!defaultInstructions}
                     onClick={() => {

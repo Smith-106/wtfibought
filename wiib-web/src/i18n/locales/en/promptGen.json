@@ -1,0 +1,41 @@
+{
+  "title": "Instruction generator",
+  "desc": "Answer a few questions and it writes your trading instructions. Every round makes a version, and you can go back to any of them.",
+  "back": "Back to my trader",
+  "endpoint": "Model endpoint",
+  "outputLang": "Instruction language",
+  "lang": {
+    "zh": "中文",
+    "en": "English"
+  },
+  "start": "Start",
+  "restart": "Start over",
+  "resume": "Keep generating",
+  "startHint": "The endpoint is only used for these few rounds; your key never leaves your account.",
+  "stage": {
+    "idle": "Not started",
+    "generating": "Writing this version",
+    "asking": "Your turn",
+    "done": "Finished"
+  },
+  "versions": "Versions",
+  "version": "v{{no}}",
+  "noVersion": "No version yet",
+  "questionTitle": "Q & A",
+  "body": "Instruction body",
+  "chars": "{{n}} / {{max}} chars",
+  "copy": "Copy",
+  "copied": "Copied to clipboard",
+  "copyFailed": "Copy failed, select the text and copy it yourself",
+  "notes": "What changed",
+  "empty": "The first version shows up here once you answer.",
+  "submit": "Submit",
+  "skip": "Skip",
+  "finish": "That's enough",
+  "freePh": "or write your own…",
+  "needAll": "Answer all three to submit",
+  "doneTitle": "Instructions are ready",
+  "doneHint": "Copy the body and paste it into the instruction box on My Trader.",
+  "rollbackConfirm": "Going back to v{{no}} discards the versions after it. Continue?",
+  "noEndpoint": "No model endpoint yet — set one up on the AI page."
+}

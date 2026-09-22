@@ -75,6 +75,26 @@ services:
     mem_reservation: 2g
     cpus: "3"
 
+  # gen 指令生成器：Python FastAPI + LangGraph，一问一答写主人交易指令
+  # nginx 那边加一段（配置在服务器上，不在仓里）：
+  #   location /api/gen/ { proxy_pass http://127.0.0.1:8083; proxy_buffering off; }
+  wiib-gen:
+    <<: *svc-base
+    build: { context: ./wiib-gen, dockerfile: Dockerfile }
+    container_name: wiib-gen
+    ports:
+      - "127.0.0.1:8083:8083"
+    volumes:
+      - ./wiib-gen/data:/data    # checkpoint + 线程归属表的 sqlite
+    environment:
+      <<: *shared-env
+      GEN_DB_PATH: /data/gen.sqlite
+      SIM_BASE_URL: http://wiib-sim:8080
+      AGENT_BASE_URL: http://wiib-agent:8082
+    mem_limit: 1024m
+    mem_reservation: 256m
+    cpus: "1"
+
 networks:
   default:
     name: wiib-network

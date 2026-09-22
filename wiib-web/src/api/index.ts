@@ -5,6 +5,7 @@ import type { BacktestTaskStatus, BacktestEventsPage, BacktestKlinesPage, Backte
 import type { LedgerEntry, LedgerBizTypeOption, PublicTrade, UserProfile, PositionHistoryItem, RankingSort } from '../types';
 import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose, JevConfigView, JevSaveRequest } from '../types';
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
+import type { GenEvent, GenThreadState } from '../types';
 import type { User, PageResult, RankingItem, CommentItem, NotificationItem, BuffStatus, UserBuff, BlackjackStatus, GameState, ConvertResult, MinesStatus, MinesGameState, VideoPokerStatus, VideoPokerGameState, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
@@ -787,5 +788,22 @@ export const backtestApi = {
   /** 复盘 AI 教练（SSE：token/done/error）：HINT 局中盘面提示 / REVIEW 结算后评估看法。走用户 BYOK 对话配置 */
   replayCoach: (req: ReplayCoachRequest, onEvent: (e: ReplayCoachEvent) => void, signal?: AbortSignal) =>
     postSse<ReplayCoachEvent>('/api/ai/backtest/replay/coach', req, onEvent, signal),
+};
+
+// ========== 交易指令生成器（py 服务 wiib-gen，前缀 /api/gen） ==========
+export const promptGenApi = {
+  /** 开一条线：SSE 先给 thread，跑到第一道题停下。outputLang 是指令正文语言，问答语言跟 X-Lang */
+  start: (body: { endpointId: number; outputLang: Lang },
+          onEvent: (e: GenEvent) => void, signal?: AbortSignal) =>
+    postSse<GenEvent>('/api/gen/threads', body, onEvent, signal),
+  /** 答题/跳过/完成，三选一；答案按题 key 给 */
+  resume: (threadId: string, body: { answer?: Record<string, string>; skip?: boolean; finish?: boolean },
+           onEvent: (e: GenEvent) => void, signal?: AbortSignal) =>
+    postSse<GenEvent>(`/api/gen/threads/${threadId}/resume`, body, onEvent, signal),
+  /** 刷新页恢复用 */
+  state: (threadId: string) => api.get<unknown, GenThreadState>(`/gen/threads/${threadId}`),
+  /** 回退到第 N 版，返回形状同 state；第 N 版之后的版本作废 */
+  rollback: (threadId: string, version: number) =>
+    api.post<unknown, GenThreadState>(`/gen/threads/${threadId}/rollback`, { version }),
 };
 

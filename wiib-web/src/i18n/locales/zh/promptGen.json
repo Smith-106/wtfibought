@@ -1,0 +1,41 @@
+{
+  "title": "交易指令生成器",
+  "desc": "一问一答写出主人交易指令，每答一轮出一版，可以回到任意一版重答。",
+  "back": "返回我的 Trader",
+  "endpoint": "模型端点",
+  "outputLang": "指令语言",
+  "lang": {
+    "zh": "中文",
+    "en": "English"
+  },
+  "start": "开始",
+  "restart": "再来一份",
+  "resume": "继续生成",
+  "startHint": "端点只在生成这几轮里用，key 不离开你的账号。",
+  "stage": {
+    "idle": "还没开始",
+    "generating": "正在写这一版",
+    "asking": "等你回答",
+    "done": "已完成"
+  },
+  "versions": "版本",
+  "version": "v{{no}}",
+  "noVersion": "还没有版本",
+  "questionTitle": "问答",
+  "body": "指令正文",
+  "chars": "{{n}} / {{max}} 字",
+  "copy": "复制",
+  "copied": "已复制到剪贴板",
+  "copyFailed": "复制失败，手动选中复制吧",
+  "notes": "本版说明",
+  "empty": "答完题第一版就会出现在这里。",
+  "submit": "提交",
+  "skip": "跳过这题",
+  "finish": "就到这儿",
+  "freePh": "也可以自己写…",
+  "needAll": "三题都答了才能提交",
+  "doneTitle": "指令写完了",
+  "doneHint": "复制正文，粘到我的 Trader 的交易指令框里保存。",
+  "rollbackConfirm": "回到 v{{no}} 会作废它之后的版本，继续？",
+  "noEndpoint": "还没有模型端点，先去 AI 页配一条。"
+}

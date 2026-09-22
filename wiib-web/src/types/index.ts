@@ -1452,3 +1452,47 @@ export interface BacktestResultPayload {
   equity: [number, number][];
 }
 
+// ========== 交易指令生成器（wiib-gen，字段名跟 py 侧一致用下划线） ==========
+
+/** 一道题；options 空=只能自由输入，allow_free=chips 之外还能自己写 */
+export interface GenQuestionItem {
+  key: string;
+  text: string;
+  options: string[];
+  allow_free: boolean;
+}
+
+/** 一屏题：mode/play/detail 一题，base 三题一起答 */
+export interface GenQuestion {
+  kind: 'mode' | 'base' | 'play' | 'detail';
+  items: GenQuestionItem[];
+  allow_skip: boolean;
+  allow_finish: boolean;
+}
+
+/** 一版指令：text 是正文，notes 是这版改了什么 + 做不到的写法 */
+export interface GenVersion {
+  no: number;
+  text: string;
+  notes: string;
+}
+
+/** GET /threads/{id} 与回退后的线程快照 */
+export interface GenThreadState {
+  versions: GenVersion[];
+  question: GenQuestion | null;
+  done: boolean;
+  /** 图还停在半路（生成中途断了也算）：没题可答时给「继续生成」 */
+  pending: boolean;
+}
+
+/** 生成器 SSE 事件 */
+export type GenEvent =
+  | { type: 'thread'; id: string }
+  | { type: 'status'; stage: 'generating' | 'asking' }
+  | { type: 'token'; text: string }
+  | ({ type: 'version' } & GenVersion)
+  | ({ type: 'question' } & GenQuestion)
+  | { type: 'done' }
+  | { type: 'error'; message: string };
+
