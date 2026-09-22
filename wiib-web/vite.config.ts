@@ -72,8 +72,9 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      // agent(8082) 的路径要先于兜底 /api 匹配，其余 /api 走 sim(8080)
+      // agent(8082)、指令生成器(8083)、因子挖掘(8084) 的路径要先于兜底 /api 匹配，其余 /api 走 sim(8080)
       '/api/gen': 'http://localhost:8083',
+      '/api/alpha': 'http://localhost:8084',
       '/api/ai': 'http://localhost:8082',
       '/api/testnet': 'http://localhost:8082',
       '/api/admin/ai-agent': 'http://localhost:8082',

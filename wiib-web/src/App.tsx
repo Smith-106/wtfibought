@@ -39,6 +39,8 @@ import { useUserStore } from './stores/userStore';
 
 // 指令生成器：motion / WebGL 只有这页用，单独成 chunk，主包不为它涨
 const PromptGen = lazy(() => import('./pages/PromptGen').then(m => ({ default: m.PromptGen })));
+// 因子挖掘：只有管理员用，单独成 chunk
+const Alpha = lazy(() => import('./pages/Alpha').then(m => ({ default: m.Alpha })));
 const pageLoading = (
   <div className="flex justify-center p-8"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
 );
@@ -114,6 +116,7 @@ function App() {
                   <Route path="/ai" element={<AiAgent />} />
                   <Route path="/my-trader" element={<MyTrader />} />
                   <Route path="/prompt-gen" element={<Suspense fallback={pageLoading}><PromptGen /></Suspense>} />
+                  <Route path="/alpha" element={<Suspense fallback={pageLoading}><Alpha /></Suspense>} />
                   <Route path="/strategies" element={<Strategies />} />
                   <Route path="/backtest" element={<Backtest />} />
                   <Route path="/testnet" element={<TestnetMonitor />} />

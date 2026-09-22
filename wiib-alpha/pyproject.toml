@@ -1,0 +1,35 @@
+[project]
+name = "wiib-alpha"
+version = "0.1.0"
+description = "因子挖掘 agent：LLM 提假设写 DSL，代码硬门判真假"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "langchain-anthropic>=1.7.2",
+    "langchain-core>=1.6.3",
+    "langchain-google-genai>=4.4.0",
+    "langchain-openai>=1.6.2",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "numpy>=2.3",
+    "pandas>=2.3",
+    "psycopg[binary]>=3.3.6",
+    "pyarrow>=21.0",
+    "pydantic>=2.13.5",
+    "uvicorn[standard]>=0.53.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

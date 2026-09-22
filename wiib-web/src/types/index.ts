@@ -1496,3 +1496,161 @@ export type GenEvent =
   | { type: 'done' }
   | { type: 'error'; message: string };
 
+// ========== 因子挖掘（py 服务 wiib-alpha，前缀 /api/alpha，仅管理员） ==========
+
+/** 一道硬门：数字、阈值、过没过、一句原因 */
+export interface AlphaGate {
+  id: string;
+  name?: string;
+  passed: boolean;
+  note: string;
+}
+
+/** 一档 h 的精简数字 */
+export interface AlphaHorizonBrief {
+  meanIc: number | null;
+  icir: number | null;
+  months: number;
+  sameSignSymbols: number;
+  segments: (number | null)[];
+  netReturn: number | null;
+  permPct: number | null;
+  hitRate: number | null;
+  exposure: number | null;
+}
+
+/** 评估摘要：给页面和评审看的，不带整份 eval */
+export interface AlphaBrief {
+  horizons: Record<string, AlphaHorizonBrief>;
+  surrogate: { p: number | null; nullMean: number | null; k: number | null };
+  redundancy: { maxAbs: number | null; with: string | null };
+  complexity: { nodes: number; windows: number; constants: number };
+  gates: AlphaGate[];
+}
+
+export type AlphaCandidateStatus =
+  | 'proposed' | 'evaluating' | 'reviewing' | 'revise' | 'passed'
+  | 'rejected_gates' | 'rejected_review' | 'rejected_fdr' | 'failed' | 'approved' | 'declined';
+
+export interface AlphaReview {
+  verdict: 'pass' | 'revise' | 'reject';
+  comment: string;
+  suggestion: string;
+}
+
+export interface AlphaCandidate {
+  id: string;
+  seq: number;
+  name: string;
+  hypothesis: string;
+  family: string | null;
+  expr: string | null;
+  note: string | null;
+  status: AlphaCandidateStatus;
+  attempts: number;
+  reason: string | null;
+  review: AlphaReview | null;
+  decision: string | null;
+  gates?: AlphaGate[];
+  brief?: AlphaBrief;
+}
+
+export type AlphaRunStatus = 'running' | 'awaiting' | 'done' | 'failed';
+
+export interface AlphaRun {
+  id: string;
+  created_at: number;
+  status: AlphaRunStatus;
+  k: number;
+  note: string;
+  lang: string;
+  error: string | null;
+}
+
+export interface AlphaRunState {
+  run: AlphaRun;
+  candidates: AlphaCandidate[];
+  trials: number;
+}
+
+export interface AlphaRecheckHorizon {
+  mean: number | null;
+  icir: number | null;
+  months: number;
+  samples: number;
+  bySymbol: Record<string, number | null>;
+  sameSignSymbols: number;
+}
+
+/** 入库后复查：只用入库之后的数据算的 IC */
+export interface AlphaRecheck {
+  since: number;
+  at: number;
+  horizons: Record<string, AlphaRecheckHorizon>;
+}
+
+export interface AlphaFactor {
+  id: string;
+  name: string;
+  hypothesis: string;
+  expr: string;
+  canonical: string;
+  columns: string[];
+  approved_at: number;
+  run_id: string;
+  review: AlphaReview | null;
+  recheck: AlphaRecheck | null;
+  brief: AlphaBrief;
+  gates?: AlphaGate[];
+}
+
+export interface AlphaSymbolStatus {
+  rows: number;
+  from: number | null;
+  to: number | null;
+  liqFrom: number | null;
+  /** 相邻两根不是正好 15m 的地方：缺 bar 时切窗按行号会漂 */
+  gaps: number;
+}
+
+export interface AlphaDataStatus {
+  loaded: boolean;
+  loadedAt: number | null;
+  facts: { symbols: string[]; from: string; to: string; rows: number; liqFrom: string | null } | null;
+  symbols: Record<string, AlphaSymbolStatus>;
+  referenceCount: number;
+  refresh: { running: boolean; startedAt?: number; finishedAt?: number; error?: string | null };
+}
+
+export interface AlphaReferenceItem {
+  name: string;
+  expr: string;
+  passed: boolean;
+  updatedAt: number;
+  brief: AlphaBrief;
+}
+
+export interface AlphaReference {
+  job: { running: boolean; total?: number; done?: number; error?: string | null; finishedAt?: number };
+  items: AlphaReferenceItem[];
+}
+
+/** 手填表达式评估的返回 */
+export interface AlphaEvalResult {
+  expr: string;
+  canonical: string;
+  passed: boolean;
+  brief: AlphaBrief;
+  gates: AlphaGate[];
+}
+
+/** 一轮的 SSE 事件；end 带 lastId，审批后带着它重连只收后面的 */
+export type AlphaEvent =
+  | { type: 'status'; stage: string }
+  | { type: 'log'; text: string }
+  | ({ type: 'candidate' } & AlphaCandidate)
+  | { type: 'awaiting'; candidates: AlphaCandidate[] }
+  | { type: 'done'; approved: number }
+  | { type: 'error'; message: string }
+  | { type: 'end'; status: AlphaRunStatus; lastId: number };
+

@@ -118,6 +118,7 @@
     "page": "Page {{page}} of {{pages}}"
   },
   "admin": {
+    "alphaLink": "Factor mining",
     "title": "Task management",
     "actionFailed": "Action failed",
     "fn": {
