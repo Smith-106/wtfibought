@@ -1,66 +1,41 @@
 package com.mawai.wiibagent.prediction;
 
-import com.mawai.wiibagent.llm.jev.JevClient.Answer;
 import com.mawai.wiibagent.llm.jev.JevClient.Question;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * 问 Jev 的题，一次请求两道：后劲 + 玩家的决定。空仓问"下不下、下哪边"，持仓问"拿着还是卖"。
- * 决定题就是 Jev 的买卖输出，代码只在明显不该买时拦；后劲题单独记分，看这个判断本身有没有信息量。
- * 措辞都用真 key 测过（改一块数据决定跟着变，不是照某个词翻译）。题目一律英文。
+ * 问 Jev 的题：每个检查点只问一道，买 UP / 买 DOWN / 不买，Jev 拍板。空仓持仓同一道题、同一份 state，
+ * 持仓时代码按它的选择加注、卖掉或拿着，见 {@link PredictionRules#holding}。题目一律英文。
+ * <p>
+ * 不提持仓、不给估计当参照，只说清怎么赢、state 各段是什么。选项顺序固定 UP 在前：Jev 对选项位置敏感，换顺序会改变它偏哪边。
  */
 final class PredictionQuestions {
 
-    static final String MOMENTUM = "momentum";
-    static final String DECIDE = "decide";
+    static final String ENTRY = "entry";
 
     static final String BUY_UP = "BUY_UP";
     static final String BUY_DOWN = "BUY_DOWN";
-    static final String WAIT = "WAIT";
-    static final String HOLD = "HOLD";
-    static final String SELL = "SELL";
-
-    /** 档 0 在回吐 / 1 没方向 / 2 还在推 */
-    static final Question MOMENTUM_Q = Question.score(
-            "What are `btc` and `binance_flow` doing to BTC's move since the open?",
-            List.of(
-                    "Giving back: price and trading now run against the move. The last minute goes the other way and takers or large trades lean against it.",
-                    "No lean: price and trading show no common direction, or price has stalled.",
-                    "Still pushing: price keeps going the move's way and takers and large trades lean the same way."));
+    static final String PASS = "PASS";
 
     static final Question ENTRY_Q = Question.choice(
-            "You play `market` and hold nothing. Judging by `clock`, `btc`, `binance_flow` and `odds`, what do you do right now?",
+            "You are playing `market`. Choose the side you would buy right now, or pass. UP wins if BTC's average price over the "
+                    + "final minute ends at or above the opening average, and DOWN wins otherwise. `clock` says how long is left and how much "
+                    + "of that final-minute average is already set; `btc` says where BTC stands against the opening average and how it got "
+                    + "there; `binance_flow` says what traders on Binance are doing; `odds` says what each side costs with the fee and how "
+                    + "its price has been moving. A share pays 100¢ if its side wins and nothing if it loses. Buy a side only if you judge "
+                    + "its chance of winning to be higher than its cost; otherwise pass.",
             ordered(
-                    BUY_UP, "Buy UP: UP looks cheap, or fairly priced with the tape clearly behind it, against where BTC stands.",
-                    BUY_DOWN, "Buy DOWN: DOWN looks cheap, or fairly priced with the tape clearly behind it, against where BTC stands.",
-                    WAIT, "Wait: neither side is a good bet now. Prices already reflect the move, the tape is mixed, "
-                            + "or buying would mean chasing a move that is running out."));
-
-    static final Question EXIT_Q = Question.choice(
-            "You play `market` and hold the bet in `position`. Judging by `clock`, `btc`, `binance_flow`, `odds` and `position`, "
-                    + "what do you do with it right now?",
-            ordered(
-                    HOLD, "Keep it: the side you hold still looks worth at least its sell price, or it is safely ahead late in the window.",
-                    SELL, "Sell now: the sell price already pays more than BTC's position justifies while the move fades, "
-                            + "or the move has turned against you and the bet is slipping away."));
+                    BUY_UP, "Buy UP now: UP's true chance of winning is higher than what a share of UP costs.",
+                    BUY_DOWN, "Buy DOWN now: DOWN's true chance of winning is higher than what a share of DOWN costs.",
+                    PASS, "Buy nothing now: neither side's true chance of winning is higher than what its share costs."));
 
     private PredictionQuestions() {
     }
 
-    /** 空仓问买不买，持仓问卖不卖；两道题一次发 */
-    static Map<String, Question> questions(boolean holding) {
-        Map<String, Question> qs = new LinkedHashMap<>();
-        qs.put(MOMENTUM, MOMENTUM_Q);
-        qs.put(DECIDE, holding ? EXIT_Q : ENTRY_Q);
-        return qs;
-    }
-
-    /** 还在推减在回吐：−1 全回吐 … +1 全还在推 */
-    static double momentum(Answer a) {
-        return a.probabilities().get("2") - a.probabilities().get("0");
+    static Map<String, Question> questions() {
+        return Map.of(ENTRY, ENTRY_Q);
     }
 
     /** 选项按写的顺序发给 Jev，Map.of 不保序 */

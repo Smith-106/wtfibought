@@ -7,7 +7,7 @@ import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose, 
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
 import type { GenEvent, GenThreadState } from '../types';
 import type { AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor, AlphaReference, AlphaRun, AlphaRunState } from '../types';
-import type { User, PageResult, RankingItem, CommentItem, NotificationItem, BuffStatus, UserBuff, BlackjackStatus, GameState, ConvertResult, MinesStatus, MinesGameState, VideoPokerStatus, VideoPokerGameState, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
+import type { User, PageResult, RankingItem, CommentItem, NotificationItem, BuffStatus, UserBuff, BlackjackStatus, GameState, ConvertResult, MinesStatus, MinesGameState, VideoPokerStatus, VideoPokerGameState, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -219,10 +219,16 @@ export const adminApi = {
   listAiKeys: () => api.get<unknown, AiKeyConfig[]>('/admin/ai-agent/keys'),
   saveAiKey: (key: AiKeyConfig) => api.post<unknown, AiKeyConfig>('/admin/ai-agent/keys', key),
   deleteAiKey: (id: number) => api.delete<unknown, void>(`/admin/ai-agent/keys/${id}`),
+  /** 拉模型清单 / 测连通：用表单里的 key，不用先保存 */
+  listAiKeyModels: (key: AiKeyConfig) => api.post<unknown, string[]>('/admin/ai-agent/keys/models', key),
+  testAiKey: (key: AiKeyConfig) => api.post<unknown, void>('/admin/ai-agent/keys/test', key),
   // 模型分配
   listAssignments: () => api.get<unknown, AiModelAssignment[]>('/admin/ai-agent/assignments'),
   saveAssignments: (assignments: AiModelAssignment[]) =>
     api.post<unknown, void>('/admin/ai-agent/assignments', assignments),
+  /** 手动补拉最近 count 条快讯：只存中文，译文由定时任务补 */
+  backfillNews: (count: number) =>
+    api.post<unknown, NewsBackfillResult>('/admin/ai-agent/news/backfill', { count }),
   // feed WS 流健康：进面板拉快照 + 手动重试（实时更新走 STOMP /topic/feed/streams）
   feedStreams: () => api.get<unknown, FeedStreamHealth[]>('/monitor/streams'),
   retryFeedStream: (name: string) =>
@@ -547,14 +553,17 @@ export const jevApi = {
 };
 
 // ========== Jev 预测员（平台级展示） ==========
+/** 三个读接口都按局看，run 不传是当前局 */
 export const jevPredictionApi = {
-  overview: () => api.get<unknown, JevPredictionOverview>('/ai/jev-prediction/overview'),
+  overview: (run?: number) => api.get<unknown, JevPredictionOverview>('/ai/jev-prediction/overview', { params: { run } }),
   /** 最近决策带 Jev 的回答，Jev 页右栏一次拿全；每回合 17 次，51 条约三个回合 */
-  feed: (limit = 51) => api.get<unknown, JevPredictionDecisionView[]>('/ai/jev-prediction/feed', { params: { limit } }),
-  bets: (limit = 30) => api.get<unknown, JevBet[]>('/ai/jev-prediction/bets', { params: { limit } }),
-  // 预测员总开关（管理员）
+  feed: (limit = 51, run?: number) =>
+    api.get<unknown, JevPredictionDecisionView[]>('/ai/jev-prediction/feed', { params: { limit, run } }),
+  bets: (limit = 30, run?: number) => api.get<unknown, JevBet[]>('/ai/jev-prediction/bets', { params: { limit, run } }),
+  // 预测员总开关与重新开局（管理员）
   switchState: () => api.get<unknown, JevSwitchState>('/admin/ai-agent/jev-prediction'),
   setSwitch: (enabled: boolean) => api.post<unknown, JevSwitchState>('/admin/ai-agent/jev-prediction', { enabled }),
+  newRun: (label: string) => api.post<unknown, JevSwitchState>('/admin/ai-agent/jev-prediction/new-run', { label }),
 };
 
 /** 快讯（news_event 存档行，首页快讯卡数据源） */

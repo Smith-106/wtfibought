@@ -551,7 +551,7 @@ CREATE TABLE IF NOT EXISTS ai_model_assignment (
 );
 
 COMMENT ON TABLE ai_model_assignment IS '功能位→LLM配置指针（模型名归属ai_runtime_config）';
-COMMENT ON COLUMN ai_model_assignment.function_name IS '功能名称，白名单见AiFunctions，现只有news-translation（快讯后台批量译英文）；面向用户的功能位已全量BYOK，behavior等残行是孤儿不影响使用';
+COMMENT ON COLUMN ai_model_assignment.function_name IS '功能名称，白名单见AiFunctions，现只有news-translation（快讯后台批量译英文）及其可空备用位news-translation-fallback（主位出错才调）；面向用户的功能位已全量BYOK，behavior等残行是孤儿不影响使用';
 COMMENT ON COLUMN ai_model_assignment.config_id IS '关联ai_runtime_config.id';
 
 -- ============================================
@@ -669,7 +669,7 @@ COMMENT ON COLUMN workbench_chat_context.state IS '裸JSON {"messages":[...]}(Ja
 -- ============================================
 -- 24. 快讯存档（首页快讯卡 + 事件研究数据积累）
 -- ============================================
--- 采集轨独立于 NewsCache 懒加载：定时经缓存拉 BlockBeats（共享额度窗），新条目轻模型译成英文后落库。
+-- 采集轨独立于 NewsCache 懒加载：定时经缓存拉 BlockBeats（共享额度窗），新条目先存中文，轻模型随后补译英文回填。
 -- BlockBeats 免费额度一次性不回血，采集节奏见 application.yml 的 news.collect
 CREATE TABLE IF NOT EXISTS news_event (
     id               BIGSERIAL PRIMARY KEY,
@@ -687,8 +687,8 @@ CREATE INDEX IF NOT EXISTS idx_news_event_published ON news_event (published_at 
 COMMENT ON TABLE news_event IS '快讯存档:BlockBeats重要快讯+轻模型英文译文;首页快讯卡数据源,未来做事件研究';
 COMMENT ON COLUMN news_event.source_id IS 'BlockBeats快讯id,增量去重键';
 COMMENT ON COLUMN news_event.published_at IS '发稿时刻epoch毫秒(BlockBeats create_time按北京时间解析)';
-COMMENT ON COLUMN news_event.translated_model IS '译文用的模型名,追责用';
-COMMENT ON COLUMN news_event.title_en IS '标题英文译文;NULL=没译成(模型没给/正文超长/老行):模型侧回落中文原文,英文界面不展示这条——不许拿原文冒充译文';
+COMMENT ON COLUMN news_event.translated_model IS '译文用的模型名,追责用;NULL=待译(中文已存,采集轨每轮补译)';
+COMMENT ON COLUMN news_event.title_en IS '标题英文译文;NULL=待译或没译成(模型没给/正文超长/老行):模型侧回落中文原文,英文界面不展示这条——不许拿原文冒充译文';
 COMMENT ON COLUMN news_event.content_en IS '正文英文译文;NULL 同 title_en。正文超过译文输入上限(NewsTranslator.CONTENT_CLIP)的那条不留译文:半截译文比原文更糟';
 
 -- ============================================
@@ -1079,13 +1079,14 @@ COMMENT ON COLUMN user_jev_config.model IS 'jev-latest 或钉死的版本号如 
 COMMENT ON COLUMN user_jev_config.api_key_enc IS 'AES-256-GCM 密文，密钥来自 WIIB_TRADER_KEY_SECRET';
 
 -- ============================================
--- 36. Jev 预测员决策记录（平台级展示，一个账户）
+-- 36. Jev 预测员决策记录（平台级展示，一局一个账户）
 -- ============================================
 -- 平台用自己的 Jev key 在 BTC 5 分钟盘上当玩家：开盘后每 15 秒（起手 30…270 秒）问一次，每次一行。
--- 空仓问"下不下、下哪边"，持仓问"拿着还是卖"，买卖由 Jev 拍板、代码只拦明显不该买的；
--- 同时记三个上涨概率（纯数学 p_model、后劲修正 p_jev、市场隐含 p_mkt）与当时盘口，结算后回填结果，Brier 现算。
+-- R4 起每次问买 UP / 买 DOWN / 不买，空仓持仓同一题，Jev 拍板：空仓照买，持仓选同一边加注、选另一边卖掉、不买就拿着；
+-- 同时记上涨概率（纯数学 p_model、市场隐含 p_mkt，R1–R3 还有 Jev 的 p_jev）、当时盘口与最近 15 秒赔率突变，结算后回填结果与盈亏。
 CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     id            BIGSERIAL     PRIMARY KEY,
+    run_no        INT           NOT NULL DEFAULT 1,
     window_start  BIGINT        NOT NULL,
     checkpoint    VARCHAR(8)    NOT NULL,
     decided_at    BIGINT        NOT NULL,
@@ -1095,7 +1096,6 @@ CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     p_jev         NUMERIC(6,4),
     p_mkt         NUMERIC(6,4),
     lead_sigma    NUMERIC(8,4),
-    momentum      NUMERIC(6,4),
     jev_choice    VARCHAR(16),
     jev_choice_p  NUMERIC(6,4),
     book_age_ms   INT,
@@ -1103,6 +1103,8 @@ CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     down_ask      NUMERIC(6,4),
     up_bid        NUMERIC(6,4),
     down_bid      NUMERIC(6,4),
+    odds_jump_up   NUMERIC(6,4),
+    odds_jump_down NUMERIC(6,4),
     edge          NUMERIC(8,4),
     action        VARCHAR(16)   NOT NULL,
     reason        VARCHAR(120),
@@ -1120,23 +1122,42 @@ CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     UNIQUE (window_start, checkpoint)
 );
 CREATE INDEX IF NOT EXISTS idx_jev_pred_decision_window ON jev_prediction_decision (window_start DESC);
-COMMENT ON TABLE  jev_prediction_decision IS 'Jev 预测员每回合每检查点一行：发出的 state、两道题答案（后劲+决定）、三个概率、盘口、动作、注单，结算后回填结果/盈亏';
-COMMENT ON COLUMN jev_prediction_decision.checkpoint IS '检查点：开盘后第几秒，如 T150；空仓问买不买，持仓问卖不卖';
+CREATE INDEX IF NOT EXISTS idx_jev_pred_decision_run ON jev_prediction_decision (run_no, decided_at DESC);
+COMMENT ON TABLE  jev_prediction_decision IS 'Jev 预测员每回合每检查点一行：发出的 state、Jev 的回答、概率、盘口、动作、注单，结算后回填结果/盈亏';
+COMMENT ON COLUMN jev_prediction_decision.run_no IS '第几局，见 jev_prediction_run';
+COMMENT ON COLUMN jev_prediction_decision.checkpoint IS '检查点：开盘后第几秒，如 T150';
 COMMENT ON COLUMN jev_prediction_decision.decided_at IS '决策时刻(ms)';
 COMMENT ON COLUMN jev_prediction_decision.state_json IS '发给 Jev 的 state 原文';
-COMMENT ON COLUMN jev_prediction_decision.answers_json IS '两道题答案原样（各档/各选项概率、置信度）';
-COMMENT ON COLUMN jev_prediction_decision.p_model IS '纯数学的上涨概率：领先/剩余时间/波动出的 Φ(z)，末分钟含已锁定的均价；也是"划不划算"的公平价';
-COMMENT ON COLUMN jev_prediction_decision.p_jev IS '数学概率按 Jev 后劲判断修正后的上涨概率，只记分';
+COMMENT ON COLUMN jev_prediction_decision.answers_json IS 'Jev 的回答原样：R4 起只有入场题 entry；R3 是谁赢两问加空仓入场题或持仓离场题，R2 只有谁赢两问，R1 是后劲题和决定题';
+COMMENT ON COLUMN jev_prediction_decision.p_model IS '纯数学的上涨概率：领先/剩余时间/波动出的 Φ(z)，末分钟含已锁定的均价；只 R3 写进 state 给 Jev 比，R4 起只记分，R2 持仓按它定卖不卖';
+COMMENT ON COLUMN jev_prediction_decision.p_jev IS 'Jev 的上涨概率：UP 会赢的概率和 1 − DOWN 会赢的概率取平均，R2、R3 有；R1 旧版是数学概率按后劲修正后的值；R4 起不问为空';
 COMMENT ON COLUMN jev_prediction_decision.p_mkt IS '市场隐含上涨概率 up_mid/(up_mid+down_mid)，Brier 对照';
 COMMENT ON COLUMN jev_prediction_decision.lead_sigma IS '纯数学的 z，正=偏 UP';
-COMMENT ON COLUMN jev_prediction_decision.momentum IS 'Jev 后劲：还在推减在回吐，-1…+1';
-COMMENT ON COLUMN jev_prediction_decision.jev_choice IS 'Jev 决定题概率最高的选项：BUY_UP/BUY_DOWN/WAIT（空仓）或 HOLD/SELL（持仓）';
-COMMENT ON COLUMN jev_prediction_decision.jev_choice_p IS '它的概率，到执行阈值才动';
-COMMENT ON COLUMN jev_prediction_decision.book_age_ms IS '盘口距上次推送的毫秒数，超龄不问不动；空=没记录';
-COMMENT ON COLUMN jev_prediction_decision.edge IS 'Jev 想买那边的绝对优势 p_model − 卖价 − 手续费；没买时也记';
-COMMENT ON COLUMN jev_prediction_decision.action IS '实际动作 BUY_UP/BUY_DOWN/STAY_OUT/HOLD/SELL/ERROR';
-COMMENT ON COLUMN jev_prediction_decision.reason IS '为什么这么做，"代码 + 细节"：BUY/WAIT/UNSURE/NO_QUOTE/ASK_RANGE/EXPENSIVE/NO_BALANCE/HOLD/SELL/NO_BID/STALE_BOOK/STALE_WHILE_ASKING，页面按首个词出提示；异常看 error';
-COMMENT ON COLUMN jev_prediction_decision.bet_id IS '本行开的注单（BUY_*）或操作的注单（SELL/HOLD）';
-COMMENT ON COLUMN jev_prediction_decision.stake IS '本金 cost（不含手续费）';
+COMMENT ON COLUMN jev_prediction_decision.jev_choice IS 'Jev 拍板的选项 BUY_UP/BUY_DOWN/PASS，R4 起空仓持仓都是这三个；R3 持仓是 HOLD/SELL，R1 旧版是决定题 BUY_UP/BUY_DOWN/WAIT，R2 不问为空';
+COMMENT ON COLUMN jev_prediction_decision.jev_choice_p IS '它的概率，到 act-threshold 才照做';
+COMMENT ON COLUMN jev_prediction_decision.book_age_ms IS '盘口距上次更新的毫秒数，超龄不问不动；空=没记录';
+COMMENT ON COLUMN jev_prediction_decision.odds_jump_up IS '最近 15 秒里 UP 中间价 3 秒内的最大涨幅，没涨是 0，不管到没到写进 state 的阈值都记；R4 起有，采样不够为空';
+COMMENT ON COLUMN jev_prediction_decision.odds_jump_down IS '同上的最大跌幅，负数，没跌是 0';
+COMMENT ON COLUMN jev_prediction_decision.edge IS '按数学估计的每份优势，只给页面作参考：买入（含加注）是那边 p_model − 卖价 − 手续费，持仓是卖出扣费后比 p_model 多拿多少。R2 是按 Jev 胜率算、优势大那边的，R1 按 p_model';
+COMMENT ON COLUMN jev_prediction_decision.action IS '实际动作 BUY_UP/BUY_DOWN/STAY_OUT/HOLD/SELL/ERROR；持仓时加注也记 BUY_*';
+COMMENT ON COLUMN jev_prediction_decision.reason IS '为什么这么做，"代码 + 细节"：BUY/ADD/PASS/UNSURE/NO_QUOTE/NO_BALANCE/MAX_STAKE/MISSED/HOLD/SELL/NO_BID/STALE_BOOK/STALE_CHAINLINK/STALE_WHILE_ASKING，R2 还有 WAIT/ASK_LOW，R1 还有 NOT_CHEAP/EXPENSIVE/ASK_RANGE；页面按首个词出提示；异常看 error';
+COMMENT ON COLUMN jev_prediction_decision.bet_id IS '本行开的注单（BUY_*，含加注）；持仓行（SELL/HOLD）记本回合在持的第一笔';
+COMMENT ON COLUMN jev_prediction_decision.stake IS '本金 cost（不含手续费）；持仓行是在持的合计';
 COMMENT ON COLUMN jev_prediction_decision.outcome IS '回合结果 UP/DOWN/VOID，结算后回填';
 COMMENT ON COLUMN jev_prediction_decision.pnl IS '本行开的注单最终盈亏 = payout − cost − 买入手续费；只在 BUY_* 行上有';
+
+-- ============================================
+-- 37. Jev 预测员的局
+-- ============================================
+-- 一局一个 sim 账户：R1 是 jev-prediction，之后 jev-prediction-r{n}，新号注资 100。/admin 重新开局加一行，旧局的账户与决策留档。
+CREATE TABLE IF NOT EXISTS jev_prediction_run (
+    run_no      INT           PRIMARY KEY,
+    label       VARCHAR(60),
+    started_at  BIGINT        NOT NULL
+);
+COMMENT ON TABLE  jev_prediction_run IS 'Jev 预测员的局，最大 run_no 是当前局';
+COMMENT ON COLUMN jev_prediction_run.label IS '版本说明，开局时填';
+COMMENT ON COLUMN jev_prediction_run.started_at IS '开局时刻(ms)';
+INSERT INTO jev_prediction_run (run_no, label, started_at)
+SELECT 1, NULL, COALESCE(MIN(decided_at), (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT) FROM jev_prediction_decision
+ON CONFLICT DO NOTHING;

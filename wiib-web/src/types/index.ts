@@ -594,7 +594,16 @@ export interface InviteCode {
 export interface AiModelAssignment {
   id?: number;
   functionName: string;
-  configId: number;
+  /** 可空位（快讯翻译备用）null=不用 */
+  configId: number | null;
+}
+
+/** Admin 手动补拉快讯结果 */
+export interface NewsBackfillResult {
+  /** 实际拉到最近多少条（翻到头会少于要的） */
+  fetched: number;
+  /** 其中新存条数，其余是库里已有的 */
+  inserted: number;
 }
 
 
@@ -810,6 +819,11 @@ export interface JevAnswer {
   probabilities: Record<string, number>;
 }
 
+/** Jev 是非题的回答：为真的概率 */
+export interface JevNoulAnswer {
+  noul: number;
+}
+
 /** 一张决策卡：每回合每个检查点各一行 */
 export interface JevPredictionDecisionView {
   id: number;
@@ -817,37 +831,69 @@ export interface JevPredictionDecisionView {
   /** 开盘后第几秒，如 T150 */
   checkpoint: string;
   decidedAt: number;
-  /** 纯数学的上涨概率，也是"划不划算"的公平价 */
+  /** 纯数学的上涨概率 */
   pModel?: number;
-  /** 数学概率按 Jev 后劲修正后的上涨概率，只记分 */
+  /** Jev 的上涨概率（UP 会赢与 1 − DOWN 会赢的平均），只 R2、R3 有；R1 旧版是按后劲修正的数学概率；R4 起不问 */
   pJev?: number;
   /** 市场隐含 */
   pMkt?: number;
-  /** Jev 决定题概率最高的选项 */
-  jevChoice?: 'BUY_UP' | 'BUY_DOWN' | 'WAIT' | 'HOLD' | 'SELL';
+  /**
+   * Jev 拍板的选项：R4 起空仓持仓都是 BUY_UP / BUY_DOWN / PASS；R3 持仓是 HOLD / SELL，R1 旧版是 BUY_UP / BUY_DOWN / WAIT，R2 没有
+   */
+  jevChoice?: 'BUY_UP' | 'BUY_DOWN' | 'PASS' | 'WAIT' | 'HOLD' | 'SELL';
   /** 它的概率 */
   jevChoiceP?: number;
-  /** 盘口距上次推送的毫秒数 */
+  /** 盘口距上次更新的毫秒数 */
   bookAgeMs?: number;
+  /** Jev 看到的那份盘口：买看卖价 ask，卖看买价 bid */
   upAsk?: number;
+  upBid?: number;
   downAsk?: number;
+  downBid?: number;
+  /** 最近 15 秒里 UP 中间价 3 秒内的最大涨幅 / 最大跌幅（负数），R4 起有，采样不够没有 */
+  oddsJumpUp?: number;
+  oddsJumpDown?: number;
+  /**
+   * 按数学估计的每份优势，只作参考：买入（含加注）是那边估计 − 卖价 − 手续费，持仓是卖出扣费后比估计多拿多少；
+   * R2 是按 Jev 胜率算、优势大那边的
+   */
+  edge?: number;
+  /** 持仓时加注也是 BUY_UP / BUY_DOWN，reason 首词是 ADD */
   action: 'BUY_UP' | 'BUY_DOWN' | 'STAY_OUT' | 'HOLD' | 'SELL' | 'ERROR';
-  /** 首个词是代码（见后端 PredictionRules），页面按它出提示；ERROR 行没有 */
+  /**
+   * 首个词是代码（见后端 PredictionRules），页面按它出提示；BUY / ADD / UNSURE / NO_QUOTE / MISSED / MAX_STAKE（R2 的 WAIT / ASK_LOW）
+   * 第二个词是哪边；按别的价成交或没抢到时价写成 "看到的→实际的"（没价是 none）；ERROR 行没有
+   */
   reason?: string;
+  /** 买入行是这一注；持仓行是本回合在持的第一注 */
   betId?: number;
+  /** 买入行是这一注的本金；持仓行是在持的合计 */
   stake?: number;
   outcome?: string;
   error?: string;
-  /** 决定题 decide 与后劲题 momentum 的回答；没问 Jev 的行没有 */
-  answers?: { decide: JevAnswer; momentum: JevAnswer };
+  /**
+   * Jev 的回答：R4 起只有入场题 entry；R3 是谁赢两问 up_wins / down_wins 加入场题 entry 或离场题 exit；
+   * R1 旧版是后劲题 momentum 和决定题 decide；没问 Jev 的行没有
+   */
+  answers?: {
+    up_wins?: JevNoulAnswer; down_wins?: JevNoulAnswer; entry?: JevAnswer; exit?: JevAnswer;
+    decide?: JevAnswer; momentum?: JevAnswer;
+  };
 }
 
 export interface JevPredictionStats {
   windows: number;
+  /** 下注次数，含加注 */
   bets: number;
+  sells: number;
   settledBets: number;
   wins: number;
   pnl: number;
+  /** 买卖付的手续费合计 */
+  fees: number;
+  /** 已结回合的买入要是都不卖、拿到结算的盈亏 */
+  heldPnl: number;
+  /** 有 p_jev 能算 Brier 的行数，R4 起为 0 */
   scored: number;
   brierModel?: number;
   brierJev?: number;
@@ -884,25 +930,48 @@ export interface JevBet {
   pnl?: number;
 }
 
-/** 页面提示里要写出来的阈值 */
+/** 页面提示里要写出来的几个数 */
 export interface JevThresholds {
+  /** Jev 选的那一项概率到这么多才照做 */
   actThreshold: number;
-  minAsk: number;
-  maxAsk: number;
+  /** Jev 拍板后等这么久再看盘口，按那时的价成交 */
+  fillDelayMs: number;
+  /** 等完的价比 Jev 看到的差这么多以内照样成交 */
+  fillTolerance: number;
+  /** 每注本金 */
+  baseStake: number;
+  /** 同一回合同一边在持的本金最多这么多，持仓时再选这一边就加注到这里为止 */
+  maxStakePerWindow: number;
+  /** UP 中间价 3 秒内涨或跌到这么多才写进 state 告诉 Jev */
+  jumpThreshold: number;
 }
 
-/** 预测员总开关：configured=平台 JEV_API_KEY 配了，enabled=开关开着，两个都真才跑 */
+/** 预测员的一局：一局一个账户，重新开局加一局，旧局留档 */
+export interface JevRun {
+  runNo: number;
+  /** 版本说明，开局时填 */
+  label?: string;
+  startedAt: number;
+}
+
+/** 预测员总开关：configured=平台 JEV_API_KEY 配了，enabled=开关开着，两个都真才跑；run 是当前局 */
 export interface JevSwitchState {
   configured: boolean;
   enabled: boolean;
+  run: JevRun;
 }
 
 export interface JevPredictionOverview {
   enabled: boolean;
   model: string;
   thresholds: JevThresholds;
+  /** 在看的这一局账户的余额 */
   gameBalance?: number;
   initialGameBalance: number;
+  /** 在看的这一局 */
+  run: JevRun;
+  /** 全部局，新的在前，第一个是当前局 */
+  runs: JevRun[];
   stats: JevPredictionStats;
   brierByCheckpoint: JevCheckpointBrier[];
   calibration: JevCalibrationBucket[];

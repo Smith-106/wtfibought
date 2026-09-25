@@ -17,7 +17,7 @@
 | **replay coach** | 单次调用 | 0 | ✗ | 手动复盘里点「AI 提示 / AI 评估」 | 用户的 key | 盘面提示 / 整局操作评估 |
 | **behavior workflow** | 单次调用 | 0 | ✗ | 对话里明说要分析自己（`analyze_my_behavior`） | 用户的 key（chat 那颗深模型） | 行为画像报告 |
 
-模型来源：面向用户的四处（交易、对话、复盘教练、行为分析）全部 BYOK（用户自带 key，AES-GCM 加密存库），统一放在一个端点库里，按用途绑定。交易员一天自动跑几十上百轮要便宜稳，对话是按需的深度研判要强模型，所以允许各绑各的端点；只配一条时它就是全局默认。平台自己掏钱的只剩 news-translation（快讯英文译文）一个功能位（`ai_runtime_config` + `ai_model_assignment`）——它是后台批量任务，没有"当前用户"可言。behavior 的平台功能位已退休，那次调用记在用户自己的 key 上。
+模型来源：面向用户的四处（交易、对话、复盘教练、行为分析）全部 BYOK（用户自带 key，AES-GCM 加密存库），统一放在一个端点库里，按用途绑定。交易员一天自动跑几十上百轮要便宜稳，对话是按需的深度研判要强模型，所以允许各绑各的端点；只配一条时它就是全局默认。平台自己掏钱的只剩 news-translation（快讯英文译文）一个功能位，外加一个主位出错才调的可空备用位（`ai_runtime_config` + `ai_model_assignment`）——它是后台批量任务，没有"当前用户"可言。behavior 的平台功能位已退休，那次调用记在用户自己的 key 上。
 
 behavior 不做成 agent 的原因：它那 10 个数据源的参数都是 `userId`、端点固定，模型没有决策空间，套 ReAct 循环只是多跑几趟，所以就是并发拉 10 个端点、拼一个 prompt、调一次 LLM。它也不挂 HITL 闸门：深研判一调就是 3 次深模型调用，这里只有 1 次，而"分析我的交易习惯"本身就是用户明说的意图，再弹卡请他确认自己刚说过的话是纯噪音；防滥调靠 30 分钟缓存与并发闸门。
 
@@ -53,7 +53,7 @@ trader 每次唤醒收到三份注入：平台系统提示词（环境 / 工具 
 
 ```mermaid
 flowchart LR
-    CLK["5m K线收盘事件"] --> SCH{"TraderScheduler<br/>对齐 interval 边界<br/>抢占 + 互斥 + 并发闸"}
+    CLK["5m K线收盘事件"] --> SCH{"TraderScheduler<br/>对齐 interval 边界<br/>抢占 + 互斥"}
     SEN["VolatilitySentinel<br/>5min 振幅超阈值<br/>且持有该币"] -->|"警报（冷静期/预算预检）"| SCH
     SCH --> PA["TraderPromptAssembler<br/>系统提示词 + 账户状态<br/>+ 复盘笔记 + 学习笔记"]
     PA --> RA(("ReactLoop<br/>ReAct 循环"))
@@ -154,7 +154,7 @@ flowchart LR
 - 并行与停止：专家在虚拟线程上并行跑；同一专家整轮只派一次（去重名单），另设 3 轮派发上限兜底。
 - trader 联动：`trader_agent` 专家只读用户自己的 AI Trader（概况 / 持仓 / 决策 / 计划）；`wake_trader` / `review_trader_now` / `leave_note_to_trader` 只往对话里推一张表单（留言连草稿带轮次一起预填），按下按钮的是用户，模型碰不到执行路径；只有当场就烧钱的 `run_deep_analysis` 走 HITL 闸。
 - 韧性：`ResilientChatService` 是叶子的模型调用层（系统提示、工具、首轮强制、搜索许可、重试）。流式路径带退避重试，仅在尚未吐帧时重订阅。不挂兜底模型：BYOK 只有一个端点，切到同端点的另一个模型没有意义。
-- 横切：会话历史落 `workbench_chat_context` 自建表（终态整体覆盖写入），裸 JSON（`ChatContextCodec`，读兼容老的对象流格式）、跨会话长期记忆（规则化写入，不烧 LLM）、调用限额 + 历史摘要压缩控预算。
+- 横切：会话历史落 `workbench_chat_context` 自建表（终态整体覆盖写入），裸 JSON（`ChatContextCodec`，读兼容老的对象流格式）、调用限额 + 历史摘要压缩控预算。
 - 新闻双源分工：`news_agent` 只预取 BlockBeats 出清单（它自己不联网搜索），summarizer 用服务端搜索补充合并，独有条目带源标签。搜索是端点显式勾选的能力，不是默认开着的——所以 summarizer 的系统提示词按能力二选一拼：能搜就承诺联网补充，不能搜就如实说没有检索能力。提示词不许承诺端点给不了的事。
 - 协议适配：四条协议——openai（chat/completions，走 Spring AI `OpenAiChatModel`）、responses、anthropic（Messages）、gemini（generateContent），后三条是自研 `ResponsesChatModel` / `AnthropicChatModel` / `GeminiChatModel`。挂工具与 tool_choice 由 `ToolChoice` 统一处理，首轮强制用工具按次落地，四条路行为一致。服务端搜索只有后三条声明得了，openai 的 chat-completions 没有标准的服务端搜索——所以"能不能搜"是协议能力与用户勾选的与。
 
@@ -208,6 +208,6 @@ sequenceDiagram
     L-->>T: 下一根 K 线带着两份新笔记醒来
 ```
 
-窗口是**唤醒发出即开**，不等交易跑完——晚开的话 5m 档会在等待期间又醒一次占住 inFlight，那个 trader 的复盘就被跳过了。代价是窗口把阶段 0 的交易执行也圈了进去，时长上界变成唤醒 600s + 复盘 600s + 学习 300s ≈ 25 分钟（三阶段各自内部并行、并发闸 10 槽，超过 10 人按批次再乘）。这是上界不是常态——跑完就关。5m 档 trader 最多丢 5 根 K 线、15m 档 1 根，日线交接每天只有一次，可接受。
+窗口是**唤醒发出即开**，不等交易跑完——晚开的话 5m 档会在等待期间又醒一次占住 inFlight，那个 trader 的复盘就被跳过了。代价是窗口把阶段 0 的交易执行也圈了进去，时长上界变成唤醒 600s + 复盘 600s + 学习 300s ≈ 25 分钟（三阶段各自内部全员并行，不设并发上限）。这是上界不是常态——跑完就关。5m 档 trader 最多丢 5 根 K 线、15m 档 1 根，日线交接每天只有一次，可接受。
 
 chat 与 trader 的联动只到这一步：`trader_agent` 专家只读用户自己的 trader（memory / learning_notes / 决策行 / 计划），三个动作只弹表单，真执行走 trader 动作面板的 REST。learning 只写笔记列与决策行，chat 只读同样几样东西，两边都不碰 trader 本体。
