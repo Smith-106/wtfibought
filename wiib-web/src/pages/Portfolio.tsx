@@ -20,10 +20,22 @@ import type { CryptoPosition, FuturesPosition, PredictionPnl, AssetSnapshot, Cat
 import { formatCoinPrice, getCoin } from '../lib/coinConfig';
 
 interface CryptoRow extends CryptoPosition {
+  /** 持有总量 = 可用 + 挂限价卖单冻结的 */
+  heldQty: number;
   currentPrice: number;
   marketValue: number;
   profit: number;
   profitPct: number;
+}
+
+/** 现货持仓估值：按持有总量算（同后端估值，卖单冻结的币也算）；toFixed 抹掉浮点尾差 */
+function valueRow(cp: CryptoPosition, currentPrice: number) {
+  const heldQty = Number((cp.quantity + cp.frozenQuantity).toFixed(8));
+  const marketValue = currentPrice * heldQty;
+  const costValue = cp.avgCost * heldQty;
+  const profit = marketValue - costValue;
+  const profitPct = costValue > 0 ? (profit / costValue) * 100 : 0;
+  return { heldQty, currentPrice, marketValue, profit, profitPct };
 }
 
 interface BStockRow extends CryptoRow {
@@ -41,6 +53,9 @@ const ALLOC_COLORS = {
   futures: 'var(--color-primary)',
   cash: 'var(--color-border)',
 };
+
+/** 负数项（全仓浮亏）在分布条上的红斜纹，盖在条右端 */
+const ALLOC_LOSS_BG = 'repeating-linear-gradient(-45deg, var(--color-loss) 0 3px, transparent 3px 6px)';
 
 export function Portfolio() {
   const navigate = useNavigate();
@@ -110,23 +125,14 @@ export function Portfolio() {
           const res = await cryptoApi.price(cp.symbol);
           if (res && res.price) currentPrice = parseFloat(res.price);
         } catch { /* skip */ }
-        const marketValue = currentPrice * cp.quantity;
-        const costValue = cp.avgCost * cp.quantity;
-        const profit = marketValue - costValue;
-        const profitPct = costValue > 0 ? (profit / costValue) * 100 : 0;
-        return { ...cp, currentPrice, marketValue, profit, profitPct };
+        return { ...cp, ...valueRow(cp, currentPrice) };
       }));
       setCryptoRows(crows);
 
       // bStock：现价/名称取自 bstock 列表（已含实时价）
       const brows: BStockRow[] = all.filter(cp => bmap.has(cp.symbol)).map(cp => {
         const b = bmap.get(cp.symbol)!;
-        const currentPrice = b.price ?? 0;
-        const marketValue = currentPrice * cp.quantity;
-        const costValue = cp.avgCost * cp.quantity;
-        const profit = marketValue - costValue;
-        const profitPct = costValue > 0 ? (profit / costValue) * 100 : 0;
-        return { ...cp, name: b.name, ticker: b.ticker, currentPrice, marketValue, profit, profitPct };
+        return { ...cp, name: b.name, ticker: b.ticker, ...valueRow(cp, b.price ?? 0) };
       });
       setBstockRows(brows);
     } catch {
@@ -145,9 +151,10 @@ export function Portfolio() {
         .then((u) => {
           if (cancelled) return;
           useUserStore.setState({ user: u });
-          loadSpotPositions();
           futuresApi.positions().then(setFuturesPositions).catch(() => setFuturesPositions([]));
           predictionApi.pnl().then(setPredictionPnl).catch(() => setPredictionPnl(null));
+          // loading 只管现货持仓那节：等它拉完再收骨架屏
+          return loadSpotPositions();
         })
         .catch(() => {
           if (cancelled) return;
@@ -209,10 +216,13 @@ export function Portfolio() {
   const bstockTotal = bstockRows.reduce((s, b) => s + b.marketValue, 0);
   const futuresMargin = futuresPositions.reduce((s, f) => s + f.margin, 0);
   const futuresProfit = futuresPositions.reduce((s, f) => s + f.unrealizedPnl, 0);
-  const futuresTotal = futuresMargin + futuresProfit;
+  // 合约仓位算进资产的部分（同后端 futuresPositionValue）：逐仓=保证金+浮盈亏；
+  // 全仓只算浮盈亏——占用制下保证金一直躺在余额里，再加就和"余额"那格重复了
+  const futuresValue = (f: FuturesPosition) => f.marginMode === 'CROSS' ? f.unrealizedPnl : f.margin + f.unrealizedPnl;
+  const futuresTotal = futuresPositions.reduce((s, f) => s + futuresValue(f), 0);
   const futuresChartRows = Array.from(
     futuresPositions.reduce((map, f) => {
-      map.set(f.symbol, (map.get(f.symbol) ?? 0) + f.margin + f.unrealizedPnl);
+      map.set(f.symbol, (map.get(f.symbol) ?? 0) + futuresValue(f));
       return map;
     }, new Map<string, number>())
   ).map(([symbol, marketValue]) => ({ symbol, marketValue }));
@@ -223,22 +233,26 @@ export function Portfolio() {
 
   const rt = realtimeSnapshot;
   const dailyProfit = rt?.dailyProfit ?? 0;
-  // 五分类当日拆解，0 的那格压成灰
+  // 四分类当日拆解，0 的那格压成灰
   const cats = [
     { k: t('cat.crypto'), v: rt?.dailyCryptoProfit ?? 0 },
     { k: t('cat.commodity'), v: rt?.dailyCommodityProfit ?? 0 },
     { k: t('cat.bstock'), v: rt?.dailyBstockProfit ?? 0 },
     { k: t('cat.prediction'), v: rt?.dailyPredictionProfit ?? 0 },
-    { k: t('cat.game'), v: rt?.dailyGameProfit ?? 0 },
   ];
 
-  const allocTotal = cryptoTotal + bstockTotal + futuresTotal + user.balance;
-  const alloc = [
+  // 余额钱包 = 余额 + 冻结（限价买单、逐仓限价开仓冻着的钱），同后端总资产口径；钱包明细、分布条、饼图都用它
+  const walletBalance = user.balance + user.frozenBalance;
+  const allocRaw = [
     { k: t('alloc.crypto'), v: cryptoTotal, c: ALLOC_COLORS.crypto },
     { k: t('alloc.bstock'), v: bstockTotal, c: ALLOC_COLORS.bstock },
     { k: t('alloc.futures'), v: futuresTotal, c: ALLOC_COLORS.futures },
-    { k: t('alloc.cash'), v: user.balance, c: ALLOC_COLORS.cash },
-  ].map(a => ({ ...a, pct: allocTotal > 0 ? (a.v / allocTotal) * 100 : 0 }));
+    { k: t('alloc.cash'), v: walletBalance, c: ALLOC_COLORS.cash },
+  ];
+  // 占比按正数合计算；全仓浮亏会让合约那格成负数，照实记负占比，条上从右端用红斜纹盖掉这么一截
+  const allocTotal = allocRaw.reduce((s, a) => s + Math.max(0, a.v), 0);
+  const alloc = allocRaw.map(a => ({ ...a, pct: allocTotal > 0 ? (a.v / allocTotal) * 100 : 0 }));
+  const allocLossPct = Math.min(100, -alloc.reduce((s, a) => s + Math.min(0, a.pct), 0));
 
   const togglePanel = (p: Panel) => setPanel(cur => cur === p ? null : p);
   const panelBtn = (p: Panel, label: string) => (
@@ -294,7 +308,7 @@ export function Portfolio() {
           </div>
 
           <div className="num mt-[26px] grid grid-cols-2 gap-x-10">
-            {walletRow(t('ov.balanceWallet'), fmtNum(user.balance))}
+            {walletRow(t('ov.balanceWallet'), fmtNum(walletBalance))}
             {walletRow(t('ov.gameWallet'), fmtNum(user.gameBalance))}
             {walletRow(t('ov.futuresMargin'), fmtNum(futuresMargin))}
             {walletRow(t('ov.futuresUnrealized'), signed(futuresProfit), futuresProfit >= 0 ? 'up' : 'dn')}
@@ -322,7 +336,7 @@ export function Portfolio() {
                     cryptoPositions={cryptoRows}
                     bstockRows={bstockRows}
                     futuresRows={futuresChartRows}
-                    balance={user.balance}
+                    balance={walletBalance}
                     gameBalance={user.gameBalance}
                   />
                 </div>
@@ -354,14 +368,15 @@ export function Portfolio() {
                 <div className="flex items-baseline justify-between mb-3">
                   <b className="text-[15px] font-extrabold">{t('alloc.title')}</b>
                 </div>
-                <div className="flex h-[22px] gap-0.5">
-                  {alloc.map(a => <i key={a.k} className="block h-full" style={{ width: `${a.pct}%`, background: a.c }} />)}
+                <div className="relative flex h-[22px] gap-0.5">
+                  {alloc.map(a => <i key={a.k} className="block h-full" style={{ width: `${Math.max(0, a.pct)}%`, background: a.c }} />)}
+                  {allocLossPct > 0 && <i className="absolute inset-y-0 right-0" style={{ width: `${allocLossPct}%`, background: ALLOC_LOSS_BG }} />}
                 </div>
                 <div className="num grid grid-cols-2 xl:grid-cols-4 gap-3.5 mt-3.5">
                   {alloc.map(a => (
-                    <div key={a.k} className="flex flex-col gap-0.5 pl-3 border-l-4" style={{ borderColor: a.c }}>
+                    <div key={a.k} className="flex flex-col gap-0.5 pl-3 border-l-4" style={{ borderColor: a.v < 0 ? 'var(--color-loss)' : a.c }}>
                       <span className="text-[12.5px] mute">{a.k}</span>
-                      <span className="text-[17px] font-semibold [font-stretch:85%]">
+                      <span className={cn('text-[17px] font-semibold [font-stretch:85%]', a.v < 0 && 'dn')}>
                         {fmtNum(a.v)}<small className="ml-1.5 text-[12px] font-medium mute">{a.pct.toFixed(1)}%</small>
                       </span>
                     </div>
@@ -419,10 +434,10 @@ export function Portfolio() {
                               <span className="sym">{coin.name}</span>
                               <span className="sub">
                                 {coin.pair}
-                                {coin.unitLabel && ` · ${t('spot.approx', { value: (c.quantity * coin.unitFactor!).toFixed(1), unit: coin.unitLabel })}`}
+                                {coin.unitLabel && ` · ${t('spot.approx', { value: (c.heldQty * coin.unitFactor!).toFixed(1), unit: coin.unitLabel })}`}
                               </span>
                             </td>
-                            <td className="r">{c.quantity}</td>
+                            <td className="r">{c.heldQty}</td>
                             <td className="r">{formatCoinPrice(c.symbol, c.avgCost)}</td>
                             <td className="r">{formatCoinPrice(c.symbol, c.currentPrice)}</td>
                             <td className="r">{fmtNum(c.marketValue)}</td>
@@ -465,7 +480,7 @@ export function Portfolio() {
                               <span className="sym">{b.ticker}</span>
                               <span className="sub">{b.name}</span>
                             </td>
-                            <td className="r">{b.quantity}</td>
+                            <td className="r">{b.heldQty}</td>
                             <td className="r">{fmtNum(b.avgCost)}</td>
                             <td className="r">{fmtNum(b.currentPrice)}</td>
                             <td className="r">{fmtNum(b.marketValue)}</td>

@@ -3,10 +3,10 @@ package com.mawai.wiibagent.chat;
 import com.mawai.wiibcommon.entity.UserJevConfig;
 import com.mawai.wiibcommon.enums.AgentLang;
 import com.mawai.wiibagent.i18n.PromptCatalog;
+import com.mawai.wiibagent.jev.JevClient;
+import com.mawai.wiibagent.jev.JevClient.Question;
+import com.mawai.wiibagent.jev.JevConfigService;
 import com.mawai.wiibagent.llm.ApiKeyCrypto;
-import com.mawai.wiibagent.llm.jev.JevClient;
-import com.mawai.wiibagent.llm.jev.JevClient.Question;
-import com.mawai.wiibagent.llm.jev.JevConfigService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -67,7 +67,7 @@ public class JevRouter {
                 "The question does not depend on recent news."));
         QUESTIONS.put("need_trader", Question.noul(
                 "`latest_question` is about the user's own AI trader: its status, positions, trades, "
-                        + "trade plans, reviews or learning notes.",
+                        + "trade plans or reviews.",
                 "The user asks about their own AI trader (\"my trader\", what it holds, why it traded, its plan or review).",
                 "The question is not about the user's own AI trader."));
     }

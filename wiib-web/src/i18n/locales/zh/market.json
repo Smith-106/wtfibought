@@ -1,9 +1,6 @@
 {
   "select": {
-    "coinTitle": "币种交易",
-    "commodityTitle": "大宗商品",
     "commoditySub": "TradFi 永续合约 · 黄金 / 原油 · 24/7",
-    "tradfiTitle": "TradFi 合约",
     "tradfiSub": "美股 / ETF 永续合约 · 24/7"
   },
   "coinName": {
@@ -24,26 +21,12 @@
     "liqLow": "低流动性"
   },
   "bstockList": {
-    "title": "股票 · bStock",
     "subtitle_other": "代币化美股 · 共 {{count}} 支",
-    "searchPlaceholder": "搜索名称 / 代码 / 行业",
-    "clearSearch": "清空搜索",
-    "refreshed": "已刷新",
     "loadFailed": "获取 bStock 列表失败",
-    "loadFailedHint": "请稍后重试",
-    "sortLabel": "排序：",
-    "sortCap": "市值",
-    "sortPrice": "价格",
-    "sortChange": "涨跌幅",
-    "sortDefault": "默认",
-    "cap": "市值 {{value}}",
-    "empty": "未找到相关股票",
-    "clearFilter": "清除搜索条件"
+    "loadFailedHint": "请稍后重试"
   },
   "bstockDetail": {
-    "subtitle": "{{industry}} · 24/7 · 瞬时结算",
-    "fallbackIndustry": "代币化美股",
-    "highLow": "高 {{high}} · 低 {{low}}",
+    "subtitle": "代币化美股 · 24/7",
     "companyInfo": "公司信息",
     "website": "官网",
     "fMarketCap": "市值",
@@ -62,9 +45,7 @@
     "amount": "金额",
     "qty": "数量",
     "unitShare": "股",
-    "qtyShares": "数量（股）",
     "amountPlaceholder": "花费金额 (USDT，含手续费)",
-    "pctAll": "全部",
     "leverage": "杠杆（借款 · 日息 0.05%）",
     "estFill": "预估买到",
     "estShares": "≈ {{qty}} 股",
@@ -74,10 +55,7 @@
     "cashNeeded": "需现金",
     "proceeds": "到账",
     "footer": "现货 · 瞬时结算 · 无 T+1",
-    "currentHoldings": "当前持仓",
     "shares": "股",
-    "avgCost": "均价",
-    "marketValue": "现值",
     "toastEnterAmount": "请输入金额",
     "toastEnterQty": "请输入数量",
     "toastInsufficient": "持仓不足",
@@ -112,8 +90,7 @@
     "avgCost": "均价",
     "lastPrice": "现价",
     "marketValue": "市值",
-    "frozen": "冻结",
-    "saved": "已省"
+    "frozen": "冻结"
   },
   "chart": {
     "open": "开",
@@ -139,6 +116,14 @@
     "marksTitle": "历史成交标记：B/S 角标，点击对应K线看成交价",
     "econTitle": "财经日历标记：High 级事件悬在对应K线上方，点击看实际 / 预测 / 前值",
     "posLinesTitle": "仓位参考线：入场 / 止盈 / 止损 / 强平",
+    "vpTitle": "成交量分布（VP）：把可见范围内的成交量按价位堆成横柱，柱越长这个价位成交越多。绿段是主动买、红段是主动卖，看谁在推。深色一段是价值区：70% 的成交量集中在这个价格带，是市场认可的区间，上下边界常当支撑压力。虚线 POC 是成交最多的价位，价格常被它吸回。柱长的价位价格容易停住，柱短的价位容易快速穿过。鼠标移到 VP 上会显示那一档的买卖量，以及价值区上下沿 VAH / VAL 的价位。",
+    "vpLogin": "登录后可用成交量分布",
+    "vpRows": "行数",
+    "vpBuy": "主动买",
+    "vpSell": "主动卖",
+    "vpValueArea": "深色 价值区 70%",
+    "vpPoc": "POC 成交最多的价位",
+    "vpFailed": "VP 数据加载失败",
     "magnetOn": "磁吸开：端点自动贴住最近的开/高/低/收",
     "magnetOff": "磁吸关：自由落点",
     "drawingsHidden": "画线已隐藏，点击恢复显示",
@@ -148,7 +133,8 @@
     "exitFullscreen": "退出全屏（Esc）",
     "fullscreen": "全屏",
     "textPlaceholder": "标注文字，回车确认",
-    "rotate": "旋转手机横屏查看"
+    "rotate": "旋转手机横屏查看",
+    "undo": "撤销（Ctrl+Z）"
   },
   "drawTool": {
     "pick": "选择",
@@ -162,7 +148,10 @@
     "long": "多头仓位",
     "short": "空头仓位",
     "range": "价格区间",
-    "text": "文字"
+    "text": "文字",
+    "hray": "水平射线",
+    "arrow": "箭头",
+    "fibext": "斐波扩展"
   },
   "drawTip": {
     "pick": "选择/拖拽（Esc 取消选中，Del 删除）",
@@ -172,11 +161,26 @@
     "vline": "垂直线：点一下即成",
     "channel": "平行通道：点三下（基线两端 + 平行线过的点）",
     "rect": "矩形：点两下定对角",
-    "fib": "斐波那契回撤：点两下定 0/1 两端",
+    "fib": "斐波那契回撤：先点波段起点（1）再点终点（0），各档是从终点回撤的比例",
     "long": "多头仓位：先点入场再点止损，止盈按 2:1 派生（可拖）",
     "short": "空头仓位：先点入场再点止损，止盈按 2:1 派生（可拖）",
     "range": "价格区间：点两下量价差/涨跌幅/根数/时长",
-    "text": "文字标注：点一下再输入"
+    "text": "文字标注：点一下再输入",
+    "hray": "水平射线：点一下，从这根往右延伸（标某根起的支撑压力）",
+    "arrow": "箭头：点两下，从起点指向终点",
+    "fibext": "斐波扩展：点三下（趋势起点、趋势终点、回撤落点），看 1.618 / 2.618 等目标位"
+  },
+  "drawProps": {
+    "color": "颜色",
+    "line": "线宽 / 线型",
+    "width": "线宽",
+    "style": "线型",
+    "solid": "实线",
+    "dashed": "虚线",
+    "dotted": "点线",
+    "editText": "改文字（桌面可双击）",
+    "clone": "复制一份",
+    "delete": "删除（Del）"
   },
   "draw": {
     "done": "已完成",
@@ -185,7 +189,19 @@
     "sl": "止损",
     "long": "多",
     "short": "空",
-    "bars_other": "{{count}}根"
+    "bars_other": "{{count}}根",
+    "hintMouse": "在图上点击落点",
+    "hintTouch": "拖动十字线，轻点固定",
+    "cancel": "取消绘制（Esc）"
+  },
+  "drawAct": {
+    "tools": "画线",
+    "magnet": "磁吸",
+    "hide": "隐藏",
+    "show": "显示",
+    "undo": "撤销",
+    "delete": "删除",
+    "clear": "清空"
   },
   "whale": {
     "title": "大户持仓",

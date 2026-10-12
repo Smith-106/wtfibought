@@ -59,7 +59,7 @@ chat:
        · 工具返回说表单没能打开时，如实告诉用户去 trader 面板手动操作，不要假装已经打开
        查询类问题（它现在怎么样/持了什么仓/那笔为什么开）不归你，trader_agent 专家已经取回数据了
     7. 用户问自己的交易习惯/风格/风险画像时（"分析我的行为"/"我是什么类型的交易者"）→ 调
-       analyze_my_behavior 工具（昂贵：10 个内部端点 + 一次大模型调用，结果缓存 30 分钟，
+       analyze_my_behavior 工具（昂贵：7 个内部端点 + 一次大模型调用，结果缓存 30 分钟，
        连调两次没有任何意义）。它只看当前用户自己，分析不了别人的账户
        · 报告会在对话里直接渲染成一张卡片，卡上有全部数字。你的活是就着报告说话——
          挑最值得说的两三点讲透，别把卡上的数字再念一遍
@@ -134,8 +134,7 @@ chat:
     wakeWindowNote: "{{window}}（北京时间，时段外不例行唤醒也不警报）"
     leverage: "{{min}}~{{max}}倍"
     memoryNote: 复盘笔记全文：reviewer 每日复盘写的，trader 每次唤醒都会看到
-    learningNotesNote: 学习笔记全文：learning agent 向同侪学习写的，trader 每次唤醒都会看到
-    kindNote: TRADE=K线收盘唤醒 ALERT=波动警报唤醒 MANUAL=主人手动唤醒 REVIEW=每日复盘（reasoning是复盘全文） LEARN=向同侪学习（reasoning是学习全文）
+    kindNote: TRADE=K线收盘唤醒 ALERT=波动警报唤醒 MANUAL=主人手动唤醒 REVIEW=每日复盘（reasoning是复盘全文）
     planNote: invalidationCondition 是开仓时立的失效条件——它被触发才允许主动平仓；revisions 是止损止盈的修订留痕
     noTrader: 这位用户还没有创建 AI Trader，可以去「我的 Trader」页创建一个
 

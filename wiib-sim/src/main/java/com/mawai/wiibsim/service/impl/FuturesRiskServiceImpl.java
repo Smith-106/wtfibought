@@ -8,11 +8,10 @@ import com.mawai.wiibcommon.entity.FuturesStopLoss;
 import com.mawai.wiibcommon.entity.FuturesTakeProfit;
 import com.mawai.wiibcommon.enums.ErrorCode;
 import com.mawai.wiibcommon.exception.BizException;
-import com.mawai.wiibcommon.util.SpringUtils;
 import com.mawai.wiibsim.config.FuturesLeverageBracketRegistry;
 import com.mawai.wiibsim.config.TradingConfig;
-import com.mawai.wiibsim.ledger.Ledger;
 import com.mawai.wiibsim.ledger.LedgerCtx;
+import com.mawai.wiibsim.ledger.LedgerTx;
 import com.mawai.wiibsim.mapper.FuturesOrderMapper;
 import com.mawai.wiibsim.mapper.FuturesPositionMapper;
 import com.mawai.wiibsim.mapper.UserMapper;
@@ -21,15 +20,16 @@ import com.mawai.wiibsim.service.CrossMarginService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.FuturesRiskService;
 import com.mawai.wiibsim.service.TradeNotificationService;
-import com.mawai.wiibsim.util.RedisLockUtil;
+import com.mawai.wiibsim.util.FairLockRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
+import java.util.concurrent.locks.Lock;
 
 import static com.mawai.wiibcommon.enums.LedgerBizType.FUTURES_CLOSE_SETTLE;
 import static com.mawai.wiibcommon.enums.LedgerBizType.FUTURES_LIQUIDATION_RETURN;
@@ -44,29 +44,29 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
     private final FuturesOrderMapper orderMapper;
     private final UserMapper userMapper;
     private final TradingConfig tradingConfig;
-    private final RedisLockUtil redisLockUtil;
+    private final FairLockRegistry lockRegistry;
     private final CacheService cacheService;
     private final FuturesPositionIndexService positionIndexService;
     private final FuturesLeverageBracketRegistry bracketRegistry;
     private final CrossMarginService crossMarginService;
     private final TradeNotificationService tradeNotificationService;
+    private final TransactionTemplate transactionTemplate;
+    private final LedgerTx ledgerTx;
 
     // ==================== 设置止损 ====================
 
     @Override
     public void setStopLoss(Long userId, FuturesStopLossRequest request) {
-        String lockKey = "futures:pos:" + request.getPositionId();
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
+        Lock lock = lockRegistry.tryLockAsUser("futures:pos:" + request.getPositionId());
+        if (lock == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
         try {
-            SpringUtils.getAopProxy(this).doSetStopLoss(userId, request);
+            transactionTemplate.executeWithoutResult(_ -> doSetStopLoss(userId, request));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    protected void doSetStopLoss(Long userId, FuturesStopLossRequest request) {
+    void doSetStopLoss(Long userId, FuturesStopLossRequest request) {
         FuturesPosition position = getUserPosition(userId, request.getPositionId());
 
         List<FuturesStopLossRequest.StopLossItem> items = request.getStopLosses();
@@ -110,18 +110,16 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
 
     @Override
     public void setTakeProfit(Long userId, FuturesTakeProfitRequest request) {
-        String lockKey = "futures:pos:" + request.getPositionId();
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
+        Lock lock = lockRegistry.tryLockAsUser("futures:pos:" + request.getPositionId());
+        if (lock == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
         try {
-            SpringUtils.getAopProxy(this).doSetTakeProfit(userId, request);
+            transactionTemplate.executeWithoutResult(_ -> doSetTakeProfit(userId, request));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    protected void doSetTakeProfit(Long userId, FuturesTakeProfitRequest request) {
+    void doSetTakeProfit(Long userId, FuturesTakeProfitRequest request) {
         FuturesPosition position = getUserPosition(userId, request.getPositionId());
 
         List<FuturesTakeProfitRequest.TakeProfitItem> items = request.getTakeProfits();
@@ -165,28 +163,36 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
 
     @Override
     public void forceClose(Long positionId, BigDecimal price) {
-        String lockKey = "futures:pos:" + positionId;
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
+        Lock lock = lockRegistry.tryLockAsSystem("futures:pos:" + positionId);
+        if (lock == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
         try {
-            SpringUtils.getAopProxy(this).doForceClose(positionId, price);
+            ledgerTx.run(FUTURES_LIQUIDATION_RETURN, () -> doForceClose(positionId, price));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
-    // 强平返还的钱在私有的 forceCloseInCurrentTransaction 里动，而它是同类自调用——AOP 拦不到，
-    // 标它是空操作。所以两个 protected 代理入口（本方法和 doCheckAndLiquidate）各标一次。
-    @Transactional(rollbackFor = Exception.class)
-    @Ledger(FUTURES_LIQUIDATION_RETURN)
-    protected void doForceClose(Long positionId, BigDecimal price) {
+    void doForceClose(Long positionId, BigDecimal price) {
         FuturesPosition position = positionMapper.selectById(positionId);
         if (position == null || !"OPEN".equals(position.getStatus())) {
             return;
         }
         LedgerCtx.symbol(position.getSymbol());
 
+        // 锁内按传入价复核，不满足就不平，按当前保证金/数量把强平索引放回去
+        if (!reachesLiquidation(position, price)) {
+            positionIndexService.registerLiquidation(position);
+            return;
+        }
         forceCloseInCurrentTransaction(position, price);
+    }
+
+    /** 逐仓强平条件：保证金 + 浮盈亏 ≤ 维持保证金。档位没配抛 FUTURES_SYMBOL_NOT_CONFIGURED */
+    private boolean reachesLiquidation(FuturesPosition position, BigDecimal price) {
+        BigDecimal unrealizedPnl = calculatePnl(position.getSide(), position.getEntryPrice(), price, position.getQuantity());
+        BigDecimal maintenanceMargin = bracketRegistry.calcMaintenanceMargin(position.getSymbol(),
+                price.multiply(position.getQuantity()));
+        return position.getMargin().add(unrealizedPnl).compareTo(maintenanceMargin) <= 0;
     }
 
     private void forceCloseInCurrentTransaction(FuturesPosition position, BigDecimal price) {
@@ -232,39 +238,35 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
 
     @Override
     public void checkAndLiquidate(Long positionId, BigDecimal currentPrice) {
-        String lockKey = "futures:pos:" + positionId;
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) return;
+        Lock lock = lockRegistry.tryLockAsSystem("futures:pos:" + positionId);
+        if (lock == null) {
+            log.warn("futures强平复核获锁超时，本次不查 posId={}", positionId);
+            return;
+        }
         try {
-            SpringUtils.getAopProxy(this).doCheckAndLiquidate(positionId, currentPrice);
+            ledgerTx.run(FUTURES_LIQUIDATION_RETURN, () -> doCheckAndLiquidate(positionId, currentPrice));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
-    // 同 doForceClose：真正动钱的是私有的 forceCloseInCurrentTransaction，标注只能落在这个代理入口上
-    @Transactional(rollbackFor = Exception.class)
-    @Ledger(FUTURES_LIQUIDATION_RETURN)
-    protected void doCheckAndLiquidate(Long positionId, BigDecimal currentPrice) {
+    void doCheckAndLiquidate(Long positionId, BigDecimal currentPrice) {
         FuturesPosition position = positionMapper.selectById(positionId);
         if (position == null || !"OPEN".equals(position.getStatus())) {
             return;
         }
         LedgerCtx.symbol(position.getSymbol());
 
-        BigDecimal unrealizedPnl = calculatePnl(position.getSide(), position.getEntryPrice(), currentPrice, position.getQuantity());
-        BigDecimal effectiveMargin = position.getMargin().add(unrealizedPnl);
-        BigDecimal positionValue = currentPrice.multiply(position.getQuantity());
-        BigDecimal maintenanceMargin;
+        boolean hit;
         try {
-            maintenanceMargin = bracketRegistry.calcMaintenanceMargin(position.getSymbol(), positionValue);
+            hit = reachesLiquidation(position, currentPrice);
         } catch (BizException e) {
             // 未配置档位的 symbol 跳过本次强平判定，避免吞错导致仓位卡死，运维需关注此告警
             log.error("强平判定跳过 posId={} symbol={} reason={}", positionId, position.getSymbol(), e.getMessage());
             return;
         }
 
-        if (effectiveMargin.compareTo(maintenanceMargin) <= 0) {
+        if (hit) {
             forceCloseInCurrentTransaction(position, currentPrice);
         }
     }
@@ -273,25 +275,23 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
 
     @Override
     public void batchTriggerStopLoss(Long positionId, Collection<String> slIds, BigDecimal price) {
-        String lockKey = "futures:pos:" + positionId;
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
+        Lock lock = lockRegistry.tryLockAsSystem("futures:pos:" + positionId);
+        if (lock == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
         try {
-            SpringUtils.getAopProxy(this).doBatchTrigger(positionId, slIds, price, true);
+            ledgerTx.run(FUTURES_CLOSE_SETTLE, () -> doBatchTrigger(positionId, slIds, price, true));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
     @Override
     public void batchTriggerTakeProfit(Long positionId, Collection<String> tpIds, BigDecimal price) {
-        String lockKey = "futures:pos:" + positionId;
-        String lockValue = redisLockUtil.tryLock(lockKey, 30);
-        if (lockValue == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
+        Lock lock = lockRegistry.tryLockAsSystem("futures:pos:" + positionId);
+        if (lock == null) throw new BizException(ErrorCode.ORDER_PROCESSING);
         try {
-            SpringUtils.getAopProxy(this).doBatchTrigger(positionId, tpIds, price, false);
+            ledgerTx.run(FUTURES_CLOSE_SETTLE, () -> doBatchTrigger(positionId, tpIds, price, false));
         } finally {
-            redisLockUtil.unlock(lockKey, lockValue);
+            lock.unlock();
         }
     }
 
@@ -303,9 +303,7 @@ public class FuturesRiskServiceImpl implements FuturesRiskService {
      * （落库的订单状态就是 STOP_LOSS / TAKE_PROFIT，仓位是 CLOSED），跟 LIQUIDATED 是两件事。
      * 标成强平会把每一次正常止盈都写成"你被强平了"。
      */
-    @Transactional(rollbackFor = Exception.class)
-    @Ledger(FUTURES_CLOSE_SETTLE)
-    protected void doBatchTrigger(Long positionId, Collection<String> ids, BigDecimal price, boolean isStopLoss) {
+    void doBatchTrigger(Long positionId, Collection<String> ids, BigDecimal price, boolean isStopLoss) {
         FuturesPosition position = positionMapper.selectById(positionId);
         if (position == null || !"OPEN".equals(position.getStatus())) return;
         LedgerCtx.symbol(position.getSymbol());

@@ -7,7 +7,7 @@ import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose, 
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
 import type { GenEvent, GenThreadState } from '../types';
 import type { AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor, AlphaReference, AlphaRun, AlphaRunState } from '../types';
-import type { User, PageResult, RankingItem, CommentItem, NotificationItem, BuffStatus, UserBuff, BlackjackStatus, GameState, ConvertResult, MinesStatus, MinesGameState, VideoPokerStatus, VideoPokerGameState, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
+import type { User, PageResult, RankingItem, CommentItem, NotificationItem, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderExperience, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -103,7 +103,7 @@ export const userApi = {
   /** 指定月份逐日快照（首页月度盈亏网格）。month 形如 2026-07；快照只写到昨天，返回里没有今天 */
   assetDaily: (month: string) => api.get<unknown, AssetSnapshot[]>('/user/asset-daily', { params: { month } }),
   categoryAverages: (days = 30) => api.get<unknown, CategoryAverages>('/user/category-averages', { params: { days } }),
-  // 重置账户：清空交易与游戏数据回到初始资金。活动期每周首次免费、之后每次扣 30 活动分；
+  // 重置账户：清空交易与预测数据回到初始资金。活动期每周首次免费、之后每次扣 30 活动分；
   // 平时每周限 1 次。需逐字输入用户名确认
   resetAccount: (confirmUsername: string) =>
     api.post<unknown, void>('/user/reset', { confirmUsername }),
@@ -240,42 +240,6 @@ export const adminApi = {
   disableInviteCode: (id: number) => api.post<unknown, void>(`/admin/invite-code/${id}/disable`),
 };
 
-// ========== Buff接口 ==========
-export const buffApi = {
-  // 获取Buff状态
-  status: () => api.get<unknown, BuffStatus>('/buff/status'),
-  // 抽奖
-  draw: () => api.post<unknown, UserBuff>('/buff/draw'),
-};
-
-// ========== Blackjack接口 ==========
-export const blackjackApi = {
-  status: () => api.get<unknown, BlackjackStatus>('/blackjack/status'),
-  bet: (amount: number) => api.post<unknown, GameState>('/blackjack/bet', { amount }),
-  hit: () => api.post<unknown, GameState>('/blackjack/hit'),
-  stand: () => api.post<unknown, GameState>('/blackjack/stand'),
-  double: () => api.post<unknown, GameState>('/blackjack/double'),
-  split: () => api.post<unknown, GameState>('/blackjack/split'),
-  insurance: () => api.post<unknown, GameState>('/blackjack/insurance'),
-  forfeit: () => api.post<unknown, GameState>('/blackjack/forfeit'),
-  convert: (amount: number) => api.post<unknown, ConvertResult>('/blackjack/convert', { amount }),
-};
-
-// ========== 矿工游戏接口 ==========
-export const minesApi = {
-  status: () => api.get<unknown, MinesStatus>('/mines/status'),
-  bet: (amount: number) => api.post<unknown, MinesGameState>('/mines/bet', { amount }),
-  reveal: (cell: number) => api.post<unknown, MinesGameState>('/mines/reveal', { cell }),
-  cashout: () => api.post<unknown, MinesGameState>('/mines/cashout'),
-};
-
-// ========== 视频扑克接口 ==========
-export const videoPokerApi = {
-  status: () => api.get<unknown, VideoPokerStatus>('/videopoker/status'),
-  bet: (amount: number) => api.post<unknown, VideoPokerGameState>('/videopoker/bet', { amount }),
-  draw: (held: number[]) => api.post<unknown, VideoPokerGameState>('/videopoker/draw', { held }),
-};
-
 // ========== 加密货币行情接口 ==========
 const getToken = (): string | undefined => {
   const stored = localStorage.getItem('wiib-user');
@@ -308,13 +272,18 @@ const parseChatStreamEvent = (block: string): ChatStreamEvent => {
 
 // K线数据（直接返回Binance原始数组，不走拦截器解包）；现货/合约仅路径不同
 const rawKlines = (path: string) =>
-  (symbol = 'BTCUSDT', interval = '1m', limit = 500, endTime?: number) => {
-    const token = getToken();
-    return axios.get<number[][]>(path, {
+  (symbol = 'BTCUSDT', interval = '1m', limit = 500, endTime?: number) =>
+    axios.get<number[][]>(path, {
       params: { symbol, interval, limit, ...(endTime ? { endTime } : {}) },
-      ...(token ? { headers: { satoken: token } } : {}),
-    }).then(res => res.data);
-  };
+      headers: sseHeaders(),
+    }).then(res => {
+      // 不是数组 = 后端回的 Result（被限流/参数错）或空体（币安没拉到），带后端文案报错
+      if (!Array.isArray(res.data)) {
+        const r = res.data as { code?: number; msg?: string };
+        throw new ApiError(r.msg || i18n.t('errors:requestFailed'), r.code ?? -1);
+      }
+      return res.data;
+    });
 
 export const cryptoApi = {
   klines: rawKlines('/api/crypto/klines'),
@@ -439,7 +408,7 @@ const streamSseEvents = async <E,>(
   }
 };
 
-/** fetch 走 SSE 时的鉴权与语言头（satoken 只认 header 不认 cookie） */
+/** 不走 api 实例时的鉴权与语言头（satoken 只认 header 不认 cookie）：SSE 的 fetch、直取 K 线共用 */
 const sseHeaders = (): Record<string, string> => {
   const token = getToken();
   return { [LANG_HEADER]: currentLang(), ...(token ? { satoken: token } : {}) };
@@ -508,6 +477,8 @@ export const workbenchApi = {
    */
   deferred: (sessionId: string, onEvent: (e: WorkbenchEvent) => void, signal?: AbortSignal) =>
     postSse<WorkbenchEvent>('/api/ai/workbench/deferred', { sessionId }, onEvent, signal),
+  /** 用户占不占线（不分会话）：本地没有流、又要等那轮跑完时轮询它 */
+  busy: () => api.get<unknown, boolean>('/ai/workbench/busy'),
   /** 会话运行状态（切页/刷新回来判断：还在跑→轮询；欠着补答→空闲时发起补答轮） */
   sessionStatus: (sessionId: string) =>
     api.get<unknown, WorkbenchSessionStatus>(`/ai/workbench/sessions/${sessionId}/status`),
@@ -553,10 +524,10 @@ export const jevApi = {
 };
 
 // ========== Jev 预测员（平台级展示） ==========
-/** 三个读接口都按局看，run 不传是当前局 */
+/** 三个读接口都按局看，run 不传是在跑的 v5-1 那一局 */
 export const jevPredictionApi = {
   overview: (run?: number) => api.get<unknown, JevPredictionOverview>('/ai/jev-prediction/overview', { params: { run } }),
-  /** 最近决策带 Jev 的回答，Jev 页右栏一次拿全；每回合 17 次，51 条约三个回合 */
+  /** 这一局最近的决策带 Jev 的回答，Jev 页右栏一次拿全；v5-3 每回合最多 8 行，51 条是最近六个多回合，突变两组只在有突变时才有行 */
   feed: (limit = 51, run?: number) =>
     api.get<unknown, JevPredictionDecisionView[]>('/ai/jev-prediction/feed', { params: { limit, run } }),
   bets: (limit = 30, run?: number) => api.get<unknown, JevBet[]>('/ai/jev-prediction/bets', { params: { limit, run } }),
@@ -699,7 +670,7 @@ export const traderApi = {
   updateConfig: (req: TraderUpsertRequest) => api.put<unknown, void>('/ai/trader/config', req),
   start: () => api.post<unknown, void>('/ai/trader/start'),
   pause: () => api.post<unknown, void>('/ai/trader/pause'),
-  /** carryNotes=false 不带入复盘/学习笔记（只清生效版本，历届存档保留） */
+  /** carryNotes=false 不带入经验账本（只清生效版本，历届存档保留） */
   reset: (carryNotes: boolean) => api.post<unknown, void>('/ai/trader/reset', { carryNotes }),
   /** 删 trader：决策/计划/每局 sim 子账户全物理删除，不可逆；confirmName 要与 trader 名字一字不差 */
   remove: (confirmName: string) =>
@@ -721,6 +692,12 @@ export const traderApi = {
   trades: (id: number) => api.get<unknown, TradeRecordView[]>(`/ai/trader/${id}/trades`),
   /** 标记/取消忽略一笔已了结交易（仅本人、仅CLOSED）：AI 统计与复盘不再参考，公开记录不变 */
   setPlanStale: (planId: number, stale: boolean) => api.post<unknown, void>(`/ai/trader/plan/${planId}/stale`, { stale }),
+  // 经验账本（主人管理）：本局全部条目；钉住/退役/恢复/删除
+  experiences: () => api.get<unknown, TraderExperience[]>('/ai/trader/mine/experiences'),
+  pinExperience: (id: number, pinned: boolean) => api.post<unknown, void>(`/ai/trader/experience/${id}/pin`, { pinned }),
+  retireExperience: (id: number, reason: string) => api.post<unknown, void>(`/ai/trader/experience/${id}/retire`, { reason }),
+  reviveExperience: (id: number) => api.post<unknown, void>(`/ai/trader/experience/${id}/revive`),
+  deleteExperience: (id: number) => api.delete<unknown, void>(`/ai/trader/experience/${id}`),
 
   // ---- 唤醒过程实时流：只有主人连得进来，非主人后端直接拒 ----
   /**

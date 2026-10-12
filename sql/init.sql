@@ -42,7 +42,7 @@ COMMENT ON COLUMN "user".password_hash IS 'BCrypt密码哈希（定长60，OAuth
 COMMENT ON COLUMN "user".invite_code_id IS '注册用的邀请码ID（可追溯，OAuth用户为空）';
 COMMENT ON COLUMN "user".balance IS '余额钱包（交易：现货/B股/合约/杠杆，全仓保证金池）';
 COMMENT ON COLUMN "user".frozen_balance IS '冻结余额（限价买单冻结，属余额钱包）';
-COMMENT ON COLUMN "user".game_balance IS '游戏钱包（Mines/扑克/21点/预测市场，与全仓风险隔离）';
+COMMENT ON COLUMN "user".game_balance IS '游戏钱包（预测市场用，与全仓风险隔离）';
 COMMENT ON COLUMN "user".margin_loan_principal IS '杠杆借款本金';
 COMMENT ON COLUMN "user".margin_interest_accrued IS '杠杆应计利息（未支付）';
 COMMENT ON COLUMN "user".margin_interest_last_date IS '杠杆计息上次日期（用于补记）';
@@ -78,87 +78,6 @@ COMMENT ON COLUMN invite_code.used_count IS '已用次数（注册时原子+1，
 COMMENT ON COLUMN invite_code.enabled IS '是否可用（作废置 FALSE）';
 
 -- ============================================
--- 3. 每日Buff表
--- ============================================
-CREATE TABLE IF NOT EXISTS user_buff (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES "user"(id),
-    buff_type VARCHAR(32) NOT NULL,
-    buff_name VARCHAR(64) NOT NULL,
-    rarity VARCHAR(16) NOT NULL,
-    extra_data jsonb,
-    draw_date DATE NOT NULL,
-    expire_at TIMESTAMP NOT NULL,
-    is_used BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_user_draw_date UNIQUE (user_id, draw_date)
-);
-
-COMMENT ON TABLE user_buff IS '每日Buff表';
-COMMENT ON COLUMN user_buff.id IS '主键';
-COMMENT ON COLUMN user_buff.user_id IS '用户ID';
-COMMENT ON COLUMN user_buff.buff_type IS 'Buff类型枚举';
-COMMENT ON COLUMN user_buff.buff_name IS '显示名称';
-COMMENT ON COLUMN user_buff.rarity IS '稀有度：COMMON/RARE/EPIC/LEGENDARY';
-COMMENT ON COLUMN user_buff.extra_data IS '附加数据JSON';
-COMMENT ON COLUMN user_buff.draw_date IS '抽奖日期';
-COMMENT ON COLUMN user_buff.expire_at IS '过期时间';
-COMMENT ON COLUMN user_buff.is_used IS '是否已使用（折扣类）';
-COMMENT ON COLUMN user_buff.created_at IS '创建时间';
-
--- ============================================
--- 4. Blackjack积分账户表
--- ============================================
-CREATE TABLE IF NOT EXISTS blackjack_account (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL UNIQUE REFERENCES "user"(id),
-    chips BIGINT NOT NULL DEFAULT 200,
-    today_converted BIGINT NOT NULL DEFAULT 0,
-    last_convert_date DATE,
-    last_reset_date DATE,
-    total_hands BIGINT NOT NULL DEFAULT 0,
-    total_won BIGINT NOT NULL DEFAULT 0,
-    total_lost BIGINT NOT NULL DEFAULT 0,
-    biggest_win BIGINT NOT NULL DEFAULT 0,
-    session_json TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-COMMENT ON TABLE blackjack_account IS 'Blackjack积分账户';
-COMMENT ON COLUMN blackjack_account.id IS '主键';
-COMMENT ON COLUMN blackjack_account.user_id IS '用户ID';
-COMMENT ON COLUMN blackjack_account.chips IS '当前积分';
-COMMENT ON COLUMN blackjack_account.today_converted IS '今日已转出';
-COMMENT ON COLUMN blackjack_account.last_convert_date IS '上次转出日期';
-COMMENT ON COLUMN blackjack_account.last_reset_date IS '上次积分重置日期';
-COMMENT ON COLUMN blackjack_account.total_hands IS '总局数';
-COMMENT ON COLUMN blackjack_account.total_won IS '总赢额';
-COMMENT ON COLUMN blackjack_account.total_lost IS '总输额';
-COMMENT ON COLUMN blackjack_account.biggest_win IS '单局最大赢额';
-COMMENT ON COLUMN blackjack_account.session_json IS '进行中那一局的完整快照(牌靴/各手牌/庄家牌/保险)，NULL=无牌局；与筹码同行同一笔update，钱和牌不会分叉';
-COMMENT ON COLUMN blackjack_account.created_at IS '创建时间';
-COMMENT ON COLUMN blackjack_account.updated_at IS '更新时间';
-
--- ============================================
--- 5. Blackjack 转出日志表
--- ============================================
-CREATE TABLE IF NOT EXISTS blackjack_convert_log (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    amount BIGINT NOT NULL,
-    chips_before BIGINT NOT NULL,
-    chips_after BIGINT NOT NULL,
-    balance_before DECIMAL(18,2) NOT NULL,
-    balance_after DECIMAL(18,2) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_bj_convert_user ON blackjack_convert_log(user_id);
-
-COMMENT ON TABLE blackjack_convert_log IS 'Blackjack积分转出日志';
-
--- ============================================
 -- 6. 加密货币持仓表
 -- ============================================
 CREATE TABLE IF NOT EXISTS crypto_position (
@@ -168,7 +87,6 @@ CREATE TABLE IF NOT EXISTS crypto_position (
     quantity DECIMAL(18,8) NOT NULL DEFAULT 0,
     frozen_quantity DECIMAL(18,8) NOT NULL DEFAULT 0,
     avg_cost DECIMAL(20,8) NOT NULL,
-    total_discount DECIMAL(18,2) NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_crypto_user_symbol UNIQUE (user_id, symbol)
@@ -200,7 +118,6 @@ CREATE TABLE IF NOT EXISTS crypto_order (
     trigger_price DECIMAL(20,8),
     triggered_at TIMESTAMP,
     status VARCHAR(20) NOT NULL,
-    discount_percent DECIMAL(5,2),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -219,43 +136,11 @@ COMMENT ON COLUMN crypto_order.filled_amount IS '成交金额';
 COMMENT ON COLUMN crypto_order.commission IS '手续费';
 COMMENT ON COLUMN crypto_order.trigger_price IS '触发价格';
 COMMENT ON COLUMN crypto_order.triggered_at IS '触发时间';
-COMMENT ON COLUMN crypto_order.status IS 'PENDING/TRIGGERED/FILLED/CANCELLED';
+COMMENT ON COLUMN crypto_order.status IS 'PENDING/TRIGGERED/FILLED/CANCELLED；早期还有少量 EXPIRED';
 
 CREATE INDEX IF NOT EXISTS idx_crypto_order_user ON crypto_order(user_id);
 CREATE INDEX IF NOT EXISTS idx_crypto_order_status ON crypto_order(status, order_type);
 CREATE INDEX IF NOT EXISTS idx_crypto_order_symbol ON crypto_order(symbol, status);
-
--- ============================================
--- 8. 矿工游戏记录表
--- ============================================
-CREATE TABLE IF NOT EXISTS mines_game (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    bet_amount DECIMAL(18,2) NOT NULL,
-    fee DECIMAL(18,2) NOT NULL,
-    mine_positions VARCHAR(32) NOT NULL,
-    revealed_cells VARCHAR(128) NOT NULL DEFAULT '',
-    multiplier DECIMAL(18,4) NOT NULL DEFAULT 1.0000,
-    payout DECIMAL(18,2) NOT NULL DEFAULT 0,
-    status VARCHAR(16) NOT NULL DEFAULT 'PLAYING',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-COMMENT ON TABLE mines_game IS '矿工游戏记录';
-COMMENT ON COLUMN mines_game.id IS '主键';
-COMMENT ON COLUMN mines_game.user_id IS '用户ID';
-COMMENT ON COLUMN mines_game.bet_amount IS '下注金额';
-COMMENT ON COLUMN mines_game.fee IS '手续费(下注额×1%)';
-COMMENT ON COLUMN mines_game.mine_positions IS '雷位置(逗号分隔,0-24)';
-COMMENT ON COLUMN mines_game.revealed_cells IS '已翻开的安全格(逗号分隔)';
-COMMENT ON COLUMN mines_game.multiplier IS '最终倍率';
-COMMENT ON COLUMN mines_game.payout IS '实际支付金额';
-COMMENT ON COLUMN mines_game.status IS 'PLAYING/CASHED_OUT/EXPLODED';
-COMMENT ON COLUMN mines_game.created_at IS '创建时间';
-COMMENT ON COLUMN mines_game.updated_at IS '更新时间';
-
-CREATE INDEX IF NOT EXISTS idx_mines_game_user_status ON mines_game(user_id, status);
 
 -- ============================================
 -- 9. 永续合约仓位表
@@ -348,44 +233,11 @@ COMMENT ON COLUMN futures_order.commission IS '手续费';
 COMMENT ON COLUMN futures_order.realized_pnl IS '已实现盈亏';
 COMMENT ON COLUMN futures_order.stop_losses IS '止损列表(JSONB)';
 COMMENT ON COLUMN futures_order.take_profits IS '止盈列表(JSONB)';
-COMMENT ON COLUMN futures_order.status IS '状态：PENDING/TRIGGERED/FILLED/CANCELLED/LIQUIDATED';
+COMMENT ON COLUMN futures_order.status IS '状态：PENDING/TRIGGERED/FILLED/CANCELLED/LIQUIDATED/STOP_LOSS/TAKE_PROFIT；早期还有少量 EXPIRED';
 
 CREATE INDEX IF NOT EXISTS idx_fo_user ON futures_order(user_id);
 CREATE INDEX IF NOT EXISTS idx_fo_position ON futures_order(position_id);
 CREATE INDEX IF NOT EXISTS idx_fo_symbol_status ON futures_order(symbol, status);
-
--- ============================================
--- 11. 视频扑克游戏记录表
--- ============================================
-CREATE TABLE IF NOT EXISTS video_poker_game (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    bet_amount DECIMAL(18,2) NOT NULL,
-    initial_cards VARCHAR(64) NOT NULL,
-    deck TEXT,
-    held_positions VARCHAR(16) NOT NULL DEFAULT '',
-    final_cards VARCHAR(64) NOT NULL DEFAULT '',
-    hand_rank VARCHAR(32) NOT NULL DEFAULT '',
-    multiplier DECIMAL(18,4) NOT NULL DEFAULT 0,
-    payout DECIMAL(18,2) NOT NULL DEFAULT 0,
-    status VARCHAR(16) NOT NULL DEFAULT 'DEALING',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-COMMENT ON TABLE video_poker_game IS '视频扑克游戏记录';
-COMMENT ON COLUMN video_poker_game.user_id IS '用户ID';
-COMMENT ON COLUMN video_poker_game.bet_amount IS '下注金额';
-COMMENT ON COLUMN video_poker_game.initial_cards IS '初始5张牌(逗号分隔)';
-COMMENT ON COLUMN video_poker_game.deck IS '本局洗好的整副52张(逗号分隔)，前5张即initial_cards，draw从第6张起补牌';
-COMMENT ON COLUMN video_poker_game.held_positions IS 'HOLD的位置(逗号分隔,0-4)';
-COMMENT ON COLUMN video_poker_game.final_cards IS '最终5张牌(逗号分隔)';
-COMMENT ON COLUMN video_poker_game.hand_rank IS '牌型名称';
-COMMENT ON COLUMN video_poker_game.multiplier IS '赔率倍数';
-COMMENT ON COLUMN video_poker_game.payout IS '赔付金额';
-COMMENT ON COLUMN video_poker_game.status IS 'DEALING/SETTLED';
-
-CREATE INDEX IF NOT EXISTS idx_vp_game_user_status ON video_poker_game(user_id, status);
 
 -- ============================================
 -- 12. BTC 5min 涨跌预测回合表
@@ -450,12 +302,11 @@ CREATE TABLE IF NOT EXISTS user_asset_snapshot (
     total_assets DECIMAL(18,2) NOT NULL,
     profit DECIMAL(18,2) NOT NULL,
     profit_pct DECIMAL(10,4) NOT NULL,
-    -- 五分类盈亏：bStock / crypto(现货+合约) / 大宗商品(金油) / 预测 / 游戏
+    -- 四分类盈亏：bStock / crypto(现货+合约) / 大宗商品(金油) / 预测
     bstock_profit DECIMAL(18,2) NOT NULL DEFAULT 0,
     crypto_profit DECIMAL(18,2) NOT NULL DEFAULT 0,
     commodity_profit DECIMAL(18,2) NOT NULL DEFAULT 0,
     prediction_profit DECIMAL(18,2) NOT NULL DEFAULT 0,
-    game_profit DECIMAL(18,2) NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_snapshot_user_date UNIQUE (user_id, snapshot_date)
 );
@@ -827,7 +678,6 @@ CREATE TABLE IF NOT EXISTS ai_trader (
     interval_code   VARCHAR(8) NOT NULL DEFAULT '1h',
     custom_prompt   TEXT,
     memory          TEXT,
-    learning_notes  TEXT,
     owner_note      TEXT,
     owner_note_rounds INT NOT NULL DEFAULT 0,
     sim_user_id     BIGINT,
@@ -840,7 +690,7 @@ CREATE TABLE IF NOT EXISTS ai_trader (
     allow_multi_position BOOLEAN NOT NULL DEFAULT TRUE,
     allow_hedge     BOOLEAN NOT NULL DEFAULT FALSE,
     review_enabled  BOOLEAN NOT NULL DEFAULT TRUE,
-    learning_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    learned_restriction_hold BOOLEAN NOT NULL DEFAULT FALSE,
     alert_enabled   BOOLEAN NOT NULL DEFAULT TRUE,
     alert_threshold_mult NUMERIC(4,2) NOT NULL DEFAULT 1.0,
     wake_window     VARCHAR(11),
@@ -854,12 +704,11 @@ COMMENT ON COLUMN ai_trader.symbols IS '交易币种白名单子集，逗号分�
 COMMENT ON COLUMN ai_trader.interval_code IS '唤醒K线级别 5m/15m/1h/4h（5m烧token快，适合短期测试）';
 COMMENT ON COLUMN ai_trader.custom_prompt IS '主人的交易指令：方法/风格/纪律的唯一来源（平台模板只讲事实），≤4000字符，原样注入系统提示词不翻译，复盘拿它当评判尺子；新建时前端预填平台默认指令（prompts trader.label.defaultInstructions），空=模型自定';
 COMMENT ON COLUMN ai_trader.review_enabled IS '每日复盘开关：reviewer日线边界复盘写REVIEW决策行并整理memory；关掉只停复盘，已有笔记照常注入';
-COMMENT ON COLUMN ai_trader.learning_enabled IS '同侪学习开关：learning agent在全体复盘完成后向同侪学习写LEARN行并整理learning_notes；关掉只停学习，已有笔记照常注入';
+COMMENT ON COLUMN ai_trader.learned_restriction_hold IS '主人开关：经验账本里限制型规律能否作为观望理由；FALSE=注入时标明只供参考';
 COMMENT ON COLUMN ai_trader.alert_enabled IS '波动哨兵警报开关（仅1h/4h档生效）：5分钟振幅超过 币基准阈值×灵敏度系数 且持有该币仓位/挂单时临时唤醒';
 COMMENT ON COLUMN ai_trader.alert_threshold_mult IS '警报灵敏度系数≥1.0只能调高：生效阈值=每币基准(BTC0.6/ETH0.8/XRP0.8/SOL0.9/DOGE1.0%)×本系数，180天历史校准见VolatilitySentinel';
-COMMENT ON COLUMN ai_trader.wake_window IS '唤醒时段（北京时间，HH:mm-HH:mm，5分钟粒度，两端含，可跨午夜），NULL=全天。只管例行唤醒与波动警报；手动唤醒不受限；每日复盘/学习仍在08:00照常。时段外静默不唤醒不写SKIPPED行';
-COMMENT ON COLUMN ai_trader.memory IS '复盘笔记：reviewer每日复盘整理写入（限长文本，≤2000字覆盖写），每次唤醒注入提示词——trader侧只读只注入，本列即记忆学习的接口';
-COMMENT ON COLUMN ai_trader.learning_notes IS '学习笔记：learning agent向同侪学习后整理写入（≤2000字覆盖写），每次唤醒与复盘笔记并列注入；与memory分开存——来源分开模型才分得清"自己的教训"与"从别人学的"';
+COMMENT ON COLUMN ai_trader.wake_window IS '唤醒时段（北京时间，HH:mm-HH:mm，5分钟粒度，两端含，可跨午夜），NULL=全天。只管例行唤醒与波动警报；手动唤醒不受限；每日复盘仍在08:00照常。时段外静默不唤醒不写SKIPPED行';
+COMMENT ON COLUMN ai_trader.memory IS '经验账本的渲染文本：reviewer每日复盘后由代码从ai_trader_experience渲染覆盖写，每次唤醒注入提示词——trader侧只读只注入；账本本体在ai_trader_experience';
 COMMENT ON COLUMN ai_trader.owner_note IS '主人留言：trader动作面板写入，随提示词注入，每注入一次owner_note_rounds减1，减到0连同本列一起清空（注入与递减在TraderPromptAssembler同一处）。与memory的分工：memory是复盘沉淀的长期笔记，本列是主人阶段性交代的一句话';
 COMMENT ON COLUMN ai_trader.owner_note_rounds IS '留言剩余注入轮次，0=无待读留言。1即"念一次就清"，上限24（15m档≈6小时）。递减走条件SQL(正文匹配作前置+原子递减)：唤醒读的是调度时刻的快照，以正文匹配保证只递减自己注入的那条';
 COMMENT ON COLUMN ai_trader.sim_user_id IS '当前局sim子账户userId，每局独立，重置开新账户';
@@ -900,7 +749,7 @@ CREATE TABLE IF NOT EXISTS ai_trader_decision (
 CREATE INDEX IF NOT EXISTS idx_atd_trader_time ON ai_trader_decision(trader_id, wake_time DESC);
 COMMENT ON TABLE ai_trader_decision IS 'AI Trader每次唤醒一行：推理全文+动作(含play_type论点标签)+权益快照——竞技场决策时间线与净值曲线数据源';
 COMMENT ON COLUMN ai_trader_decision.status IS 'OK/ERROR/SKIPPED（上一唤醒未完被跳过）';
-COMMENT ON COLUMN ai_trader_decision.kind IS 'TRADE=例行K线唤醒 ALERT=波动哨兵警报唤醒（wake_time=触发时刻非边界） MANUAL=主人手动唤醒（对话轨wake_trader，回路同例行） REVIEW=reviewer复盘（reasoning=复盘全文，无equity） LEARN=learning agent向同侪学习（reasoning=学习全文，无equity）';
+COMMENT ON COLUMN ai_trader_decision.kind IS 'TRADE=例行K线唤醒 ALERT=波动哨兵警报唤醒（wake_time=触发时刻非边界） MANUAL=主人手动唤醒（对话轨wake_trader，回路同例行） REVIEW=reviewer复盘（reasoning=复盘全文，无equity）';
 COMMENT ON COLUMN ai_trader_decision.memory_after IS '仅REVIEW行：本期学习完的记忆快照存档（学习演进史,append-only）；ai_trader.memory是滚动覆盖的生效版本,历史版本只在这里';
 COMMENT ON COLUMN ai_trader_decision.equity IS '本轮动作落地后的账户权益USDT';
 COMMENT ON COLUMN ai_trader_decision.model_calls IS '本轮模型调用次数：ReAct是循环，一次唤醒会调很多次（上限见ModelCallLimiter）';
@@ -928,6 +777,7 @@ CREATE TABLE IF NOT EXISTS ai_trader_plan (
     closed_wake_time BIGINT,
     stale           BOOLEAN NOT NULL DEFAULT FALSE,
     position_id     BIGINT,
+    entry_ctx_json  TEXT,
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -941,8 +791,68 @@ COMMENT ON COLUMN ai_trader_plan.opened_wake_time IS '开仓所在唤醒边界(m
 COMMENT ON COLUMN ai_trader_plan.revisions_json IS '修订历史追加式JSON [{time,type,change,reason}]：加仓覆盖/移动止盈/移动止损/补立——修改必须留痕带理由，计划本体价格字段永远是原始快照';
 COMMENT ON COLUMN ai_trader_plan.status IS 'LIVE=仓位/挂单存活 CLOSED=已了结归档。归档不删：论点→结局的配对数据是reviewer每日复盘的原料（结局按position_id join sim已平仓位，历史无id行按symbol/side/时间就近兜底）';
 COMMENT ON COLUMN ai_trader_plan.closed_wake_time IS '归档时刻(ms)：唤醒开头对账发现仓位已了结的边界/重置时刻，与opened_wake_time围出计划生命期';
-COMMENT ON COLUMN ai_trader_plan.stale IS '主人标记忽略:true=本笔不进论点战绩统计与复盘教材(配对表/了结统计行);权益/排行榜/同侪学习照常。仅CLOSED可标,可随时取消';
+COMMENT ON COLUMN ai_trader_plan.stale IS '主人标记忽略:true=本笔不进论点战绩统计与复盘教材(配对表/了结统计行);权益/排行榜照常。仅CLOSED可标,可随时取消';
 COMMENT ON COLUMN ai_trader_plan.position_id IS 'sim仓位id:市价开仓/加仓从下单响应落盘,限价单成交后唤醒开头对账补绑;一行计划对应一个仓位生命期,同论点下一笔另起一行;计划↔仓位配对的精确键,NULL(历史行/未成交挂单)走bestMatch时间就近兜底';
+COMMENT ON COLUMN ai_trader_plan.entry_ctx_json IS '开仓那一刻的上下文快照JSON：orderType/leverage/hourBj/stopPct/regime/atr1h/stopAtr/eventMin/eventTitle/funding（EntryContext）；复盘按维度对照用，取不到的字段缺席';
+
+-- ============================================
+-- 31.1 AI Trader 经验账本（复盘沉淀的经验，一条一行，代码记账）
+-- ============================================
+CREATE TABLE IF NOT EXISTS ai_trader_experience (
+    id              BIGSERIAL PRIMARY KEY,
+    trader_id       BIGINT NOT NULL,
+    round_no        INT NOT NULL,
+    play_type       VARCHAR(20),
+    kind            VARCHAR(12) NOT NULL,
+    slot            VARCHAR(16) NOT NULL,
+    direction       VARCHAR(12) NOT NULL,
+    text            VARCHAR(255) NOT NULL,
+    evidence        VARCHAR(255),
+    supports        INT NOT NULL DEFAULT 0,
+    opposes         INT NOT NULL DEFAULT 0,
+    untested        INT NOT NULL DEFAULT 0,
+    cited_open      INT NOT NULL DEFAULT 0,
+    cited_hold      INT NOT NULL DEFAULT 0,
+    status          VARCHAR(12) NOT NULL DEFAULT 'ACTIVE',
+    flagged         BOOLEAN NOT NULL DEFAULT FALSE,
+    verdicts_since_audit INT NOT NULL DEFAULT 0,
+    pinned          BOOLEAN NOT NULL DEFAULT FALSE,
+    source_id       BIGINT,
+    created_review_id BIGINT,
+    retired_review_id BIGINT,
+    retire_reason   VARCHAR(255),
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ate_trader_round_status ON ai_trader_experience (trader_id, round_no, status);
+COMMENT ON TABLE ai_trader_experience IS 'AI Trader经验账本：复盘写入的执行缺口/假设/规律/发现，一条一行；代码记支持反对次数、升级、举旗，退役不删；渲染文本写回ai_trader.memory注入trader';
+COMMENT ON COLUMN ai_trader_experience.play_type IS '所属单子类型（TradeGuard.PLAY_TYPES），NULL=通用';
+COMMENT ON COLUMN ai_trader_experience.kind IS 'GAP=执行缺口（主人指令要求了却反复没做到） HYPOTHESIS=假设 RULE=规律（假设被支持够多次升级） FINDING=发现（指令本身在花钱，只给主人看不注入）';
+COMMENT ON COLUMN ai_trader_experience.slot IS '格子：ENTRY入场条件/FAIL_DEF失败判定/FAIL_HANDLE失败处理/PROFIT_HANDLE盈利处理/RISK风险限制/EXEC执行缺口';
+COMMENT ON COLUMN ai_trader_experience.direction IS 'OPPORTUNITY机会型(某条件下该做)/RESTRICTION限制型(某条件下不做)/EXECUTION执行型(怎么做)；限制型全账户≤2条，能否作观望理由看ai_trader.learned_restriction_hold';
+COMMENT ON COLUMN ai_trader_experience.status IS 'ACTIVE现役（注入trader） RETIRED退役（不注入，复盘可见退役名单，主人可复活）';
+COMMENT ON COLUMN ai_trader_experience.flagged IS '待复审：近5次反对≥3 / 反对≥支持且核对≥4 / 近6次全未测试，由代码举旗，模型复审后四选一保留/修订/拆分/退役';
+COMMENT ON COLUMN ai_trader_experience.verdicts_since_audit IS '上次复审之后积累的结论数，复审保留后不满3次不重举旗';
+COMMENT ON COLUMN ai_trader_experience.pinned IS '主人钉住：不举旗不退役';
+COMMENT ON COLUMN ai_trader_experience.source_id IS '修订/拆分来源条目id，账不断';
+COMMENT ON COLUMN ai_trader_experience.cited_open IS 'trader结论里作为开仓依据引用本条的次数（结论块里的#编号，开仓轮计这里）';
+COMMENT ON COLUMN ai_trader_experience.cited_hold IS 'trader结论里在观望轮引用本条的次数';
+
+-- ============================================
+-- 31.2 经验结论流水（每次复盘对每条经验的支持/反对/未测试）
+-- ============================================
+CREATE TABLE IF NOT EXISTS ai_trader_experience_verdict (
+    id              BIGSERIAL PRIMARY KEY,
+    experience_id   BIGINT NOT NULL,
+    review_id       BIGINT NOT NULL,
+    verdict         VARCHAR(12) NOT NULL,
+    position_ids    VARCHAR(255),
+    note            VARCHAR(255),
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_atev_exp ON ai_trader_experience_verdict (experience_id, id);
+COMMENT ON TABLE ai_trader_experience_verdict IS '经验结论流水：哪篇复盘(review_id=ai_trader_decision的REVIEW行)对哪条经验给了什么结论，附涉及仓位与一句证据；复审的对照表和历史最长连败从这里算';
+COMMENT ON COLUMN ai_trader_experience_verdict.verdict IS 'SUPPORT支持/OPPOSE反对/UNTESTED未测试（执行缺口的守/破内部同一套）';
 
 -- ============================================
 -- 32. 用户 BYOK 端点库
@@ -1081,14 +991,20 @@ COMMENT ON COLUMN user_jev_config.api_key_enc IS 'AES-256-GCM 密文，密钥来
 -- ============================================
 -- 36. Jev 预测员决策记录（平台级展示，一局一个账户）
 -- ============================================
--- 平台用自己的 Jev key 在 BTC 5 分钟盘上当玩家：开盘后每 15 秒（起手 30…270 秒）问一次，每次一行。
--- R4 起每次问买 UP / 买 DOWN / 不买，空仓持仓同一题，Jev 拍板：空仓照买，持仓选同一边加注、选另一边卖掉、不买就拿着；
--- 同时记上涨概率（纯数学 p_model、市场隐含 p_mkt，R1–R3 还有 Jev 的 p_jev）、当时盘口与最近 15 秒赔率突变，结算后回填结果与盈亏。
+-- 平台用自己的 Jev key 在 BTC 5 分钟盘上当玩家，每次唤醒按涉及的局各写一行。
+-- v5 起三组对照各占一局一个账户：v5-1 突变时不买、盯 15 秒，那一边又走 10¢ 就买它、吐回整个跳幅就买另一边，盯的结果另写一行 W，每回合最多买一次；
+-- v5-2 突变那一秒 Jev 判这次突变值不值得下单，值得才照 v5-1 那样盯、盯到了才买，每回合 UP、DOWN 各最多一注；这两组都不卖；
+-- v5-3 整点（开盘后 60、90…270 秒）唤醒，空仓时领先方卖价够高、Jev 判最新一步逆着它就买，持仓时 Jev 判手里这边会赢太低就卖，同一时刻最多持有一笔。
+-- 突变 = 30~270 秒里任一边 3 秒内涨 15¢ 以上；Jev 答突变两道、整点六道，一次唤醒只问一次；
+-- 另记唤醒后 5、10、15、45 秒的 UP 中间价，突变行还记那一刻 Binance、Chainlink 最近 10 秒的涨跌。
+-- R4 每 15 秒问一次买 UP / 买 DOWN / 不买，空仓持仓同一题，Jev 拍板（v4 那一局持仓选另一边卖掉、选同一边加注）；
+-- 都记上涨概率（纯数学 p_model、市场隐含 p_mkt，R4 以外还有 Jev 的 p_jev）、当时盘口，结算后回填结果与盈亏。
 CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     id            BIGSERIAL     PRIMARY KEY,
     run_no        INT           NOT NULL DEFAULT 1,
     window_start  BIGINT        NOT NULL,
     checkpoint    VARCHAR(8)    NOT NULL,
+    side          VARCHAR(4),
     decided_at    BIGINT        NOT NULL,
     state_json    TEXT          NOT NULL,
     answers_json  TEXT,
@@ -1105,6 +1021,14 @@ CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     down_bid      NUMERIC(6,4),
     odds_jump_up   NUMERIC(6,4),
     odds_jump_down NUMERIC(6,4),
+    up_mid_5s     NUMERIC(6,4),
+    up_mid_10s    NUMERIC(6,4),
+    up_mid_15s    NUMERIC(6,4),
+    up_mid_45s    NUMERIC(6,4),
+    binance_10s   NUMERIC(10,2),
+    binance_30s   NUMERIC(10,2),
+    chainlink_10s NUMERIC(10,2),
+    chainlink_gap NUMERIC(10,2),
     edge          NUMERIC(8,4),
     action        VARCHAR(16)   NOT NULL,
     reason        VARCHAR(120),
@@ -1119,45 +1043,59 @@ CREATE TABLE IF NOT EXISTS jev_prediction_decision (
     latency_ms    INT,
     error         VARCHAR(500),
     created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (window_start, checkpoint)
+    CONSTRAINT jev_prediction_decision_run_window_checkpoint_key UNIQUE (run_no, window_start, checkpoint)
 );
 CREATE INDEX IF NOT EXISTS idx_jev_pred_decision_window ON jev_prediction_decision (window_start DESC);
 CREATE INDEX IF NOT EXISTS idx_jev_pred_decision_run ON jev_prediction_decision (run_no, decided_at DESC);
-COMMENT ON TABLE  jev_prediction_decision IS 'Jev 预测员每回合每检查点一行：发出的 state、Jev 的回答、概率、盘口、动作、注单，结算后回填结果/盈亏';
-COMMENT ON COLUMN jev_prediction_decision.run_no IS '第几局，见 jev_prediction_run';
-COMMENT ON COLUMN jev_prediction_decision.checkpoint IS '检查点：开盘后第几秒，如 T150';
+COMMENT ON TABLE  jev_prediction_decision IS 'Jev 预测员每局每回合每次唤醒一行：发出的 state、Jev 的回答、概率、盘口、动作、注单，结算后回填结果/盈亏';
+COMMENT ON COLUMN jev_prediction_decision.run_no IS '第几局，见 jev_prediction_run；v5 起三组各一个局号，同一次唤醒各写一行';
+COMMENT ON COLUMN jev_prediction_decision.checkpoint IS '检查点：开盘后第几秒，首字母是唤醒方式：T 整点如 T150，J 赔率突变如 J57（v5 起有），W v5-1、v5-2 盯的结果如 W60（触发或盯满那一秒）';
+COMMENT ON COLUMN jev_prediction_decision.side IS '这一行看的是哪一边 UP/DOWN：突变唤醒和盯的结果看突变那一边，整点空仓看数学上领先的那边、持仓看手里那一边；v5 起有，盘口或 Chainlink 太旧没往下走的行为空';
 COMMENT ON COLUMN jev_prediction_decision.decided_at IS '决策时刻(ms)';
-COMMENT ON COLUMN jev_prediction_decision.state_json IS '发给 Jev 的 state 原文';
-COMMENT ON COLUMN jev_prediction_decision.answers_json IS 'Jev 的回答原样：R4 起只有入场题 entry；R3 是谁赢两问加空仓入场题或持仓离场题，R2 只有谁赢两问，R1 是后劲题和决定题';
+COMMENT ON COLUMN jev_prediction_decision.state_json IS '发给 Jev 的 state 原文；盯的结果行不写 state，是 {}';
+COMMENT ON COLUMN jev_prediction_decision.answers_json IS 'Jev 的回答原样：v5 整点是盘面六道题 win/pattern/push_fading/flow_confirms/dip_recovered/latest_against，突变是 win/buy（早先的突变行是 win/extend/reject，再早是六道），盯的结果行为空；R4 只有入场题 entry；R3 是谁赢两问加空仓入场题或持仓离场题，R2 只有谁赢两问，R1 是后劲题和决定题';
 COMMENT ON COLUMN jev_prediction_decision.p_model IS '纯数学的上涨概率：领先/剩余时间/波动出的 Φ(z)，末分钟含已锁定的均价；只 R3 写进 state 给 Jev 比，R4 起只记分，R2 持仓按它定卖不卖';
-COMMENT ON COLUMN jev_prediction_decision.p_jev IS 'Jev 的上涨概率：UP 会赢的概率和 1 − DOWN 会赢的概率取平均，R2、R3 有；R1 旧版是数学概率按后劲修正后的值；R4 起不问为空';
+COMMENT ON COLUMN jev_prediction_decision.p_jev IS 'Jev 的上涨概率：v5 看 UP 时是 win 题的概率，看 DOWN 时是 1 − win；R2、R3 是 UP 会赢的概率和 1 − DOWN 会赢的概率取平均；R1 旧版是数学概率按后劲修正后的值；R4 不问为空';
 COMMENT ON COLUMN jev_prediction_decision.p_mkt IS '市场隐含上涨概率 up_mid/(up_mid+down_mid)，Brier 对照';
 COMMENT ON COLUMN jev_prediction_decision.lead_sigma IS '纯数学的 z，正=偏 UP';
-COMMENT ON COLUMN jev_prediction_decision.jev_choice IS 'Jev 拍板的选项 BUY_UP/BUY_DOWN/PASS，R4 起空仓持仓都是这三个；R3 持仓是 HOLD/SELL，R1 旧版是决定题 BUY_UP/BUY_DOWN/WAIT，R2 不问为空';
-COMMENT ON COLUMN jev_prediction_decision.jev_choice_p IS '它的概率，到 act-threshold 才照做';
+COMMENT ON COLUMN jev_prediction_decision.jev_choice IS 'Jev 拍板的选项 BUY_UP/BUY_DOWN/PASS，R4 空仓持仓都是这三个；R3 持仓是 HOLD/SELL，R1 旧版是决定题 BUY_UP/BUY_DOWN/WAIT；R2、v5 Jev 不拍板为空';
+COMMENT ON COLUMN jev_prediction_decision.jev_choice_p IS '它的概率，R3、R4 空仓时到 act-threshold 才照做';
 COMMENT ON COLUMN jev_prediction_decision.book_age_ms IS '盘口距上次更新的毫秒数，超龄不问不动；空=没记录';
-COMMENT ON COLUMN jev_prediction_decision.odds_jump_up IS '最近 15 秒里 UP 中间价 3 秒内的最大涨幅，没涨是 0，不管到没到写进 state 的阈值都记；R4 起有，采样不够为空';
-COMMENT ON COLUMN jev_prediction_decision.odds_jump_down IS '同上的最大跌幅，负数，没跌是 0';
-COMMENT ON COLUMN jev_prediction_decision.edge IS '按数学估计的每份优势，只给页面作参考：买入（含加注）是那边 p_model − 卖价 − 手续费，持仓是卖出扣费后比 p_model 多拿多少。R2 是按 Jev 胜率算、优势大那边的，R1 按 p_model';
-COMMENT ON COLUMN jev_prediction_decision.action IS '实际动作 BUY_UP/BUY_DOWN/STAY_OUT/HOLD/SELL/ERROR；持仓时加注也记 BUY_*';
-COMMENT ON COLUMN jev_prediction_decision.reason IS '为什么这么做，"代码 + 细节"：BUY/ADD/PASS/UNSURE/NO_QUOTE/NO_BALANCE/MAX_STAKE/MISSED/HOLD/SELL/NO_BID/STALE_BOOK/STALE_CHAINLINK/STALE_WHILE_ASKING，R2 还有 WAIT/ASK_LOW，R1 还有 NOT_CHEAP/EXPENSIVE/ASK_RANGE；页面按首个词出提示；异常看 error';
-COMMENT ON COLUMN jev_prediction_decision.bet_id IS '本行开的注单（BUY_*，含加注）；持仓行（SELL/HOLD）记本回合在持的第一笔';
-COMMENT ON COLUMN jev_prediction_decision.stake IS '本金 cost（不含手续费）；持仓行是在持的合计';
+COMMENT ON COLUMN jev_prediction_decision.odds_jump_up IS 'v5：突变行记这次突变 UP 中间价涨了多少，UP 跌的记 0，整点行为空。R4：最近 15 秒里 UP 中间价 3 秒内的最大涨幅，没涨是 0，不管到没到写进 state 的阈值都记，采样不够为空';
+COMMENT ON COLUMN jev_prediction_decision.odds_jump_down IS 'v5：突变行记这次突变 UP 中间价跌了多少，负数，UP 涨的记 0，整点行为空。R4：同上的最大跌幅，负数，没跌是 0';
+COMMENT ON COLUMN jev_prediction_decision.up_mid_5s IS '唤醒后 5 秒的 UP 中间价，回填同 15 秒；加这一列之前的行为空';
+COMMENT ON COLUMN jev_prediction_decision.up_mid_10s IS '唤醒后 10 秒的 UP 中间价，同上';
+COMMENT ON COLUMN jev_prediction_decision.up_mid_15s IS '唤醒后 15 秒的 UP 中间价，回填任务补；越过回合末尾或没有采样为空；v5 起有';
+COMMENT ON COLUMN jev_prediction_decision.up_mid_45s IS '唤醒后 45 秒的 UP 中间价，同上';
+COMMENT ON COLUMN jev_prediction_decision.binance_10s IS '突变唤醒那一刻 Binance 最近 10 秒 BTC 涨跌（USD），只突变 J 行有；逐笔流停了为空';
+COMMENT ON COLUMN jev_prediction_decision.binance_30s IS '最近 30 秒，同上';
+COMMENT ON COLUMN jev_prediction_decision.chainlink_10s IS '突变唤醒那一刻 Chainlink 最近 10 秒 BTC 涨跌（USD），只突变 J 行有；加这一列之前的行为空';
+COMMENT ON COLUMN jev_prediction_decision.chainlink_gap IS 'Chainlink 最后一跳 − Binance 最新价（USD），只突变 J 行有；取不到 Binance 价为空。Chainlink 报 USD、Binance 报 USDT，一直是负几十，只记录，不再写进 state';
+COMMENT ON COLUMN jev_prediction_decision.edge IS '按数学估计的每份优势，只给页面作参考：R3、R4 买入行是那边 p_model − 卖价 − 手续费、持仓行不记，R3 和 v4 的持仓行是卖出扣费后比 p_model 多拿多少。R2 是按 Jev 胜率算、优势大那边的，R1 按 p_model；v5 不记';
+COMMENT ON COLUMN jev_prediction_decision.action IS '实际动作 BUY_UP/BUY_DOWN/STAY_OUT/HOLD/SELL/ERROR；SELL 只 R3、v4 和 v5-3 有，v4 那一局持仓时加注也记 BUY_*';
+COMMENT ON COLUMN jev_prediction_decision.reason IS '为什么这么做，"代码 + 细节"：v5 是 WATCH/NO_GO/EXTEND/REJECT/NO_TRIGGER/BUY/PRICE_BAND/NO_PULLBACK/HOLD/SELL/NO_BID/MISSED/NO_QUOTE/NO_BALANCE/STALE_BOOK/STALE_CHAINLINK/STALE_WHILE_ASKING，早先的行还有 NO_CALL/FADING；R3、R4 还有 PASS/UNSURE，v4 那一局还有 ADD/MAX_STAKE，R2 还有 WAIT/ASK_LOW，R1 还有 NOT_CHEAP/EXPENSIVE/ASK_RANGE；页面按首个词出提示；异常看 error';
+COMMENT ON COLUMN jev_prediction_decision.bet_id IS '本行开的注单（BUY_*，v4 那一局含加注）；持仓行（HOLD/SELL）v5 记这一局这一回合在持的那一注，之前各版记本回合在持的第一笔';
+COMMENT ON COLUMN jev_prediction_decision.stake IS '本金 cost（不含手续费）；v5 持仓行同 bet_id 那一注，之前各版持仓行是在持的合计';
 COMMENT ON COLUMN jev_prediction_decision.outcome IS '回合结果 UP/DOWN/VOID，结算后回填';
 COMMENT ON COLUMN jev_prediction_decision.pnl IS '本行开的注单最终盈亏 = payout − cost − 买入手续费；只在 BUY_* 行上有';
 
 -- ============================================
 -- 37. Jev 预测员的局
 -- ============================================
--- 一局一个 sim 账户：R1 是 jev-prediction，之后 jev-prediction-r{n}，新号注资 100。/admin 重新开局加一行，旧局的账户与决策留档。
+-- 一局一个 sim 账户：R1 是 jev-prediction，之后 jev-prediction-r{n}，新号注资 initial_balance，旧局的账户与决策留档。
+-- v5 起 /admin 重新开局一次建三局（局号连着），三组对照各一局；每组局号最大的那一局在跑，没有带组的局时预测员不跑。
 CREATE TABLE IF NOT EXISTS jev_prediction_run (
-    run_no      INT           PRIMARY KEY,
-    label       VARCHAR(60),
-    started_at  BIGINT        NOT NULL
+    run_no           INT           PRIMARY KEY,
+    label            VARCHAR(60),
+    started_at       BIGINT        NOT NULL,
+    arm              VARCHAR(16),
+    initial_balance  NUMERIC(12,2) NOT NULL DEFAULT 100
 );
-COMMENT ON TABLE  jev_prediction_run IS 'Jev 预测员的局，最大 run_no 是当前局';
-COMMENT ON COLUMN jev_prediction_run.label IS '版本说明，开局时填';
+COMMENT ON TABLE  jev_prediction_run IS 'Jev 预测员的局；v5 起每组 arm 局号最大的那一局在跑';
+COMMENT ON COLUMN jev_prediction_run.label IS '版本说明，开局时填，同一次开局的三局一样';
 COMMENT ON COLUMN jev_prediction_run.started_at IS '开局时刻(ms)';
+COMMENT ON COLUMN jev_prediction_run.arm IS '哪一组：JUMP_CODE（v5-1 突变后盯赔率）/JUMP_JEV（v5-2 突变那一秒 Jev 判值不值得下单，值得才盯）/TIMER_JEV（v5-3 整点 Jev 买卖）；v5 之前的旧局为空';
+COMMENT ON COLUMN jev_prediction_run.initial_balance IS '这一局账户的初始资金，旧局是 100';
 INSERT INTO jev_prediction_run (run_no, label, started_at)
 SELECT 1, NULL, COALESCE(MIN(decided_at), (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT) FROM jev_prediction_decision
 ON CONFLICT DO NOTHING;

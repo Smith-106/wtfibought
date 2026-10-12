@@ -12,7 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 
 /**
- * 账户清除的事务段：重置路径 12 张用户表清空 + user 复位；
+ * 账户清除的事务段：重置路径 7 张用户表清空 + user 复位；
  * 销户路径清表后直接删行。全成功或全回滚。
  * <p>
  * 单独成 bean，这么写为了 @Transactional 走 Spring 代理（同类自调用会绕过代理，事务不生效）。
@@ -27,12 +27,7 @@ public class AccountPurgeTx {
     private final CryptoPositionMapper cryptoPositionMapper;
     private final CryptoOrderMapper cryptoOrderMapper;
     private final PredictionBetMapper predictionBetMapper;
-    private final BlackjackAccountMapper blackjackAccountMapper;
-    private final BlackjackConvertLogMapper blackjackConvertLogMapper;
-    private final MinesGameMapper minesGameMapper;
-    private final VideoPokerGameMapper videoPokerGameMapper;
     private final UserAssetSnapshotMapper userAssetSnapshotMapper;
-    private final UserBuffMapper userBuffMapper;
     private final UserLedgerMapper userLedgerMapper;
     private final UserService userService;
 
@@ -68,7 +63,7 @@ public class AccountPurgeTx {
      * 清表前先锁 user 行（那个 7 天键只是限频，不是互斥）：动钱的 UPDATE...RETURNING 都打这一行，
      * 并发中的下单/成交/派彩会排到本事务提交后再动，动的已是复位后的余额。
      * <p>
-     * 两处边界要知道：不涉资金的挂单插入（全仓限价开/平仓单只读快照再 insert）不打 user 行，
+     * 两处边界要知道：不涉资金的挂单插入（限价平仓单只 insert）不打 user 行，
      * 不受这把锁保护；交易侧的加锁顺序是"先订单行后 user 行"、这里反过来，同一用户重置与交易
      * 真撞上时靠 PG 死锁检测打回其中一个（重置或那笔交易失败，都可重试）。
      */
@@ -83,18 +78,12 @@ public class AccountPurgeTx {
         cryptoPositionMapper.delete(eq(CryptoPosition.class, CryptoPosition::getUserId, userId));
         cryptoOrderMapper.delete(eq(CryptoOrder.class, CryptoOrder::getUserId, userId));
         predictionBetMapper.delete(eq(PredictionBet.class, PredictionBet::getUserId, userId));
-        // 游戏
-        blackjackAccountMapper.delete(eq(BlackjackAccount.class, BlackjackAccount::getUserId, userId));
-        blackjackConvertLogMapper.delete(eq(BlackjackConvertLog.class, BlackjackConvertLog::getUserId, userId));
-        minesGameMapper.delete(eq(MinesGame.class, MinesGame::getUserId, userId));
-        videoPokerGameMapper.delete(eq(VideoPokerGame.class, VideoPokerGame::getUserId, userId));
         // 流水与快照
         userAssetSnapshotMapper.delete(eq(UserAssetSnapshot.class, UserAssetSnapshot::getUserId, userId));
-        userBuffMapper.delete(eq(UserBuff.class, UserBuff::getUserId, userId));
         userLedgerMapper.deleteByUserId(userId);   // 账本随账户一起重来
     }
 
-    /** 这 11 张表都是同一个 user_id 条件，抽掉重复的 wrapper 构造（账本第 12 张走自己的 deleteByUserId） */
+    /** 这 6 张表都是同一个 user_id 条件，抽掉重复的 wrapper 构造（账本第 7 张走自己的 deleteByUserId） */
     private static <T> LambdaQueryWrapper<T> eq(Class<T> type, SFunction<T, ?> column, long userId) {
         return new LambdaQueryWrapper<>(type).eq(column, userId);
     }

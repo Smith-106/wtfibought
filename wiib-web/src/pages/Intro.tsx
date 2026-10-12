@@ -42,7 +42,7 @@ export function Intro() {
         </CardContent>
       </Card>
 
-      {/* 桌面双列：左交易（重点），右游戏+福利；移动端自然单列 */}
+      {/* 桌面双列：左交易（重点），右预测；移动端自然单列 */}
       <div className="grid md:grid-cols-2 gap-5 items-start">
       {/* 交易规则 */}
       <Card>
@@ -91,17 +91,13 @@ export function Intro() {
         </CardContent>
       </Card>
 
-      {/* 游戏与福利 */}
+      {/* 预测市场 */}
       <Card>
         <CardContent className="pt-5 space-y-3 text-sm leading-relaxed">
-          <h2 className="font-bold text-base text-primary">{t('intro.gamesTitle')}</h2>
-          <ul className="list-disc list-inside text-muted-foreground space-y-1.5">
-            <TermItem i18nKey="intro.game1" />
-            <TermItem i18nKey="intro.game2" />
-            <TermItem i18nKey="intro.game3" />
-            <TermItem i18nKey="intro.game4" />
-            <TermItem i18nKey="intro.game5" />
-          </ul>
+          <h2 className="font-bold text-base text-primary">{t('intro.perksTitle')}</h2>
+          <p className="text-muted-foreground">
+            <Trans ns="home" i18nKey="intro.perk1" components={[<strong key="term" />]} />
+          </p>
         </CardContent>
       </Card>
       </div>
@@ -111,8 +107,8 @@ export function Intro() {
         {t('intro.riskNotice')}
       </div>
 
-      {/* sticky 底部按钮 */}
-      <div className="fixed left-0 right-0 bottom-20 lg:bottom-6 px-4 md:px-6 z-50">
+      {/* sticky 底部按钮；手机上叠在底部悬浮 Tab 上方，横屏时左右让开灵动岛 */}
+      <div className="fixed left-[env(safe-area-inset-left)] right-[env(safe-area-inset-right)] bottom-[calc(var(--tabbar-space)+0.75rem)] lg:bottom-6 px-4 md:px-6 z-50">
         <div className="max-w-2xl mx-auto flex gap-3">
           <Button variant="outline" className="flex-1" onClick={() => { hideNoticeToday(); goHome(); }}>{t('intro.hideToday')}</Button>
           <Button className="flex-1" onClick={() => { markNoticeSeen(); goHome(); }}>{t('intro.gotIt')}</Button>

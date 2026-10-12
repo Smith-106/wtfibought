@@ -40,12 +40,12 @@ public interface FuturesOrderMapper extends BaseMapper<FuturesOrder> {
                           @Param("marginAmount") BigDecimal marginAmount,
                           @Param("realizedPnl") BigDecimal realizedPnl);
 
-    /** 持仓已实现盈亏：开/加仓单只贡献-fee，平仓单贡献 pnl-fee；只算已成交状态，资金费不在此表另行累计。
-     *  ID 集合走 = ANY(数组)，同 CommentMapper.selectChildPreviews 的取舍 */
+    /** 仓位已实现盈亏：开/加仓单只贡献-fee，平仓单贡献 pnl-fee；只算已成交状态（强平单也是成交），资金费不在此表另行累计。
+     *  在场持仓和已平仓位都用它。ID 集合走 = ANY(数组)，同 CommentMapper.selectChildPreviews 的取舍 */
     @Select("""
             SELECT position_id, COALESCE(SUM(COALESCE(realized_pnl, 0) - COALESCE(commission, 0)), 0) AS amount
             FROM futures_order
-            WHERE status IN ('FILLED', 'STOP_LOSS', 'TAKE_PROFIT')
+            WHERE status IN ('FILLED', 'STOP_LOSS', 'TAKE_PROFIT', 'LIQUIDATED')
               AND position_id = ANY(#{positionIds, typeHandler=org.apache.ibatis.type.ArrayTypeHandler})
             GROUP BY position_id
             """)
@@ -68,7 +68,7 @@ public interface FuturesOrderMapper extends BaseMapper<FuturesOrder> {
             "WHERE user_id = #{userId} AND realized_pnl IS NOT NULL")
     BigDecimal sumRealizedPnl(@Param("userId") Long userId);
 
-    /** 分符号已实现盈亏（已扣手续费）：crypto 合约与大宗商品合约分开归集，五分类用 */
+    /** 分符号已实现盈亏（已扣手续费）：crypto 合约与大宗商品合约分开归集，四分类用 */
     @Select("SELECT symbol, COALESCE(SUM(realized_pnl - COALESCE(commission, 0)), 0) AS amount " +
             "FROM futures_order WHERE user_id = #{userId} AND realized_pnl IS NOT NULL GROUP BY symbol")
     List<Map<String, Object>> sumRealizedPnlBySymbol(@Param("userId") Long userId);

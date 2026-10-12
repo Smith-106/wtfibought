@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { buffApi, cryptoOrderApi, futuresApi, userApi } from '../api';
+import { cryptoOrderApi, futuresApi, userApi } from '../api';
 import { HomeMarketSection } from '../components/HomeMarketSection';
 import { HomeTraderBlock } from '../components/HomeTraderBlock';
 import { HomeMonthGrid } from '../components/HomeMonthGrid';
-import { DailyBuffModal } from '../components/DailyBuffCard';
 import { LatestTradesCard } from '../components/LatestTradesCard';
 import type { TradeItem } from '../components/LatestTradesCard';
 import { ForceOrdersCard } from '../components/ForceOrdersCard';
@@ -18,10 +17,10 @@ import { Sparkline } from '../components/fx/Sparkline';
 import { DayDetailModal } from '../components/DayDetailModal';
 import { useCountUp } from '../hooks/useCountUp';
 import { useStagger } from '../hooks/useStagger';
-import { Gamepad2, List, DollarSign, Target, Settings2, Gift, Swords, Bot } from 'lucide-react';
-import type { BuffStatus, AssetSnapshot, User } from '../types';
+import { List, DollarSign, Target, Settings2, Swords, Bot } from 'lucide-react';
+import type { AssetSnapshot, User } from '../types';
 import { useUserStore } from '../stores/userStore';
-import { cn, fmtDate, fmtNum, fmtSignedPct, fmtSignedUsd } from '../lib/utils';
+import { cn, fmtDate, fmtNum, fmtSignedPct, fmtSignedUsd, parseServerTime } from '../lib/utils';
 
 const HIDE_NOTICE_KEY = 'wiib-notice-hide-date';
 const NOTICE_SEEN_KEY = 'wiib-notice-seen';
@@ -32,7 +31,7 @@ function shouldShowNotice() {
   return !d || d !== new Date().toDateString();
 }
 
-/** 入口一排的前七格；最后一格是福利，点开弹窗不跳路由，单独渲染 */
+/** 入口一排六格 */
 const ENTRIES = [
   { icon: List, k: 'stocks', to: '/bstock' },
   { icon: DollarSign, k: 'crypto', to: '/coin' },
@@ -40,14 +39,13 @@ const ENTRIES = [
   { icon: Target, k: 'prediction', to: '/prediction' },
   { icon: Bot, k: 'jev', to: '/jev' },
   { icon: Settings2, k: 'ai', to: '/ai' },
-  { icon: Gamepad2, k: 'games', to: '/games' },
 ];
 
-/** 格间细线：手机两列、md 四列、xl 八列，各自把每行头一格的左线和左内边距去掉 */
+/** 格间细线：手机两列、md 三列、xl 六列，各自把每行头一格的左线和左内边距去掉 */
 const entryCls = (i: number) => cn(
-  'group flex items-baseline gap-2 min-w-0 px-4 py-2 border-l border-border cursor-pointer text-left',
+  'group flex items-baseline gap-2 min-w-0 px-4 py-2 border-l border-border',
   i % 2 === 0 && 'pl-0 border-l-0',
-  i % 4 === 0 ? 'md:pl-0 md:border-l-0' : 'md:pl-4 md:border-l',
+  i % 3 === 0 ? 'md:pl-0 md:border-l-0' : 'md:pl-4 md:border-l',
   i === 0 ? 'xl:pl-0 xl:border-l-0' : 'xl:pl-4 xl:border-l',
 );
 
@@ -146,14 +144,9 @@ export function Home() {
   // 行情/成交那几块不依赖 user，先渲染出来，开屏等 user 到了再补
   const guest = !token;
   const ready = !!user;
-  const [refreshNonce, setRefreshNonce] = useState(0);
 
-  const [buffStatus, setBuffStatus] = useState<BuffStatus | null>(null);
-  const [buffOpen, setBuffOpen] = useState(false);
   const [latestTrades, setLatestTrades] = useState<TradeItem[]>([]);
-  // tradesLoading 由"已加载 nonce 是否追上刷新 nonce"派生
-  const [tradesLoadedNonce, setTradesLoadedNonce] = useState(-1);
-  const tradesLoading = tradesLoadedNonce !== refreshNonce;
+  const [tradesLoading, setTradesLoading] = useState(true);
 
   // 开屏数据：资产曲线(30d) + 实时快照 + 月度网格(逐日快照)
   const [history, setHistory] = useState<AssetSnapshot[]>([]);
@@ -168,14 +161,10 @@ export function Home() {
   useEffect(() => { if (!guest && shouldShowNotice()) navigate('/intro', { replace: true }); }, [guest, navigate]);
 
   useEffect(() => {
-    if (ready) buffApi.status().then(setBuffStatus).catch(() => {});
-  }, [ready, refreshNonce]);
-
-  useEffect(() => {
     if (!ready) return;
     userApi.assetHistory(30).then(setHistory).catch(() => {});
     userApi.assetRealtime().then(setRealtime).catch(() => {});
-  }, [ready, refreshNonce]);
+  }, [ready]);
 
   // 网格按月拉：翻月就再问一次。旧月数据先留着不清，避免切月时整片格子闪白
   useEffect(() => {
@@ -185,7 +174,7 @@ export function Home() {
       .then(rows => { if (!cancelled) setMonthCells(rows); })
       .catch(() => { if (!cancelled) setMonthCells([]); });
     return () => { cancelled = true; };
-  }, [ready, gridMonth, refreshNonce]);
+  }, [ready, gridMonth]);
 
   // 这里只装后端原始值（方向枚举、去 USDT 的符号），方向标签和展示名交给 LatestTradesCard 渲染期算：
   // 在拉数这一刻就把字烤进 state 的话，切语言后这批卡片还是老语言
@@ -194,9 +183,9 @@ export function Home() {
       .then(([co, fo]) => {
         const ci: TradeItem[] = co.map(o => ({ id: `c-${o.orderId}`, orderSide: o.orderSide, base: o.symbol.replace('USDT', ''), quantity: o.quantity, filledAmount: o.filledAmount, createdAt: o.createdAt }));
         const fi: TradeItem[] = fo.map(o => ({ id: `f-${o.orderId}`, orderSide: o.orderSide, base: o.symbol.replace('USDT', ''), isFutures: true, quantity: o.quantity, filledAmount: o.filledAmount, createdAt: o.createdAt, isAi: o.isAiTrader === true }));
-        setLatestTrades([...ci, ...fi].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 20));
-      }).finally(() => setTradesLoadedNonce(refreshNonce));
-  }, [refreshNonce]);
+        setLatestTrades([...ci, ...fi].sort((a, b) => parseServerTime(b.createdAt).getTime() - parseServerTime(a.createdAt).getTime()).slice(0, 20));
+      }).finally(() => setTradesLoading(false));
+  }, []);
 
   // 切月时 monthCells 还是上个月的，先按当前月份筛一道，合计和格子才不会串月
   const monthRows = monthCells.filter(s => s.date.slice(0, 7) === gridMonth);
@@ -247,30 +236,18 @@ export function Home() {
         </section>
       )}
 
-      {/* ====== 入口一排八格 ====== */}
+      {/* ====== 入口一排六格 ====== */}
       <section className="sec tight mt-8 pt-3.5 [&_.sec-h]:mb-3">
         <div className="sec-h">
           <h2>{t('entries.title')}</h2>
         </div>
-        <div ref={entriesRef} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
+        <div ref={entriesRef} className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
           {ENTRIES.map(({ icon: Icon, k, to }, i) => (
             <Link key={to} to={to} className={entryCls(i)}>
               <span className={ENTRY_NAME}><Icon className={ENTRY_IC} />{t(`quick.${k}`)}</span>
               <span className={ENTRY_DESC}>{t(`quick.${k}Desc`)}</span>
             </Link>
           ))}
-          {/* 游客点福利直接去登录，抽奖弹窗只在登录后挂 */}
-          <button className={entryCls(ENTRIES.length)} onClick={() => guest ? navigate('/login') : setBuffOpen(true)}>
-            <span className={ENTRY_NAME}>
-              <Gift className={ENTRY_IC} />
-              {t('quick.buff')}
-              {/* 今日未抽 → 亮一颗橙方块 */}
-              {buffStatus?.canDraw && <i className="w-[7px] h-[7px] bg-primary ml-1.5" />}
-            </span>
-            <span className={ENTRY_DESC}>
-              {guest ? t('buff.loginFirst') : buffStatus?.canDraw === false ? t('buff.drawnToday') : t('quick.buffDesc')}
-            </span>
-          </button>
         </div>
       </section>
 
@@ -305,16 +282,6 @@ export function Home() {
         snapshot={selectedSnapshot}
         onClose={() => setSelectedDate(null)}
       />
-
-      {/* 每日福利弹窗（入口那格触发） */}
-      {ready && (
-        <DailyBuffModal
-          status={buffStatus}
-          open={buffOpen}
-          onClose={() => setBuffOpen(false)}
-          onDrawn={() => setRefreshNonce(n => n + 1)}
-        />
-      )}
 
     </div>
   );

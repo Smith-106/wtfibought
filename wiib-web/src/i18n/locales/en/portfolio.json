@@ -47,8 +47,7 @@
     "crypto": "Crypto",
     "commodity": "Commodities",
     "bstock": "bStock",
-    "prediction": "Prediction",
-    "game": "Games"
+    "prediction": "Prediction"
   },
   "holdings": {
     "empty": "No holdings"
@@ -84,10 +83,10 @@
   },
   "reset": {
     "title": "Reset account",
-    "desc": "Clears all positions, orders, game records and asset history and restores the starting capital. Comments and mute status are untouched. An automatic bankruptcy recovery counts toward the same quota.",
+    "desc": "Clears all positions, orders and asset history and restores the starting capital. Comments and mute status are untouched. An automatic bankruptcy recovery counts toward the same quota.",
     "action": "Reset my account",
     "dialogTitle": "Confirm account reset",
-    "warnClears": "Cannot be undone. Clears: all spot and futures positions and orders, prediction bets, Blackjack / Mines / Video Poker records, asset history, daily buffs and wallet transfers.",
+    "warnClears": "Cannot be undone. Clears: all spot and futures positions and orders, prediction bets, asset history and wallet transfers.",
     "warnCost": "One reset per calendar week, refreshed on Monday. An automatic bankruptcy recovery counts toward the same quota.",
     "confirmName": "Type your username <0>{{name}}</0> to confirm:",
     "namePlaceholder": "Enter username",
@@ -195,6 +194,8 @@
   "chart": {
     "assetAllocation": "Asset allocation",
     "gameWalletNote": "Transfer to the balance wallet before trading",
+    "futuresLoss": "Futures unrealized loss",
+    "futuresLossNote": "Futures unrealized loss of {{value}} not yet deducted; it comes out of this wallet on close",
     "noHistory": "No history yet — a snapshot is taken every day at midnight",
     "cumulative": "Cum.",
     "range": "{{days}}d",
@@ -249,7 +250,6 @@
     "MARGIN_REPAY_INTEREST": "Repay interest",
     "MARGIN_REPAY_PRINCIPAL": "Repay principal",
     "CASH_INFLOW_CREDIT": "Credited to balance",
-    "BUFF_REWARD": "Daily buff reward",
     "INITIAL_GRANT": "Starting capital",
     "BANKRUPT_CLEAR": "Liquidation wipe",
     "BANKRUPT_RESET": "Bankruptcy recovery",

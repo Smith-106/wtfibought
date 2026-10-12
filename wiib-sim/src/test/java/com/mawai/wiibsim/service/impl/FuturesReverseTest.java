@@ -14,6 +14,7 @@ import com.mawai.wiibcommon.market.BinanceRestClient;
 import com.mawai.wiibsim.config.FuturesLeverageBracketRegistry;
 import com.mawai.wiibsim.config.TradeFilterRegistry;
 import com.mawai.wiibsim.config.TradingConfig;
+import com.mawai.wiibsim.ledger.LedgerTx;
 import com.mawai.wiibsim.mapper.FuturesOrderMapper;
 import com.mawai.wiibsim.mapper.FuturesPositionMapper;
 import com.mawai.wiibsim.mapper.UserMapper;
@@ -21,10 +22,12 @@ import com.mawai.wiibsim.service.CrossMarginService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.FuturesTradingService;
 import com.mawai.wiibsim.service.UserService;
-import com.mawai.wiibsim.util.RedisLockUtil;
+import com.mawai.wiibsim.util.FairLockRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 
@@ -56,10 +59,10 @@ class FuturesReverseTest {
         positionMapper = mock(FuturesPositionMapper.class);
         service = spy(new FuturesTradingServiceImpl(
                 mock(UserService.class), mock(UserMapper.class), positionMapper, mock(FuturesOrderMapper.class),
-                new TradingConfig(), mock(RedisLockUtil.class), mock(CacheService.class),
+                new TradingConfig(), mock(FairLockRegistry.class), mock(CacheService.class),
                 mock(FuturesPositionIndexService.class), mock(FuturesLeverageBracketRegistry.class),
                 mock(CrossMarginService.class), new TradeFilterRegistry(mock(BinanceRestClient.class)),
-                MESSAGES));
+                MESSAGES, new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class)))));
     }
 
     /** 平仓回执＝反向开仓的唯一参数来源（doClosePosition 在仓位锁内读的那份快照） */

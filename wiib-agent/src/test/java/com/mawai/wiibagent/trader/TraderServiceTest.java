@@ -13,6 +13,7 @@ import com.mawai.wiibcommon.entity.UserLlmEndpoint;
 import com.mawai.wiibcommon.enums.AgentLang;
 import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.i18n.UserLangResolver;
+import com.mawai.wiibagent.learning.ExperienceLedger;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibquant.external.sim.SimTradeClient;
 import com.mawai.wiibagent.mapper.AiTraderDecisionMapper;
@@ -37,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -61,11 +63,12 @@ class TraderServiceTest {
     private final UserLangResolver langResolver = mock(UserLangResolver.class);
     private final TraderScheduler scheduler = mock(TraderScheduler.class);
     private final TraderLiveHub hub = mock(TraderLiveHub.class);
+    private final ExperienceLedger ledger = mock(ExperienceLedger.class);
 
     private final TraderService service = new TraderService(
             traderMapper, decisionMapper, modelFactory, endpointService,
             simTradeClient, binanceProperties, planStore, scheduler, hub,
-            new PromptCatalog(), langResolver, new MessageCatalog());
+            new PromptCatalog(), langResolver, new MessageCatalog(), ledger);
 
     /** 端点库里的一条 */
     private static UserLlmEndpoint endpoint(long id, String model) {
@@ -432,7 +435,7 @@ class TraderServiceTest {
         verify(modelFactory).evict(7L);
     }
 
-    /** 不带入笔记的重置：memory/learning_notes 只清生效版本（历届存档在 REVIEW/LEARN 决策行里，不动） */
+    /** 不带入笔记的重置：memory 只清生效版本（历届存档在 REVIEW 决策行里，不动） */
     @Test
     void resetWithoutCarryClearsNotes() {
         AiTrader t = new AiTrader();
@@ -447,10 +450,33 @@ class TraderServiceTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<LambdaUpdateWrapper<AiTrader>> cap = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(traderMapper).update(isNull(), cap.capture());
-        assertThat(cap.getValue().getSqlSet()).contains("memory").contains("learning_notes");
+        assertThat(cap.getValue().getSqlSet()).contains("memory");
     }
 
-    /** 默认带入（carryNotes=true）：两份笔记不进 set 列表，跨局认知积累照旧 */
+    /** 带入时现役账本行复制到新局、memory 按新局编号重渲染（账本空着就不碰 memory，旧自由文本留给首次复盘迁移） */
+    @Test
+    void resetWithCarryCopiesLedgerAndRerendersMemory() {
+        AiTrader t = new AiTrader();
+        t.setId(7L);
+        t.setUserId(1L);
+        t.setRoundNo(3);
+        t.setLearnedRestrictionHold(true);
+        when(traderMapper.selectOne(any())).thenReturn(t);
+        when(simTradeClient.ensureAccount(any(), any())).thenReturn(99L);
+        when(langResolver.of(1L)).thenReturn(AgentLang.ZH);
+        when(ledger.carryOver(7L, 3, 4)).thenReturn(2);
+        when(ledger.render(7L, 4, AgentLang.ZH)).thenReturn("【经验账本】\n#9 规律");
+
+        assertThat(service.reset(1L, true)).isNull();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaUpdateWrapper<AiTrader>> cap = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(traderMapper).update(isNull(), cap.capture());
+        assertThat(cap.getValue().getSqlSet()).contains("memory");
+        assertThat(cap.getValue().getParamNameValuePairs()).containsValue("【经验账本】\n#9 规律");
+    }
+
+    /** 默认带入（carryNotes=true）：账本空着时 memory 不进 set 列表，跨局认知积累照旧 */
     @Test
     void resetWithCarryKeepsNotes() {
         AiTrader t = new AiTrader();
@@ -465,7 +491,7 @@ class TraderServiceTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<LambdaUpdateWrapper<AiTrader>> cap = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(traderMapper).update(isNull(), cap.capture());
-        assertThat(cap.getValue().getSqlSet()).doesNotContain("memory").doesNotContain("learning_notes");
+        assertThat(cap.getValue().getSqlSet()).doesNotContain("memory");
     }
 
     /** stale 标记：本人的 CLOSED 计划可标可取消（教材层忽略，钱账与公开记录不动） */

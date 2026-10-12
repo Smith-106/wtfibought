@@ -111,18 +111,6 @@ const MEMORY = `## 已经吃过的亏
 2. 止损必须挂在结构位外侧，不是整数关口
 3. 计划写了失效条件，触发就走，不给自己找补充理由`;
 
-const LEARNING_NOTES = `## 从 Nomad 学到的
-
-它的胜率只有 41%，但收益比我稳。看了它 R4 的时间线，差别在**加仓节奏**：
-
-- 我是一次把仓位铺满，它是先试 1/3，结构确认了再补
-- 它平仓极快——计划失效条件一触发，下一轮直接平，不等反弹
-- 它在震荡区间里干脆不做，一天可以三轮都是空仓
-
-## 从 Basilisk 的爆仓学到的
-
-15m 级别 + 5 倍杠杆，一根插针就没了。周期越短，杠杆越要低。`;
-
 // ==================== 净值曲线 ====================
 // 3 天、每 4h 一个点。手写一串涨跌互现的数，比 random 更可控——每次刷新形状一样，好对比改动
 
@@ -210,20 +198,6 @@ const decisions = () => {
       actionsJson: null,
       toolCalls: 0, modelCalls: 1, promptTokens: 22400, completionTokens: 2100, totalTokens: 24500,
       latencyMs: 18900, error: null, createdAt: '2026-09-04 22:00:00', hasTrace: false,
-    },
-    {
-      id: 8996, traderId: 1, roundNo: 3, wakeTime: t - 18 * HOUR, intervalCode: '4h',
-      kind: 'LEARN', status: 'OK', equity: null,
-      reasoning: `## 向 Nomad 学习
-
-看了 Nomad 最近 20 轮。它胜率 41%，比我低，但净值比我稳，差别在**试仓**：
-
-先开计划仓位的 1/3，等结构确认再补两次。我是一次铺满，方向对了收益一样，方向错了亏三倍。
-
-另外它在震荡区间会连续三轮空仓——**不做也是一种决策**，我目前每轮都想找点事做，这是扣分项。`,
-      actionsJson: null,
-      toolCalls: 0, modelCalls: 1, promptTokens: 31200, completionTokens: 1800, totalTokens: 33000,
-      latencyMs: 22100, error: null, createdAt: '2026-09-04 18:00:00', hasTrace: false,
     },
   ];
 };
@@ -485,16 +459,16 @@ const EQUITY_SERIES = [
   10918, 11206, 11438, 11324, 11691, 11948, 11822, 12176, 11893, 11713.93,
 ];
 
-/** 一天的资产快照：五分类按固定权重摊，够画拆解饼就行 */
+/** 一天的资产快照：四分类按固定权重摊，够画拆解饼就行 */
 const snap = (date: string, total: number, daily: number) => {
   const profit = total - START_CAPITAL;
   return {
     date, totalAssets: r2(total), profit: r2(profit), profitPct: r2(profit / START_CAPITAL * 100),
     bstockProfit: r2(profit * 0.45), cryptoProfit: r2(profit * 0.3), commodityProfit: r2(profit * 0.1),
-    predictionProfit: r2(profit * 0.1), gameProfit: r2(profit * 0.05),
+    predictionProfit: r2(profit * 0.15),
     dailyProfit: r2(daily), dailyProfitPct: r2(daily / (total - daily) * 100),
     dailyBstockProfit: r2(daily * 0.45), dailyCryptoProfit: r2(daily * 0.3), dailyCommodityProfit: r2(daily * 0.1),
-    dailyPredictionProfit: r2(daily * 0.1), dailyGameProfit: r2(daily * 0.05),
+    dailyPredictionProfit: r2(daily * 0.15),
   };
 };
 
@@ -543,7 +517,7 @@ const cryptoLive = () => {
   const t = now();
   return [
     { orderId: 70311, symbol: 'BTCUSDT', orderSide: 'BUY', orderType: 'MARKET', quantity: 0.12, leverage: 1, filledPrice: 109838.5, filledAmount: 13180.62, commission: 13.18, status: 'FILLED', createdAt: timeStr(t - 4 * MIN) },
-    { orderId: 70308, symbol: 'NVDAUSDT', orderSide: 'SELL', orderType: 'MARKET', quantity: 40, leverage: 1, filledPrice: 182.4, filledAmount: 7296, commission: 7.3, status: 'FILLED', createdAt: timeStr(t - 17 * MIN) },
+    { orderId: 70308, symbol: 'NVDABUSDT', orderSide: 'SELL', orderType: 'MARKET', quantity: 40, leverage: 1, filledPrice: 182.4, filledAmount: 7296, commission: 7.3, status: 'FILLED', createdAt: timeStr(t - 17 * MIN) },
     { orderId: 70302, symbol: 'SOLUSDT', orderSide: 'BUY', orderType: 'MARKET', quantity: 25, leverage: 1, filledPrice: 209.6, filledAmount: 5240, commission: 5.24, status: 'FILLED', createdAt: timeStr(t - 43 * MIN) },
   ];
 };
@@ -750,30 +724,33 @@ const CROSS_ACCOUNT = {
 
 /** 现货持仓（crypto_position 一张表混着币和代币化美股，持仓页按 bstock 列表拆） */
 const SPOT_POSITIONS = [
-  { id: 1101, symbol: 'BTCUSDT', quantity: 0.24, frozenQuantity: 0, avgCost: 61240, totalDiscount: 38.5 },
-  { id: 1102, symbol: 'ETHUSDT', quantity: 3.2, frozenQuantity: 0.4, avgCost: 2288.6, totalDiscount: 0 },
-  { id: 1103, symbol: 'NVDAUSDT', quantity: 40, frozenQuantity: 0, avgCost: 168.2, totalDiscount: 12.4 },
-  { id: 1104, symbol: 'TSLAUSDT', quantity: 12, frozenQuantity: 0, avgCost: 352.6, totalDiscount: 0 },
+  { id: 1101, symbol: 'BTCUSDT', quantity: 0.24, frozenQuantity: 0, avgCost: 61240 },
+  { id: 1102, symbol: 'ETHUSDT', quantity: 3.2, frozenQuantity: 0.4, avgCost: 2288.6 },
+  { id: 1103, symbol: 'NVDABUSDT', quantity: 40, frozenQuantity: 0, avgCost: 168.2 },
+  { id: 1104, symbol: 'TSLABUSDT', quantity: 12, frozenQuantity: 0, avgCost: 352.6 },
 ];
 
-/** 代币化美股：symbol 带 USDT 后缀，ticker 才是股票代号（行情条按市值取前四） */
+/** 代币化美股：照 sql/bstock.sql 的十只，symbol 带 B 后缀，ticker 才是股票代号（行情条按市值取前四） */
 const BSTOCKS = [
   {
-    id: 1, symbol: 'NVDAUSDT', ticker: 'NVDA', name: '英伟达', nameEn: 'NVIDIA', industry: '半导体',
-    marketCap: 4.42e12, peRatio: 52.4, week52High: 195.6, week52Low: 86.2,
+    id: 1, symbol: 'NVDABUSDT', ticker: 'NVDA', name: '英伟达', nameEn: 'Nvidia Corp', industry: '半导体',
+    marketCap: 4.42e12, peRatio: 52.4, dividendYield: 0.02, week52High: 195.6, week52Low: 86.2,
+    ceo: 'Jen-Hsun Huang', homepage: 'https://www.nvidia.com', multiplier: 1.000932,
+    description: '英伟达是图形处理单元的领先开发商。GPU 的使用案例随后发展成为人工智能中运行大型语言模型的重要半导体。英伟达不仅提供人工智能 GPU，还提供用于人工智能模型开发和训练的软件平台 Cuda。',
   },
   {
-    id: 2, symbol: 'AAPLUSDT', ticker: 'AAPL', name: '苹果', nameEn: 'Apple', industry: '消费电子',
-    marketCap: 3.51e12, peRatio: 34.1, week52High: 248.4, week52Low: 169.2,
+    id: 2, symbol: 'TSLABUSDT', ticker: 'TSLA', name: '特斯拉', nameEn: 'Tesla, Inc.', industry: '电动汽车',
+    marketCap: 1.53e12, peRatio: 396.5, dividendYield: 0, week52High: 498.8, week52Low: 297.8,
+    ceo: 'Elon R. Musk', homepage: 'https://www.tesla.com',
   },
-  {
-    id: 3, symbol: 'TSLAUSDT', ticker: 'TSLA', name: '特斯拉', nameEn: 'Tesla', industry: '汽车',
-    marketCap: 1.09e12, peRatio: 78.6, week52High: 412.8, week52Low: 214.3,
-  },
-  {
-    id: 4, symbol: 'QQQUSDT', ticker: 'QQQ', name: '纳指100ETF', nameEn: 'Invesco QQQ Trust', industry: 'ETF',
-    marketCap: 3.2e11, peRatio: 32.8, week52High: 512.4, week52Low: 402.1,
-  },
+  { id: 3, symbol: 'MUBUSDT', ticker: 'MU', name: '美光科技', nameEn: 'Micron Technology, Inc.', industry: '半导体', marketCap: 1.11e12, peRatio: 21.9 },
+  { id: 4, symbol: 'SNDKBUSDT', ticker: 'SNDK', name: '闪迪', nameEn: 'SanDisk', industry: '半导体', marketCap: 2.84e11, peRatio: 62.9 },
+  { id: 5, symbol: 'CRCLBUSDT', ticker: 'CRCL', name: 'Circle', nameEn: 'Circle Internet Group, Inc.', industry: '金融科技', marketCap: 1.64e10 },
+  { id: 6, symbol: 'MSTRBUSDT', ticker: 'MSTR', name: 'Strategy', nameEn: 'Strategy Inc', industry: '比特币金库', marketCap: 3.39e10 },
+  { id: 7, symbol: 'AMDBUSDT', ticker: 'AMD', name: 'AMD', nameEn: 'Advanced Micro Devices', industry: '半导体', marketCap: 9.09e11, peRatio: 181.6 },
+  { id: 8, symbol: 'SPCXBUSDT', ticker: 'SPCX', name: 'SpaceX', nameEn: 'SpaceX', industry: '航空航天' },
+  { id: 9, symbol: 'QQQBUSDT', ticker: 'QQQ', name: '纳指100ETF', nameEn: 'Invesco QQQ Trust', industry: 'ETF', marketCap: 4.86e11 },
+  { id: 10, symbol: 'SOXLBUSDT', ticker: 'SOXL', name: '半导体3x做多ETF', nameEn: 'Direxion Daily Semiconductor Bull 3X Shares', industry: 'ETF', marketCap: 2.55e10 },
 ];
 
 /** 列表带实时价：价格和涨跌幅现算，行情条拿到就能显示 */
@@ -786,10 +763,10 @@ const bstockList = () => BSTOCKS.map(b => {
   };
 });
 
-/** 持仓页五分类 30 日均值 */
+/** 持仓页四分类 30 日均值 */
 const CATEGORY_AVERAGES = {
   bstockProfit: 612.4, cryptoProfit: 408.9, commodityProfit: 136.3,
-  predictionProfit: 138.7, gameProfit: 68.2,
+  predictionProfit: 138.7,
 };
 
 const PREDICTION_PNL = {
@@ -899,7 +876,6 @@ else if (location.search.includes('light')) localStorage.setItem('theme', 'light
         if (path === '/api/crypto/order/live') return ok(res, cryptoLive());
         if (path === '/api/futures/live') return ok(res, futuresLive());
         if (path === '/api/futures/force-orders') return ok(res, forceOrders());
-        if (path === '/api/buff/status') return ok(res, { canDraw: true, todayBuff: null });
         if (path === '/api/ai/quant/news') return ok(res, news());
         if (path === '/api/ai/trader/mine') {
           return ok(res, {
@@ -907,7 +883,7 @@ else if (location.search.includes('light')) localStorage.setItem('theme', 'light
             llmEndpointId: 12, customPrompt: null,
             spec: { leverageMin: 2, leverageMax: 10, marginPctMin: 5, marginPctMax: 25, allowMultiPosition: true, allowHedge: false },
             alertEnabled: true, alertThresholdMult: 1,
-            reviewEnabled: true, learningEnabled: true, wakeWindow: null,
+            reviewEnabled: true, wakeWindow: null,
           });
         }
         if (path === '/api/ai/trader/action-panel') {
@@ -945,9 +921,7 @@ else if (location.search.includes('light')) localStorage.setItem('theme', 'light
             pendingOrders: mine ? PENDING_ORDERS : [],
             plans: mine ? PLANS : [],
             memory: mine ? MEMORY : null,
-            learningNotes: mine ? LEARNING_NOTES : null,
             lastReviewAt: mine ? now() - 14 * HOUR : null,
-            lastLearnAt: mine ? now() - 18 * HOUR : null,
           });
         }
 
@@ -994,7 +968,7 @@ else if (location.search.includes('light')) localStorage.setItem('theme', 'light
 
         // ---- 代币化美股 ----
         if (path === '/api/bstock/list') return ok(res, bstockList());
-        if (path === '/api/bstock/price') return ok(res, livePrice(q.get('symbol') || 'NVDAUSDT'));
+        if (path === '/api/bstock/price') return ok(res, livePrice(q.get('symbol') || 'NVDABUSDT'));
         const bstockMatch = path.match(/^\/api\/bstock\/([A-Z0-9]+)$/);
         if (bstockMatch) {
           return ok(res, bstockList().find(b => b.symbol === bstockMatch[1]) ?? bstockList()[0]);

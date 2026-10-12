@@ -10,12 +10,6 @@ tool:
     Get the recent important news flashes (title + full body + source + time). A flash is already
     the complete text — there is no such thing as deep-reading a single one.
 
-  peer_insights: |-
-    Look at peers (read-only). Two modes:
-    - Pass traderId: look closely at that one trader — their latest review in full, their learning notes, the thesis and invalidation condition of their live plans, and the "thesis → outcome" pairing of their last few closed trades.
-    - Omit traderId: returns a snapshot of this round's leaderboard (per trader: name / status / return this round / closed-trade count / one line of their latest review). You were already given one in the opening message; call this when you want to re-check it.
-    The N in the [id=N] at the start of every leaderboard row is the traderId to pass here.
-
   # Router tool: it exists only so the model can say "who goes next" structurally; the method body never runs
   route: Decide what comes next. Name the experts when real data is still needed; give ["FINISH"] once the expert data is enough to answer.
 
@@ -227,17 +221,17 @@ tool:
 
   cancel_order: Cancel a pending limit order by orderId (from the [Account] block's pendingOrders in your opening message, or get_account).
 
-  # Behaviour analysis: one call = 10 internal data endpoints + one large deep-model call. Same shape
+  # Behaviour analysis: one call = 7 internal data endpoints + one large deep-model call. Same shape
   # as run_deep_analysis; only the trigger phrases follow the language.
   # The full report goes to the UI as a card over SSE and the model gets a trimmed copy, which is why
   # the description tells it to talk about the report rather than read the numbers out.
   analyze_my_behavior: |-
     Run a full behaviour analysis of THIS user's own account across every dimension of the
-    platform (crypto spot, tokenized US equities, futures, prediction, the three games) plus
+    platform (crypto spot, tokenized US equities, futures, prediction) plus
     a risk profile and targeted suggestions.
     ONLY call when the user EXPLICITLY asks about their own habits/style/risk profile, e.g.
     "analyse my behaviour"/"what kind of trader am I"/"my risk profile" - never call this uninvited.
-    EXPENSIVE: 10 internal data calls plus one large deep-model call. Results are cached for
+    EXPENSIVE: 7 internal data calls plus one large deep-model call. Results are cached for
     30 minutes, so calling it twice in a row gains nothing.
     The full report is rendered as a card in the chat UI. Your job afterwards is to talk about
     it, not to recite every number - unless cardShown is false, in which case the user cannot

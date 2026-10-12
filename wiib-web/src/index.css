@@ -100,6 +100,15 @@ html.dark {
   color-scheme: dark;
 }
 
+/* 手机底部悬浮 Tab（Layout）：胶囊高度 + 离屏幕底边的距离。
+   全面屏 iPhone 底部横条区有 34px 安全区，胶囊压进去一点（同 iOS 原生 Tab 栏）；没有安全区就离底 10px。
+   --tabbar-space 是它一共占掉的高度，页面底部留白、toast、悬浮按钮都按它让位 */
+:root {
+  --tabbar-h: 62px;
+  --tabbar-bottom: max(10px, calc(env(safe-area-inset-bottom) - 12px));
+  --tabbar-space: calc(var(--tabbar-h) + var(--tabbar-bottom));
+}
+
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
@@ -197,7 +206,7 @@ html.pwa nav a {
 
 /* ===== 页面容器 ===== */
 /* 主内容页统一壳：PC 主体宽度只在这里定义，改这里=改全站。
-   游戏/引导暂未接入：窄内容（牌桌/表单/单列卡片流）直接拉宽会散架，
+   引导暂未接入：窄内容（表单/单列卡片流）直接拉宽会散架，
    接入前需同步调整页内布局。 */
 .page-shell {
   width: 100%;
@@ -245,13 +254,133 @@ html.pwa nav a {
   }
 }
 
+/* 手机底部 Tab：iOS 液态玻璃胶囊（Layout 的 GlassTabBar）。
+   玻璃感靠三样：中间几乎透明、只轻微柔化（后面内容认得出）；边缘厚——一圈渐变镜面边 + 内侧发亮；上半截一层淡光泽。
+   激活项底下垫一颗玻璃"透镜"，按住会鼓成透明玻璃泡跟手拖。全站直角，只有这里是圆的（照搬 iOS） */
+@layer components {
+  .glass-tab {
+    position: fixed; z-index: 50; left: 50%; bottom: var(--tabbar-bottom);
+    width: min(440px, calc(100% - 32px)); height: var(--tabbar-h); padding: 4px;
+    transform: translateX(-50%);
+    display: flex; border-radius: 9999px;
+    /* 整条是拖透镜的手势区：不让浏览器拿去滚页面，长按不选字 */
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    /* 上层是表面光泽，下层是极淡的底色 */
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / .22), rgb(255 255 255 / 0) 50%),
+      color-mix(in srgb, var(--color-background) 12%, transparent);
+    -webkit-backdrop-filter: blur(3px) saturate(1.9) brightness(1.04);
+    backdrop-filter: blur(3px) saturate(1.9) brightness(1.04);
+    /* 玻璃的厚度：发丝亮边、上沿高光、下沿反光、内侧一圈白晕；外面一道淡投影把它从页面上托起来 */
+    box-shadow:
+      inset 0 0 0 .5px rgb(255 255 255 / .55),
+      inset 0 1px 1px rgb(255 255 255 / .9),
+      inset 0 -1px 1px rgb(255 255 255 / .4),
+      inset 0 0 16px rgb(255 255 255 / .3),
+      0 0 0 .5px rgb(18 19 22 / .08),
+      0 10px 30px -6px rgb(18 19 22 / .18),
+      0 2px 8px rgb(18 19 22 / .06);
+  }
+  /* 镜面边：一圈 1px 渐变描边（mask 抠掉中间），左上、右下最亮，像光打在玻璃厚边上 */
+  .glass-tab::before {
+    content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(135deg, rgb(255 255 255 / .95), rgb(255 255 255 / .15) 30%, rgb(255 255 255 / 0) 50%,
+      rgb(255 255 255 / .15) 70%, rgb(255 255 255 / .75));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+  html.dark .glass-tab {
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 50%),
+      color-mix(in srgb, #1d1e22 18%, transparent);
+    /* 暗色把后面压暗一点，浅色字才压得住 */
+    -webkit-backdrop-filter: blur(3px) saturate(1.8) brightness(.88);
+    backdrop-filter: blur(3px) saturate(1.8) brightness(.88);
+    box-shadow:
+      inset 0 0 0 .5px rgb(255 255 255 / .16),
+      inset 0 1px 1px rgb(255 255 255 / .28),
+      inset 0 -1px 1px rgb(255 255 255 / .1),
+      inset 0 0 16px rgb(255 255 255 / .06),
+      0 0 0 .5px rgb(0 0 0 / .5),
+      0 12px 34px -6px rgb(0 0 0 / .65);
+  }
+  html.dark .glass-tab::before {
+    background: linear-gradient(135deg, rgb(255 255 255 / .45), rgb(255 255 255 / .06) 30%, rgb(255 255 255 / 0) 50%,
+      rgb(255 255 255 / .06) 70%, rgb(255 255 255 / .3));
+  }
+  /* 那排真图标 */
+  .glass-items { position: relative; flex: 1; display: flex; }
+  /* 玻璃几乎透明，后面是什么都有：图标和字带一圈同底色的柔光，花背景上也认得出（iOS 也是这么保可读性） */
+  .glass-items > a { filter: drop-shadow(0 0 3px rgb(255 255 255 / .85)) drop-shadow(0 0 1px rgb(255 255 255 / .9)); }
+  html.dark .glass-items > a { filter: drop-shadow(0 0 3px rgb(0 0 0 / .8)) drop-shadow(0 0 1px rgb(0 0 0 / .85)); }
+  /* 按住时在泡的范围（--hl ~ --hr，JS 每帧写）把真图标挖空，边上 8px 渐隐 */
+  .glass-tab[data-lifted] .glass-items {
+    -webkit-mask: linear-gradient(90deg, #000 var(--hl), transparent calc(var(--hl) + 8px),
+      transparent calc(var(--hr) - 8px), #000 var(--hr));
+    mask: linear-gradient(90deg, #000 var(--hl), transparent calc(var(--hl) + 8px),
+      transparent calc(var(--hr) - 8px), #000 var(--hr));
+  }
+
+  /* 激活项的透镜：宽 = 一格，--i 是第几格；当前页不在 Tab 里时藏掉 */
+  .glass-lens {
+    position: absolute; top: 4px; bottom: 4px; left: 4px; overflow: hidden;
+    width: calc((100% - 8px) / var(--n)); border-radius: 9999px; pointer-events: none;
+    transform: translateX(calc(var(--i) * 100%));
+    background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+    box-shadow: inset 0 1px .5px rgb(255 255 255 / .7), inset 0 0 0 .5px rgb(255 255 255 / .35), 0 1px 6px rgb(18 19 22 / .06);
+    transition: transform .5s cubic-bezier(.34, 1.3, .5, 1), opacity .2s, background-color .25s, box-shadow .25s;
+  }
+  html.dark .glass-lens {
+    background: rgb(255 255 255 / .1);
+    box-shadow: inset 0 1px .5px rgb(255 255 255 / .2), inset 0 0 0 .5px rgb(255 255 255 / .08);
+  }
+  /* 按住：透镜鼓成透明玻璃泡压到图标上面，位置和形变每帧由 JS 写 --lx/--sx/--sy（不走过渡，弹簧在 JS 里）。
+     泡底下的真图标已经挖空，泡里只有放大的那份，泡本身可以做得跟底栏一样清透 */
+  .glass-tab[data-lifted] .glass-lens {
+    z-index: 1;
+    transform: translateX(var(--lx)) scale(var(--sx), var(--sy));
+    transition: opacity .2s, background-color .25s, box-shadow .25s;
+    background: color-mix(in srgb, var(--color-background) 22%, transparent);
+    -webkit-backdrop-filter: blur(4px) saturate(1.8) brightness(1.06);
+    backdrop-filter: blur(4px) saturate(1.8) brightness(1.06);
+    box-shadow:
+      inset 0 1.5px 1px rgb(255 255 255 / .95),
+      inset 0 -1px 1px rgb(255 255 255 / .55),
+      inset 0 0 0 1px rgb(255 255 255 / .5),
+      inset 0 0 14px rgb(255 255 255 / .35),
+      0 8px 22px rgb(18 19 22 / .2),
+      0 1px 3px rgb(18 19 22 / .1);
+  }
+  html.dark .glass-tab[data-lifted] .glass-lens {
+    background: color-mix(in srgb, #2a2b30 26%, transparent);
+    box-shadow:
+      inset 0 1.5px 1px rgb(255 255 255 / .35),
+      inset 0 -1px 1px rgb(255 255 255 / .12),
+      inset 0 0 0 1px rgb(255 255 255 / .16),
+      inset 0 0 14px rgb(255 255 255 / .08),
+      0 8px 24px rgb(0 0 0 / .55);
+  }
+  /* 泡里那排放大的图标：整排铺满 Tab 宽，往左挪透镜的位置，正好对上底下那一格，跟着透镜一起放大 */
+  .glass-lens-mag {
+    position: absolute; top: 0; bottom: 0; left: calc(-1 * var(--lx, 0px));
+    width: calc(var(--n) * 100%); display: flex;
+  }
+  /* iOS 长按链接会弹预览菜单，拖到一半被它打断 */
+  .glass-tab a { -webkit-touch-callout: none; transition: color .2s; }
+  @media (prefers-reduced-motion: reduce) {
+    .glass-lens, .glass-tab a { transition: none; }
+  }
+}
+
 /* 收回时先让内容退场，剩下的外壳跟球是同一套卡片底 + 边，缩到最后就是球本身，
    看着是面板变成了球，不是面板关掉再冒一个球出来。
    不进 @layer：面板里随手加个 transition-* 工具类就会把这里的过渡整条顶掉 */
 #polaris-dock > * { transition: opacity 150ms var(--ease-control); }
 #polaris-dock[data-state="closing"] > * { opacity: 0; }
 
-/* 机加工边缘：实体感控件（开关/游戏件）顶部 1px 高光 */
+/* 机加工边缘：实体感控件（开关/按钮）顶部 1px 高光 */
 .machined { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5); }
 html.dark .machined { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
 
@@ -591,238 +720,6 @@ html.dark .machined { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
   .nav-dot,.hdr,.nav .item::after{transition:none}
 }
 
-/* 赌场麂皮牌桌 */
-.casino-felt {
-  --felt: #1a7a3a;
-  background:
-    repeating-conic-gradient(rgba(0,0,0,0.03) 0% 25%, transparent 0% 50%) 0 0 / 4px 4px,
-    radial-gradient(ellipse at 50% 40%, rgba(255,255,255,0.08) 0%, transparent 70%),
-    var(--felt);
-  box-shadow: inset 0 2px 12px rgba(0,0,0,0.35), inset 0 -2px 8px rgba(255,255,255,0.04);
-}
-
-/* ===== Blackjack ===== */
-.bj-table {
-  position: relative; overflow: hidden;
-}
-.bj-card { width:4.2rem; height:6rem; border-radius:0.5rem; flex-shrink:0; user-select:none; transition:transform 0.15s ease }
-@media (min-width:640px) { .bj-card { width:5rem; height:7rem; border-radius:0.6rem } }
-.bj-card:hover { transform:translateY(-2px) }
-.bj-card-front { width:100%; height:100%; background:#fff; border-radius:inherit; display:flex; align-items:center; justify-content:center; position:relative }
-.bj-card-label { text-shadow:0 0 2px rgba(0,0,0,0.08) }
-.bj-card-back { width:100%; height:100%; background:#2563eb; border-radius:inherit; display:flex; align-items:center; justify-content:center; padding:4px }
-.bj-card-back-pattern { width:100%; height:100%; border-radius:4px; border:1.5px solid rgba(255,255,255,0.25); background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.06) 4px,rgba(255,255,255,0.06) 8px) }
-
-@keyframes bj-deal { from{opacity:0;transform:translateY(-30px) scale(.8)} to{opacity:1;transform:translateY(0) scale(1)} }
-.bj-deal-in { animation:bj-deal .3s cubic-bezier(.34,1.56,.64,1) both }
-@keyframes bj-chip-pop { 0%{transform:scale(.5);opacity:0} 60%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
-.bj-chip-pop { animation:bj-chip-pop .25s ease-out both }
-@keyframes bj-result-in { from{opacity:0;transform:scale(.8) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
-.bj-result-in { animation:bj-result-in .4s cubic-bezier(.34,1.56,.64,1) both }
-@keyframes bj-pulse-glow { 0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.4)} 50%{box-shadow:0 0 0 6px rgba(249,115,22,0)} }
-.bj-pulse-glow { animation:bj-pulse-glow 2s ease-in-out infinite }
-.bj-chip {
-  --chip-color: #d4d4d8; --chip-accent: #a1a1aa;
-  width:3.5rem; height:3.5rem; border-radius:9999px;
-  display:flex; align-items:center; justify-content:center;
-  font-weight:800; font-size:0.7rem; cursor:pointer;
-  transition:all .15s ease; position:relative;
-  background: radial-gradient(circle at 35% 35%, rgba(255,255,255,0.25), transparent 60%), var(--chip-color);
-  border: 3px solid var(--chip-accent);
-  box-shadow: inset 0 2px 4px rgba(255,255,255,0.3), inset 0 -2px 4px rgba(0,0,0,0.15), 0 4px 8px rgba(0,0,0,0.25);
-  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.4);
-}
-.bj-chip::before {
-  content:''; position:absolute; inset:4px; border-radius:9999px;
-  border: 2px dashed rgba(255,255,255,0.35); pointer-events:none;
-}
-.bj-chip:hover:not(:disabled){transform:translateY(-3px) scale(1.08)} .bj-chip:active:not(:disabled){transform:scale(.95)} .bj-chip:disabled{opacity:.35;cursor:not-allowed}
-.bj-chip.selected{transform:translateY(-4px) scale(1.12);box-shadow:0 0 0 3px var(--color-primary), inset 0 2px 4px rgba(255,255,255,0.3), 0 4px 12px rgba(0,0,0,0.3)}
-.bj-chip-100  { --chip-color:#a1a1aa; --chip-accent:#78716c; color:#fff }
-.bj-chip-500  { --chip-color:#ef4444; --chip-accent:#b91c1c }
-.bj-chip-1000 { --chip-color:#2563eb; --chip-accent:#1d4ed8 }
-.bj-chip-5000 { --chip-color:#16a34a; --chip-accent:#15803d }
-.bj-chip-10000{ --chip-color:#7c3aed; --chip-accent:#6d28d9 }
-.bj-chip-50000{ --chip-color:#1a1a2e; --chip-accent:#0f0f1e; color:#fbbf24 }
-@keyframes bj-flip { 0%{transform:perspective(600px) rotateY(-90deg)} 100%{transform:perspective(600px) rotateY(0)} }
-.bj-flip { animation:bj-flip .45s ease-out both }
-@keyframes bj-count-up { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-.bj-count-up { animation:bj-count-up .5s ease-out both }
-@media (prefers-reduced-motion:reduce) { .bj-deal-in,.bj-chip-pop,.bj-result-in,.bj-flip,.bj-count-up{animation:none} .bj-pulse-glow{animation:none;box-shadow:none} }
-
-/* ===== VideoPoker ===== */
-/* 机柜：仪器风——边框 + 顶部机加工高光，替代拟物双阴影 */
-.vp-machine {
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  border-radius: 0.75rem;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5), 0 1px 2px rgba(0, 0, 0, .04);
-  overflow: hidden;
-}
-html.dark .vp-machine { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
-
-.vp-table {
-  position: relative; overflow: hidden;
-}
-
-.vp-payout-bar {
-  background: var(--color-card-2);
-  border-top: 1px solid var(--color-border);
-  border-bottom: 1px solid var(--color-border);
-  padding: 0.625rem 1rem;
-}
-
-.vp-controls {
-  background: var(--color-background);
-  padding: 1.5rem 1.25rem;
-}
-
-.vp-chip {
-  --chip-color: #d4d4d8; --chip-accent: #a1a1aa;
-  width: 3rem; height: 3rem; border-radius: 9999px;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 0.65rem; cursor: pointer;
-  transition: all 0.15s ease; position: relative;
-  background: radial-gradient(circle at 35% 35%, rgba(255,255,255,0.25), transparent 60%), var(--chip-color);
-  border: 3px solid var(--chip-accent);
-  box-shadow: inset 0 2px 4px rgba(255,255,255,0.3), inset 0 -2px 4px rgba(0,0,0,0.15), 0 4px 8px rgba(0,0,0,0.25);
-  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.4);
-}
-.vp-chip::before {
-  content:''; position:absolute; inset:3px; border-radius:9999px;
-  border: 2px dashed rgba(255,255,255,0.35); pointer-events:none;
-}
-@media (min-width: 640px) { .vp-chip { width: 3.5rem; height: 3.5rem; font-size: 0.75rem } }
-.vp-chip:hover:not(:disabled) { transform: translateY(-3px) scale(1.08) }
-.vp-chip:active:not(:disabled) { transform: scale(0.95) }
-.vp-chip:disabled { opacity: 0.3; cursor: not-allowed }
-.vp-chip-selected { transform: translateY(-4px) scale(1.12); box-shadow: 0 0 0 3px var(--color-primary), inset 0 2px 4px rgba(255,255,255,0.3), 0 4px 12px rgba(0,0,0,0.3) }
-.vp-chip-100  { --chip-color:#a1a1aa; --chip-accent:#78716c }
-.vp-chip-500  { --chip-color:#ef4444; --chip-accent:#b91c1c }
-.vp-chip-1000 { --chip-color:#2563eb; --chip-accent:#1d4ed8 }
-.vp-chip-5000 { --chip-color:#16a34a; --chip-accent:#15803d }
-.vp-chip-10000{ --chip-color:#7c3aed; --chip-accent:#6d28d9 }
-.vp-chip-50000{ --chip-color:#1a1a2e; --chip-accent:#0f0f1e; color:#fbbf24 }
-
-@keyframes vp-chip-pop { 0%{transform:scale(.5);opacity:0} 60%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
-.vp-chip-pop { animation: vp-chip-pop 0.25s ease-out both }
-
-@keyframes card-replace-flip {
-  0% { transform: rotateY(0deg); }
-  20% { transform: rotateY(-60deg); }
-  40% { transform: rotateY(-90deg); }
-  45% { transform: rotateY(-90deg); opacity: 1; }
-  55% { transform: rotateY(-90deg); opacity: 0; }
-  60% { transform: rotateY(90deg); opacity: 0; }
-  80% { transform: rotateY(30deg); }
-  100% { transform: rotateY(0deg); opacity: 1; }
-}
-.animate-card-replace { animation: card-replace-flip 0.8s ease-in-out both; perspective: 600px; transform-style: preserve-3d; }
-
-.vp-card {
-  /* 基础尺寸按 360px 屏定：5张×3.8rem+4缝×8px 恰好塞进容器，不横向溢出 */
-  width: 3.8rem;
-  height: 5.32rem;
-  border-radius: 0.5rem;
-  flex-shrink: 0;
-  user-select: none;
-  transition: transform 0.15s ease;
-  position: relative;
-  background: transparent;
-}
-@media (min-width: 480px) {
-  .vp-card { width: 4.5rem; height: 6.3rem; }
-}
-@media (min-width: 640px) {
-  .vp-card { width: 5.5rem; height: 7.7rem; border-radius: 0.6rem; }
-}
-.vp-card:hover:not(:disabled) { transform: translateY(-4px); }
-.vp-card:active:not(:disabled) { transform: translateY(-1px) scale(0.98); }
-
-.vp-card-held {
-  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.7);
-  transform: translateY(-6px);
-}
-.vp-card-held:hover:not(:disabled) { transform: translateY(-8px); }
-.vp-card-old-held {
-  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.3);
-}
-
-.vp-card-front {
-  width: 100%;
-  height: 100%;
-  background: #ffffff;
-  border-radius: inherit;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-
-.vp-card-corner {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  font-weight: 700;
-  line-height: 1;
-  font-size: 0.8rem;
-}
-@media (min-width: 640px) { .vp-card-corner { font-size: 0.875rem } }
-.vp-card-corner-tl { top: 0.2rem; left: 0.3rem; }
-.vp-card-corner-br { bottom: 0.2rem; right: 0.3rem; transform: rotate(180deg); }
-
-.vp-card-center { font-size: 1.75rem }
-@media (min-width: 640px) { .vp-card-center { font-size: 2.5rem; } }
-
-.vp-card-back {
-  width: 100%;
-  height: 100%;
-  background: #2563eb;
-  border-radius: inherit;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3px;
-}
-.vp-card-back-pattern {
-  width: 100%;
-  height: 100%;
-  border-radius: 3px;
-  border: 1.5px solid rgba(255,255,255,0.2);
-  background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.05) 3px, rgba(255,255,255,0.05) 6px);
-}
-
-.vp-card-hold-label {
-  position: absolute;
-  top: -1.4rem;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 0.6rem;
-  font-weight: 800;
-  color: #fbbf24;
-  letter-spacing: 0.1em;
-  text-shadow: 0 0 6px rgba(251,191,36,0.5), 0 1px 2px rgba(0,0,0,0.6);
-}
-
-@keyframes vp-result-glow {
-  0%,100% { box-shadow: 0 0 8px rgba(52,211,153,0.3) }
-  50% { box-shadow: 0 0 20px rgba(52,211,153,0.5) }
-}
-.vp-result-win { animation: vp-result-glow 1.5s ease-in-out infinite }
-
-@keyframes vp-result-in {
-  from { opacity:0; transform:scale(.85) translateY(6px) }
-  to { opacity:1; transform:scale(1) translateY(0) }
-}
-.vp-result-in { animation: vp-result-in 0.4s cubic-bezier(.34,1.56,.64,1) both }
-
-@keyframes vp-card-deal {
-  from { opacity: 0; transform: translateY(-30px) scale(0.8); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-.vp-card-deal { animation: vp-card-deal 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both }
-
 /* Rolling digit animations */
 @keyframes roll-up-out {
   from { transform: translateY(0); }
@@ -913,7 +810,7 @@ html.dark .cr-ov.is-full ~ .cr-halo { opacity: .24; }
 .cr-meta b { display: block; font-size: 34px; font-weight: 600; font-stretch: 80%; letter-spacing: -.02em; line-height: 1.1; }
 .cr-meta i { display: block; font-style: normal; font-size: 15px; font-weight: 700; margin-top: 4px; }
 .cr-ov.is-full ~ .cr-meta { opacity: 1; transform: none; }
-/* 落地：交易页在底下挂好后整层淡出（图标另飞到页头） */
-.cr-ov.is-out, .cr-ov.is-out ~ .cr-halo, .cr-ov.is-out ~ .cr-spark, .cr-ov.is-out ~ .cr-meta {
+/* 落地：交易页在底下挂好后整层连同图标原地淡出 */
+.cr-ov.is-out, .cr-ov.is-out ~ .cr-halo, .cr-ov.is-out ~ .cr-spark, .cr-ov.is-out ~ .cr-meta, .cr-ov.is-out ~ .cr-icon {
   opacity: 0 !important; transition: opacity .4s;
 }

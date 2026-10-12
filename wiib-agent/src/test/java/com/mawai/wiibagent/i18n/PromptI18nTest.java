@@ -8,13 +8,15 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.mawai.wiibcommon.dto.FuturesPositionDTO;
 import com.mawai.wiibcommon.entity.AiTrader;
 import com.mawai.wiibcommon.entity.AiTraderDecision;
+import com.mawai.wiibcommon.entity.AiTraderExperience;
 import com.mawai.wiibcommon.entity.AiTraderPlan;
 import com.mawai.wiibcommon.enums.AgentLang;
 import com.mawai.wiibcommon.market.KlineBar;
 import com.mawai.wiibcommon.market.KlineHistoryStore;
-import com.mawai.wiibagent.learning.PeerInsightService;
+import com.mawai.wiibagent.learning.CaseFileBuilder;
+import com.mawai.wiibagent.learning.ExperienceLedger;
 import com.mawai.wiibagent.learning.ReviewMaterialAssembler;
-import com.mawai.wiibagent.trader.DecisionText;
+import com.mawai.wiibagent.trader.prompt.PlayStatsAssembler;
 import com.mawai.wiibagent.trader.prompt.TraderPromptAssembler;
 import com.mawai.wiibagent.trader.trade.TraderRiskConfig;
 import com.mawai.wiibquant.external.sim.SimTradeClient;
@@ -48,7 +50,7 @@ import static org.mockito.Mockito.when;
  *   <li><b>中文侧的关键约束一条都不许在搬家时丢</b>——这批是"外置 + 加英文版"，不是重写中文提示词。
  *       钉住的是行为约束句，不是文案措辞。</li>
  *   <li><b>分隔符按语言认对应那一套</b>——见 {@code PromptMarkParsingTest}（要包内可见的
- *       parse/missingMarks/waitSection，放在 learning 包里）。</li>
+ *       parse/userPrompt，放在 learning 包里）。</li>
  * </ul>
  */
 class PromptI18nTest {
@@ -66,10 +68,6 @@ class PromptI18nTest {
     private final PromptCatalog prompts = new PromptCatalog();
     private final ReplayCoachPrompts coach = new ReplayCoachPrompts(prompts);
 
-    /** 笔记上限按语言给（见 NoteBudget）；提示词里那句"≤N"就是这个数注进去的 */
-    private static final Map<String, Object> NOTE_CAP_ZH = Map.of("maxChars", 2000);
-    private static final Map<String, Object> NOTE_CAP_EN = Map.of("maxChars", 4000);
-
     /** 逐码点扫 CJK 的实现在 {@link PromptI18nAssertions}：唤醒开场白那条钉子在 trader 包，两边共用一份 */
     private static void assertNoCjk(String label, String text) {
         PromptI18nAssertions.assertNoCjk(label, text);
@@ -80,10 +78,9 @@ class PromptI18nTest {
     @Test
     void 英文trader提示词全文无中文() {
         TraderPromptAssembler assembler =
-                new TraderPromptAssembler(mock(AiTraderMapper.class), prompts);
+                new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class));
         AiTrader t = enTrader();
         t.setMemory("突破回踩不守住颈线就别追。");            // 旧笔记是中文：原样注入不算违规
-        t.setLearningNotes("同侪A的BREAKOUT 12笔8胜。");
         t.setCustomPrompt("Breakouts only.");
         t.setOwnerNote("Watch CPI tonight.");
         t.setOwnerNoteRounds(3);
@@ -91,7 +88,7 @@ class PromptI18nTest {
 
         String full = assembler.assemble(t, AgentLang.EN);
         // 用户自己写的字与旧笔记原样注入，扫描前剥掉——它们本来就不该被翻译
-        String platform = full.replace(t.getMemory(), "").replace(t.getLearningNotes(), "");
+        String platform = full.replace(t.getMemory(), "");
         assertNoCjk("英文 trader 提示词", platform);
         // 留言段走开场白不走 system：段头/亲笔提示/footer 同样零中文
         assertNoCjk("英文留言段", assembler.ownerNoteBlock(t, AgentLang.EN));
@@ -106,30 +103,19 @@ class PromptI18nTest {
 
     @Test
     void 英文reviewer提示词与素材块全文无中文() {
-        assertNoCjk("英文 reviewer 系统提示词", prompts.get(AgentLang.EN, "reviewer.system", NOTE_CAP_EN));
+        assertNoCjk("英文 reviewer 系统提示词", prompts.get(AgentLang.EN, "reviewer.system"));
+        assertNoCjk("英文 reviewer 复审提示词", prompts.get(AgentLang.EN, "reviewer.audit.system"));
+        assertNoCjk("英文 reviewer 迁移提示词", prompts.get(AgentLang.EN, "reviewer.migrate.system", Map.of("max", 10)));
         assertNoCjk("英文 reviewer 收尾指令", prompts.get(AgentLang.EN, "reviewer.label.closing"));
         assertNoCjk("英文 reviewer 输出语言硬收尾",
                 prompts.get(AgentLang.EN, "reviewer.label.outputLanguage"));
 
         ReviewMaterialAssembler.ReviewMaterial m = enMaterial();
         assertNoCjk("英文战绩表", m.statsBlock());
-        assertNoCjk("英文配对表", m.tradesBlock());
-        assertNoCjk("英文时间线", m.timelineBlock());
-        assertNoCjk("英文价格路径", m.pricePathBlock());
-    }
-
-    @Test
-    void 英文learning提示词与同侪块全文无中文() {
-        assertNoCjk("英文 learning 系统提示词", prompts.get(AgentLang.EN, "learning.system", NOTE_CAP_EN));
-        assertNoCjk("英文 peer_insights 工具描述", prompts.get(AgentLang.EN, "tool.peer_insights"));
-        assertNoCjk("英文 learning 收尾指令", prompts.get(AgentLang.EN, "learning.label.closing"));
-        assertNoCjk("英文 learning 输出语言硬收尾",
-                prompts.get(AgentLang.EN, "learning.label.outputLanguage"));
-
-        PeerInsightService peers = enPeers();
-        assertNoCjk("英文同侪排行榜", peers.leaderboard(7L, AgentLang.EN));
-        assertNoCjk("英文同侪详情", peers.detail(8L, AgentLang.EN));
-        assertNoCjk("英文查无此人", peers.detail(404L, AgentLang.EN));
+        assertNoCjk("英文论点战绩", m.playStatsBlock());
+        assertNoCjk("英文案例素材", m.casesBlock());
+        assertNoCjk("英文行情", m.marketBlock());
+        assertNoCjk("英文账本", m.ledgerBlock());
     }
 
     @Test
@@ -150,7 +136,7 @@ class PromptI18nTest {
                 "chat.deepAnalysis.progress.judged", "chat.outputLanguage",
                 "chat.turn.timePrefix", "chat.turn.questionPrefix",
                 "chat.traderQuery.wakeWindowAllDay", "chat.traderQuery.memoryNote",
-                "chat.traderQuery.learningNotesNote", "chat.traderQuery.kindNote",
+                "chat.traderQuery.kindNote",
                 "chat.traderQuery.planNote", "chat.traderQuery.noTrader",
                 "llm.callLimit.notExecuted",
                 "tool.route", "tool.run_deep_analysis",
@@ -226,7 +212,7 @@ class PromptI18nTest {
     /** trader 模板只讲事实：各钉一句事实锚点，观点句一句不许回来——搬家时丢哪条都在这里红 */
     @Test
     void 中文trader模板只讲事实不带观点() {
-        String p = new TraderPromptAssembler(mock(AiTraderMapper.class), prompts)
+        String p = new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class))
                 .platformTemplate(AgentLang.ZH, "1h", "BTCUSDT", TraderRiskConfig.of(new AiTrader()), null);
 
         assertThat(p)
@@ -250,7 +236,7 @@ class PromptI18nTest {
         t.setOwnerNoteRounds(2);
         t.setId(7L);
         TraderPromptAssembler assembler =
-                new TraderPromptAssembler(mock(AiTraderMapper.class), prompts);
+                new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class));
         String full = assembler.assemble(t, AgentLang.ZH);
         assertThat(full.indexOf("————— 主人的交易指令"))
                 .as("④ 主人指令放模板之后并明示优先级").isGreaterThan(full.indexOf("收尾：最后必须"));
@@ -269,7 +255,7 @@ class PromptI18nTest {
     /** 英文模板同样只讲事实：锚事实句、反锚观点句——英文侧把观点句写回去不能全绿 */
     @Test
     void 英文trader模板只讲事实不带观点() {
-        String p = new TraderPromptAssembler(mock(AiTraderMapper.class), prompts)
+        String p = new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class))
                 .platformTemplate(AgentLang.EN, "1h", "BTCUSDT", TraderRiskConfig.of(new AiTrader()), null);
 
         assertThat(p)
@@ -282,49 +268,54 @@ class PromptI18nTest {
                 .doesNotContain("Discipline:").doesNotContain("Analysis flow");
     }
 
-    /** reviewer 的防自夸三件套 */
+    /** reviewer 的事实纪律三件套 */
     @Test
-    void 中文reviewer保住防自夸三条() {
-        String p = prompts.get(AgentLang.ZH, "reviewer.system", NOTE_CAP_ZH);
+    void 中文reviewer保住事实纪律三条() {
+        String p = prompts.get(AgentLang.ZH, "reviewer.system");
         assertThat(p)
-                .as("① 战绩数字只许复述").contains("只许原样复述，禁止自行计算或美化")
-                .as("② 先找错误再找亮点").contains("先找错误再找亮点")
-                .as("③ 教训条数上限").contains("逐笔教训：≤5 条").contains("下期纪律：≤3 条")
-                .contains("【决策错】").contains("【运气差】")
-                .contains("同样条件下次照做");
+                .as("① 数字只许引用事实表").contains("所有数字只许引用事实表里的，禁止自算或美化")
+                .contains("战绩一行只许原样复述")
+                .as("② 界定与处理必须可观察").contains("必须是可观察的价格、根数或时间")
+                .as("③ 不抄指令、不继承旧教训").contains("主人指令里已经有的不写进账本")
+                .contains("上期的教训不许重抄")
+                .contains("【本期复盘】").contains("【经验更新】");
     }
 
-    /** learning 的反照抄三件套 */
+    /** 两处都要显式交代"笔记可能是另一门语言，照读照用，输出用当前语言" */
     @Test
-    void 中文learning保住反照抄三条() {
-        String p = prompts.get(AgentLang.ZH, "learning.system", NOTE_CAP_ZH);
-        assertThat(p)
-                .as("①【不学什么】必填").contains("【不学什么】是必填段").contains("你就只是在抄")
-                .as("② 每条学习带证据与差距数字").contains("每条学习必须落在证据与差距上")
-                .as("③ 引用战绩带笔数").contains("引用同侪战绩必须带笔数")
-                .contains("【本期学习】").contains("【前车之鉴】");
-    }
-
-    /** 任务 4：三处都要显式交代"笔记可能是另一门语言，照读照用，输出用当前语言" */
-    @Test
-    void 三处提示词都交代了跨语言笔记() {
-        assertThat(new TraderPromptAssembler(mock(AiTraderMapper.class), prompts)
+    void 两处提示词都交代了跨语言笔记() {
+        assertThat(new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class))
                 .platformTemplate(AgentLang.ZH, "1h", "BTCUSDT", TraderRiskConfig.of(new AiTrader()), null))
                 .contains("可能是另一门语言写的").contains("本轮输出一律用中文");
-        assertThat(prompts.get(AgentLang.ZH, "reviewer.system", NOTE_CAP_ZH)).contains("可能是另一门语言写的");
-        assertThat(prompts.get(AgentLang.ZH, "learning.system", NOTE_CAP_ZH)).contains("可能是另一门语言写的");
-        for (String key : List.of("reviewer.system", "learning.system")) {
-            assertThat(prompts.get(AgentLang.EN, key, NOTE_CAP_EN)).contains("another language");
+        assertThat(prompts.get(AgentLang.ZH, "reviewer.system")).contains("可能是另一门语言写的");
+        assertThat(prompts.get(AgentLang.EN, "reviewer.system")).contains("another language");
+    }
+
+    /** 解析器靠行首固定词分流：同一门语言里结论词 / 格子词 / 方向词 / 复审结论词各组内不许撞 */
+    @Test
+    void 解析固定词各组内互不相同() {
+        for (AgentLang lang : AgentLang.values()) {
+            assertDistinct(lang, "结论词", "reviewer.op.support", "reviewer.op.oppose", "reviewer.op.untested",
+                    "reviewer.op.kept", "reviewer.op.broken");
+            assertDistinct(lang, "格子词", "reviewer.op.slot.entry", "reviewer.op.slot.failDef", "reviewer.op.slot.failHandle",
+                    "reviewer.op.slot.profitHandle", "reviewer.op.slot.risk", "reviewer.op.slot.exec");
+            assertDistinct(lang, "方向词", "reviewer.op.dir.opportunity", "reviewer.op.dir.restriction", "reviewer.op.dir.execution");
+            assertDistinct(lang, "复审结论词", "reviewer.audit.keep", "reviewer.audit.revise", "reviewer.audit.split", "reviewer.audit.retire");
         }
+    }
+
+    private void assertDistinct(AgentLang lang, String group, String... keys) {
+        List<String> words = java.util.Arrays.stream(keys)
+                .map(k -> prompts.get(lang, k).strip().toLowerCase(java.util.Locale.ROOT)).toList();
+        assertThat(words).as("%s %s", lang.code(), group).doesNotHaveDuplicates();
     }
 
     /** 英文侧不是漏翻回落：两门语言的同一 key 一字不差就说明英文没写 */
     @Test
     void 三个域的英文词表都真有自己的文案() {
         for (String key : List.of("trader.template", "trader.label.memory", "trader.mark.conclusion",
-                "reviewer.system", "reviewer.mark.memory", "reviewer.label.statsHeader",
-                "learning.system", "learning.mark.skip", "learning.label.peer.leaderboardHeader",
-                "tool.peer_insights", "tool.route", "tool.run_deep_analysis", "tool.news_search",
+                "reviewer.system", "reviewer.mark.updates", "reviewer.label.statsHeader",
+                "tool.route", "tool.run_deep_analysis", "tool.news_search",
                 "chat.summarizer", "chat.router", "chat.expert.market", "chat.expert.news",
                 "chat.expert.trader", "chat.compress.prompt", "chat.deepAnalysis.judgePrompt",
                 "chat.hitl.reason", "chat.deferred.prefix",
@@ -351,7 +342,7 @@ class PromptI18nTest {
                 "trader.label.ownerWritten", "trader.label.outputLanguage",
                 // 主人指令段的占位句与平台默认指令：预填进英文用户的指令框，回落成中文他就得删掉重写
                 "trader.label.customPromptEmpty", "trader.label.defaultInstructions",
-                "reviewer.label.outputLanguage", "learning.label.outputLanguage",
+                "reviewer.label.outputLanguage",
                 "chat.outputLanguage", "coach.label.outputLanguage",
                 // 上游异常归类后的那一句：chat 与 coach 共用，既上屏也喂回模型
                 "llm.error.unauthorized", "llm.error.quota", "llm.error.modelNotFound",
@@ -431,15 +422,6 @@ class PromptI18nTest {
                 .as("除触发词外两侧必须逐字相同").isEqualTo(en);
     }
 
-    /** 任务 4：笔记上限按语言给，且提示词里那句"≤N"就是代码真截断的那个数 */
-    @Test
-    void 笔记上限按语言注入提示词() {
-        assertThat(prompts.get(AgentLang.ZH, "reviewer.system", NOTE_CAP_ZH)).contains("≤2000字");
-        assertThat(prompts.get(AgentLang.EN, "reviewer.system", NOTE_CAP_EN)).contains("≤4000 characters");
-        assertThat(prompts.get(AgentLang.ZH, "learning.system", NOTE_CAP_ZH)).contains("2000 字以内");
-        assertThat(prompts.get(AgentLang.EN, "learning.system", NOTE_CAP_EN)).contains("under 4000 characters");
-    }
-
     // ==================== ③ 混语言提示词的缓解（任务 5）====================
 
     /**
@@ -462,7 +444,7 @@ class PromptI18nTest {
             t.setOwnerNoteRounds(2);
 
             TraderPromptAssembler assembler =
-                    new TraderPromptAssembler(mock(AiTraderMapper.class), prompts);
+                    new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class));
             String prompt = assembler.assemble(t, lang);
             String block = assembler.ownerNoteBlock(t, lang);
             String tail = prompts.get(lang, "trader.label.outputLanguage");
@@ -564,82 +546,59 @@ class PromptI18nTest {
         return p;
     }
 
-    /** 四块素材全走英文：动作行/观望行/警报行/ERROR 行/价格路径都覆盖到 */
+    /** 五块素材全走英文：案例（含路径/计划/上下文）、行情、账本（现役带旗/发现/退役）都覆盖到 */
     private ReviewMaterialAssembler.ReviewMaterial enMaterial() {
         AiTraderDecisionMapper decisionMapper = mock(AiTraderDecisionMapper.class);
         AiTraderPlanMapper planMapper = mock(AiTraderPlanMapper.class);
         SimTradeClient sim = mock(SimTradeClient.class);
         KlineHistoryStore store = mock(KlineHistoryStore.class);
+        ExperienceLedger ledger = mock(ExperienceLedger.class);
 
         when(decisionMapper.selectOne(any())).thenReturn(equityRow(FROM - 3600_000, "10000"));
-        AiTraderDecision act = new AiTraderDecision();
-        act.setWakeTime(FROM + 3600_000);
-        act.setKind(AiTraderDecision.KIND_TRADE);
-        act.setStatus(AiTraderDecision.STATUS_OK);
-        act.setReasoning("[ROUND CONCLUSION]\nJudgement: breakout\nAction: long\nWaiting: none");
-        act.setActionsJson("[{\"tool\":\"open_position\",\"args\":{\"symbol\":\"BTCUSDT\",\"side\":\"LONG\"},"
-                + "\"status\":\"pending\"}]");
-        AiTraderDecision hold = new AiTraderDecision();
-        hold.setWakeTime(FROM + 7200_000);
-        hold.setKind(AiTraderDecision.KIND_ALERT);
-        hold.setStatus(AiTraderDecision.STATUS_OK);
-        hold.setReasoning("[ROUND CONCLUSION]\nJudgement: noise\nAction: HOLD\nWaiting: retest 99000");
-        AiTraderDecision noWait = new AiTraderDecision();
-        noWait.setWakeTime(FROM + 10800_000);
-        noWait.setKind(AiTraderDecision.KIND_TRADE);
-        noWait.setStatus(AiTraderDecision.STATUS_OK);
-        AiTraderDecision err = new AiTraderDecision();
-        err.setWakeTime(FROM + 14400_000);
-        err.setKind(AiTraderDecision.KIND_TRADE);
-        err.setStatus(AiTraderDecision.STATUS_ERROR);
-        when(decisionMapper.selectList(any())).thenReturn(
-                List.of(equityRow(FROM + 3600_000, "10500")),
-                List.of(act, hold, noWait, err));
+        when(decisionMapper.selectList(any())).thenReturn(List.of(equityRow(FROM + 3600_000, "10500")));
         when(sim.getClosedPositions(eq(99L), anyInt())).thenReturn(List.of(
                 closedPos("300", FROM + 3600_000, FROM + 7200_000)));
-        when(planMapper.selectList(any())).thenReturn(List.of(plan(AiTraderPlan.STATUS_CLOSED)));
+        AiTraderPlan plan = plan(AiTraderPlan.STATUS_CLOSED);
+        plan.setStopLossPrice(new BigDecimal("99000"));
+        plan.setTakeProfitPrice(new BigDecimal("104000"));
+        plan.setRevisionsJson("[{\"time\":\"x\",\"type\":\"stop_loss\",\"change\":\"99000->99500\",\"reason\":\"lock\"}]");
+        plan.setEntryCtxJson("{\"regime\":\"TREND_UP\",\"atr1h\":300,\"stopAtr\":3.3,\"stopPct\":1.0,\"hourBj\":9,"
+                + "\"orderType\":\"MARKET\",\"leverage\":10}");
+        when(planMapper.selectList(any())).thenReturn(List.of(plan));
         when(store.load(anyString(), anyString(), anyLong(), anyLong())).thenReturn(List.of(
-                new KlineBar(FROM, FROM + 300_000, new BigDecimal("100000"), new BigDecimal("101000"),
+                new KlineBar(FROM + 3600_000, FROM + 3900_000, new BigDecimal("100000"), new BigDecimal("101000"),
                         new BigDecimal("99500"), new BigDecimal("100500"), BigDecimal.ONE)));
+
+        AiTraderExperience active = new AiTraderExperience();
+        active.setId(1L);
+        active.setKind(AiTraderExperience.KIND_RULE);
+        active.setSlot(AiTraderExperience.SLOT_PROFIT_HANDLE);
+        active.setDirection(AiTraderExperience.DIR_EXECUTION);
+        active.setText("exit only at target");
+        active.setEvidence("5 trades");
+        active.setSupports(5);
+        active.setOpposes(1);
+        active.setUntested(0);
+        active.setFlagged(true);
+        AiTraderExperience finding = new AiTraderExperience();
+        finding.setId(2L);
+        finding.setKind(AiTraderExperience.KIND_FINDING);
+        finding.setSlot(AiTraderExperience.SLOT_RISK);
+        finding.setDirection(AiTraderExperience.DIR_EXECUTION);
+        finding.setText("rule six left money on the table");
+        finding.setEvidence("5 trades");
+        AiTraderExperience retired = new AiTraderExperience();
+        retired.setId(3L);
+        retired.setText("chase only above volume ratio 2");
+        retired.setRetireReason("14 of 20 opposed");
+        when(ledger.active(anyLong(), anyInt())).thenReturn(List.of(active, finding));
+        when(ledger.retired(anyLong(), anyInt())).thenReturn(List.of(retired));
 
         AiTrader t = enTrader();
         t.setSymbols("BTCUSDT");
-        return new ReviewMaterialAssembler(decisionMapper, planMapper, sim, store, prompts,
-                new DecisionText(prompts))
+        return new ReviewMaterialAssembler(decisionMapper, planMapper, sim, prompts, new CaseFileBuilder(store),
+                ledger, new PlayStatsAssembler(sim, planMapper, prompts))
                 .assemble(t, FROM, TO, AgentLang.EN);
-    }
-
-    private PeerInsightService enPeers() {
-        AiTraderMapper traderMapper = mock(AiTraderMapper.class);
-        AiTraderDecisionMapper decisionMapper = mock(AiTraderDecisionMapper.class);
-        AiTraderPlanMapper planMapper = mock(AiTraderPlanMapper.class);
-        SimTradeClient sim = mock(SimTradeClient.class);
-        ReviewMaterialAssembler assembler = mock(ReviewMaterialAssembler.class);
-
-        AiTrader me = enTrader();
-        me.setStatus(AiTrader.STATUS_RUNNING);
-        AiTrader other = enTrader();
-        other.setId(8L);
-        other.setName("Beta");
-        other.setSimUserId(80L);
-        other.setStatus(AiTrader.STATUS_LIQUIDATED);
-        other.setLearningNotes("what I took from peers");
-
-        when(traderMapper.selectList(any())).thenReturn(List.of(me, other));
-        when(traderMapper.selectById(8L)).thenReturn(other);
-        when(traderMapper.selectById(404L)).thenReturn(null);
-        AiTraderDecision review = new AiTraderDecision();
-        review.setWakeTime(TO);
-        review.setReasoning("[REVIEW]\nScorecard: 10000 -> 11500\nRules: wait for the retest");
-        when(assembler.lastReview(anyLong(), anyInt())).thenReturn(review);
-        when(decisionMapper.selectOne(any())).thenReturn(equityRow(TO, "11500"));
-        when(sim.getClosedPositions(anyLong(), anyInt())).thenReturn(List.of(
-                closedPos("300", FROM + 3600_000, FROM + 7200_000)));
-        when(planMapper.selectList(any())).thenReturn(List.of(
-                plan(AiTraderPlan.STATUS_LIVE), plan(AiTraderPlan.STATUS_CLOSED)));
-        // 两人都挂着仓 → 都在同侪池里（在场判据不依赖墙钟）
-        when(sim.getAllPositions(anyLong())).thenReturn(List.of(new FuturesPositionDTO()));
-        return new PeerInsightService(traderMapper, decisionMapper, planMapper, sim, assembler, prompts);
     }
 
 }

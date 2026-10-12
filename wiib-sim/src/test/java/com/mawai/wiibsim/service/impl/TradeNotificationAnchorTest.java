@@ -9,6 +9,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import com.mawai.wiibsim.config.FuturesLeverageBracketRegistry;
 import com.mawai.wiibsim.config.TradingConfig;
+import com.mawai.wiibsim.ledger.LedgerTx;
 import com.mawai.wiibsim.mapper.FuturesOrderMapper;
 import com.mawai.wiibsim.mapper.FuturesPositionMapper;
 import com.mawai.wiibsim.mapper.UserMapper;
@@ -16,14 +17,17 @@ import com.mawai.wiibcommon.cache.CacheService;
 import com.mawai.wiibsim.service.CrossMarginService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.TradeNotificationService;
-import com.mawai.wiibsim.util.RedisLockUtil;
+import com.mawai.wiibsim.util.FairLockRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,6 +51,7 @@ class TradeNotificationAnchorTest {
     private FuturesPositionMapper positionMapper;
     private TradeNotificationService tradeNotification;
     private CacheService cacheService;
+    private CrossMarginService crossMarginService;
     private FuturesRiskServiceImpl riskService;
     private CrossLiquidationServiceImpl crossLiquidation;
 
@@ -70,17 +75,21 @@ class TradeNotificationAnchorTest {
         UserMapper userMapper = mock(UserMapper.class);
         TradingConfig tradingConfig = mock(TradingConfig.class);
         FuturesPositionIndexService indexService = mock(FuturesPositionIndexService.class);
-        CrossMarginService crossMarginService = mock(CrossMarginService.class);
+        crossMarginService = mock(CrossMarginService.class);
+        FuturesLeverageBracketRegistry bracketRegistry = mock(FuturesLeverageBracketRegistry.class);
 
         when(tradingConfig.calculateFuturesCommission(any(), anyBoolean(), anyBoolean())).thenReturn(BigDecimal.ZERO);
+        // 强平复核一律判满足（维持保证金给到 50 ≥ 50−5），这里只验通知锚点
+        when(bracketRegistry.calcMaintenanceMargin(anyString(), any())).thenReturn(new BigDecimal("50"));
 
+        TransactionTemplate tx = new TransactionTemplate(mock(PlatformTransactionManager.class));
         riskService = new FuturesRiskServiceImpl(positionMapper, orderMapper, userMapper, tradingConfig,
-                mock(RedisLockUtil.class), cacheService, indexService,
-                mock(FuturesLeverageBracketRegistry.class), crossMarginService, tradeNotification);
+                mock(FairLockRegistry.class), cacheService, indexService,
+                bracketRegistry, crossMarginService, tradeNotification, tx, new LedgerTx(tx));
 
         crossLiquidation = new CrossLiquidationServiceImpl(crossMarginService, positionMapper, orderMapper,
-                tradingConfig, cacheService, indexService, mock(RedisLockUtil.class), tradeNotification,
-                new CrossBandRegistry());
+                tradingConfig, cacheService, indexService, mock(FairLockRegistry.class),
+                tradeNotification, new CrossBandRegistry(), riskService, tx);
     }
 
     private static FuturesPosition isolatedLong() {
@@ -180,6 +189,12 @@ class TradeNotificationAnchorTest {
 
     // ==================== 全仓爆仓 ====================
 
+    /** 锁内重判用的快照：净值 −10 ≤ 维持保证金 0 → 判爆 */
+    private static CrossMarginService.CrossAccount liquidatable(FuturesPosition... positions) {
+        return new CrossMarginService.CrossAccount(BigDecimal.ZERO, new BigDecimal("-10"), BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(positions), Map.of());
+    }
+
     @Test
     void 全仓爆仓合并成一条且仓位数写进quantity() {
         FuturesPosition a = isolatedLong();
@@ -189,11 +204,13 @@ class TradeNotificationAnchorTest {
         b.setSymbol("ETHUSDT");
         b.setMarginMode(FuturesPosition.CROSS);
 
-        when(positionMapper.selectList(any())).thenReturn(List.of(a, b));
+        when(crossMarginService.snapshot(7L, null, null)).thenReturn(liquidatable(a, b));
+        when(positionMapper.selectById(9L)).thenReturn(a);
+        when(positionMapper.selectById(10L)).thenReturn(b);
         when(cacheService.getMarkPrice(anyString())).thenReturn(new BigDecimal("90"));
         when(positionMapper.casClosePosition(anyLong(), anyString(), any(), any())).thenReturn(1);
 
-        crossLiquidation.liquidateAll(7L, null, null);
+        crossLiquidation.liquidateAll(7L, null, null, List.of(9L, 10L));
 
         ArgumentCaptor<BigDecimal> settle = ArgumentCaptor.forClass(BigDecimal.class);
         verify(tradeNotification).crossLiquidation(eq(7L), eq(2), settle.capture());
@@ -205,11 +222,12 @@ class TradeNotificationAnchorTest {
     void 全仓一个都没抢到就不发通知() {
         FuturesPosition a = isolatedLong();
         a.setMarginMode(FuturesPosition.CROSS);
-        when(positionMapper.selectList(any())).thenReturn(List.of(a));
+        when(crossMarginService.snapshot(7L, null, null)).thenReturn(liquidatable(a));
+        when(positionMapper.selectById(9L)).thenReturn(a);
         when(cacheService.getMarkPrice(anyString())).thenReturn(new BigDecimal("90"));
         when(positionMapper.casClosePosition(anyLong(), anyString(), any(), any())).thenReturn(0);
 
-        crossLiquidation.liquidateAll(7L, null, null);
+        crossLiquidation.liquidateAll(7L, null, null, List.of(9L));
 
         verify(tradeNotification, never()).crossLiquidation(anyLong(), anyInt(), any());
     }
