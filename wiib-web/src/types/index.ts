@@ -1545,12 +1545,12 @@ export interface GenThreadState {
 /** 生成器 SSE 事件 */
 export type GenEvent =
   | { type: 'thread'; id: string }
-  | { type: 'status'; stage: 'generating' | 'asking' }
+  | { type: 'status'; stage: 'generating' | 'proposing' | 'asking' }
   | { type: 'token'; text: string }
   | ({ type: 'version' } & GenVersion)
   | ({ type: 'question' } & GenQuestion)
   | { type: 'done' }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; state: GenThreadState };
 
 // ========== 因子挖掘（py 服务 wiib-alpha，前缀 /api/alpha，仅管理员） ==========
 

@@ -20,7 +20,7 @@ const MAX_CHARS = 4000;
 const ORB_LIGHT = { color: '#f25f0a', base: '#f0f0ec' };
 const ORB_DARK = { color: '#f97316', base: '#1a1b1f' };
 
-type Stage = 'idle' | 'generating' | 'asking' | 'done';
+type Stage = 'idle' | 'generating' | 'proposing' | 'asking' | 'done';
 
 const BTN = 'border border-border hover:bg-surface-hover rounded-lg px-3 py-1.5 text-[11px] font-bold inline-flex items-center gap-1.5 disabled:opacity-50';
 
@@ -119,12 +119,12 @@ export function PromptGen() {
         setStage('done');
         break;
       case 'error':
-        // 流断在哪儿，题还留着，原样再提交一次就是重试；没题的（首版断了）给「继续生成」
-        setPending(true);
+        // 出错后页面长什么样听服务端的
+        apply(e.state);
         toast(e.message, 'error');
         break;
     }
-  }, [toast]);
+  }, [apply, toast]);
 
   const run = useCallback(async (call: (on: (e: GenEvent) => void) => Promise<void>) => {
     setBusy(true);

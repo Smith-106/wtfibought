@@ -2,12 +2,16 @@ import base64
 
 import pytest
 from langchain_anthropic import ChatAnthropic
+from langchain_core.exceptions import (ModelAPIError, ModelAuthenticationError, ModelConnectionError,
+                                       ModelInvalidRequestError, ModelNotFoundError, ModelPermissionDeniedError,
+                                       ModelRateLimitError, ModelTimeoutError)
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import GoogleAuthenticationError
 from langchain_openai import ChatOpenAI
 
 from wiib_gen.config import config
 from wiib_gen.crypto import encrypt
-from wiib_gen.llm import LlmError, build_chat_model
+from wiib_gen.llm import LlmError, build_chat_model, upstream_error
 
 SECRET = base64.b64encode(bytes(range(32))).decode()
 
@@ -95,3 +99,31 @@ def test_effort_outside_package_table_ignored():
 def test_unknown_protocol_raises():
     with pytest.raises(LlmError, match="暂不支持"):
         build_chat_model(row("azure"))
+
+
+# ========== 上游错误文案 ==========
+
+
+@pytest.mark.parametrize("exc, expect", [
+    (ModelAuthenticationError("bad key"), "API key 无效"),
+    (ModelPermissionDeniedError("no"), "API key 无效"),
+    (ModelRateLimitError("slow down"), "额度已用尽或触发限流"),
+    (ModelNotFoundError("no such model"), "不支持该模型"),
+    (ModelAPIError("boom"), "上游服务端出错"),
+    (ModelInvalidRequestError("bad effort"), "上游拒绝了请求（ModelInvalidRequestError）"),
+    (ModelConnectionError("refused"), "端点无响应"),
+    (ModelTimeoutError("slow"), "端点无响应"),
+    # Gemini 的包装类不是 google.genai 的 APIError，靠混入类认
+    (GoogleAuthenticationError("bad key"), "API key 无效"),
+])
+def test_upstream_error_wording(exc, expect):
+    assert expect in upstream_error(exc)
+
+
+def test_upstream_error_never_echoes_upstream_text():
+    assert "sk-secret" not in upstream_error(ModelInvalidRequestError("https://gw.test/v1?api_key=sk-secret"))
+
+
+def test_upstream_error_ignores_our_own_failures():
+    assert upstream_error(RuntimeError("psycopg connect failed")) is None
+    assert upstream_error(LlmError("端点 1 不存在")) is None

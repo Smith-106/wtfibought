@@ -15,6 +15,7 @@
   "stage": {
     "idle": "还没开始",
     "generating": "正在写这一版",
+    "proposing": "在想下一题",
     "asking": "等你回答",
     "done": "已完成"
   },

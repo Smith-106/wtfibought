@@ -11,6 +11,9 @@ from typing import Any, Mapping
 
 import psycopg
 from langchain_anthropic import ChatAnthropic
+from langchain_core.exceptions import (ModelAPIError, ModelAuthenticationError, ModelConnectionError, ModelError,
+                                       ModelNotFoundError, ModelPermissionDeniedError, ModelRateLimitError,
+                                       ModelTimeoutError)
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
@@ -82,6 +85,24 @@ def build_chat_model(endpoint: Mapping[str, Any]) -> BaseChatModel:
         )
 
     raise LlmError(f"端点协议 {protocol} 本工具暂不支持")
+
+
+def upstream_error(exc: BaseException) -> str | None:
+    """上游模型调用失败给用户看的一句话，与 Java LlmErrorMessages 同口径；三家 langchain 包装类都挂着
+    langchain_core 的 Model*Error，按它分类。不是上游的错给 None；只说类别，不回显上游原文"""
+    if isinstance(exc, (ModelConnectionError, ModelTimeoutError)):
+        return "端点无响应，请检查 Base URL 是否正确"
+    if isinstance(exc, (ModelAuthenticationError, ModelPermissionDeniedError)):
+        return "API key 无效或无权限，请到配置里检查"
+    if isinstance(exc, ModelRateLimitError):
+        return "你的 API 额度已用尽或触发限流，请稍后再试"
+    if isinstance(exc, ModelNotFoundError):
+        return "端点不支持该模型或 Base URL 路径不对，请检查配置"
+    if isinstance(exc, ModelAPIError):
+        return "上游服务端出错，请稍后重试"
+    if isinstance(exc, ModelError):
+        return f"上游拒绝了请求（{type(exc).__name__}），请检查模型与思考档位配置"
+    return None
 
 
 def _effort(value: Any) -> str | None:

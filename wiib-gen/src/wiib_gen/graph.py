@@ -30,7 +30,10 @@ class GenState(TypedDict, total=False):
     answers: list[dict[str, str]]
     # 问过的题 key，答了跳了都算；出下一道题时照它避重
     asked: list[str]
+    # 等着问的那道题；ask_next 问完就清掉
     question: dict[str, Any] | None
+    # 刚答的那几条，generate 拿它写「本轮新答」
+    fresh: list[dict[str, str]]
     versions: list[dict[str, Any]]
     done: bool
 
@@ -94,12 +97,13 @@ async def ask_next(state: GenState) -> Command:
     value = interrupt(question)
     asked = _asked(state, question)
     if value.get("finish"):
-        return Command(goto=END, update={"done": True, "asked": asked})
+        return Command(goto=END, update={"done": True, "asked": asked, "question": None})
     if value.get("skip"):
-        return Command(goto="propose_next", update={"asked": asked})
+        return Command(goto="propose_next", update={"asked": asked, "question": None})
+    picked = _picked(question, value)
     return Command(goto="generate",
-                   update={"asked": asked,
-                           "answers": state["answers"] + _picked(question, value)})
+                   update={"asked": asked, "question": None,
+                           "answers": state["answers"] + picked, "fresh": picked})
 
 
 def _asked(state: GenState, question: dict[str, Any]) -> list[str]:
@@ -129,7 +133,7 @@ async def _generate(state: GenState, factory: ModelFactory) -> dict[str, Any]:
     last_text = versions[-1]["text"] if versions else ""
     messages: list[BaseMessage] = [
         SystemMessage(prompts.system_prompt(facts)),
-        HumanMessage(prompts.user_message(state["answers"], last_text, _fresh(state))),
+        HumanMessage(prompts.user_message(state["answers"], last_text, state["fresh"])),
     ]
     raw = await _stream_text(model, messages)
     text, notes = _split(raw)
@@ -143,15 +147,6 @@ async def _generate(state: GenState, factory: ModelFactory) -> dict[str, Any]:
         notes = f"{notes}\n{prompts.truncated_note(facts['dialog_lang'])}".strip()
     version = {"no": len(versions) + 1, "text": text, "notes": notes}
     return {"versions": versions + [version]}
-
-
-def _fresh(state: GenState) -> list[dict[str, str]]:
-    """本轮新答：上一道题问的那几个 key；第一版之前没问过题，全部都算新的"""
-    question = state.get("question")
-    if not question:
-        return state["answers"]
-    keys = {item["key"] for item in question["items"]}
-    return [a for a in state["answers"] if a["key"] in keys]
 
 
 async def _stream_text(model: BaseChatModel, messages: list[BaseMessage]) -> str:

@@ -1,8 +1,10 @@
 import json
+import time
 from typing import Any
 
 import httpx
 import pytest
+from langchain_core.exceptions import ModelAuthenticationError
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -92,6 +94,9 @@ def head(token: str = "tok-a") -> dict[str, str]:
 def events(response: httpx.Response) -> list[tuple[str, Any]]:
     out = []
     for raw in response.text.strip().split("\n\n"):
+        # 心跳是注释帧，不算事件
+        if raw.startswith(":"):
+            continue
         name, data = raw.split("\n", 1)
         out.append((name.removeprefix("event: "), json.loads(data.removeprefix("data: "))))
     return out
@@ -149,7 +154,7 @@ async def test_sse_line(client):
     evts = events(await resume(client, thread_id, {"answer": {
         "direction": "只做多", "holding": "波段 1~3 天", "style": "均衡"}}))
     assert shape(evts) == ["status", "token", "version", "status", "question"]
-    assert [d["stage"] for _, d in evts if _ == "status"][:2] == ["asking", "generating"]
+    assert [d["stage"] for _, d in evts if _ == "status"] == ["asking", "generating", "proposing", "asking"]
     version = pick(evts, "version")
     assert version == {"no": 1, "text": "【方法】跟着趋势做", "notes": "第一版"}
     streamed = "".join(d["text"] for n, d in evts if n == "token")
@@ -214,32 +219,25 @@ async def test_bad_token_is_json_401(client):
     assert resp.json() == {"code": 401, "msg": "登录态失效"}
 
 
-async def test_model_failure_becomes_error_event(client, monkeypatch):
+@pytest.mark.parametrize("exc, message", [
+    (LlmError("端点 1 不存在或不属于当前用户"), "端点 1 不存在或不属于当前用户"),
+    # 上游模型的错按类别说人话
+    (ModelAuthenticationError("Incorrect API key"), "API key 无效或无权限，请到配置里检查"),
+    # 不认识的异常不把内部细节下发
+    (RuntimeError("psycopg connect 10.0.0.7:5432 failed"), "生成失败，请重试"),
+])
+async def test_error_event_wording(client, monkeypatch, exc, message):
     thread_id, _ = await start(client)
     await resume(client, thread_id, {"answer": {"mode": "从零写一份"}})
 
     def boom(row):
-        raise LlmError("端点 1 不存在或不属于当前用户")
+        raise exc
 
     monkeypatch.setattr(graph, "build_chat_model", boom)
     evts = events(await resume(client, thread_id, {"answer": {
         "direction": "只做多", "holding": "更长", "style": "保守"}}))
     assert shape(evts)[-1] == "error"
-    assert pick(evts, "error")["message"] == "端点 1 不存在或不属于当前用户"
-
-
-async def test_unexpected_error_message_is_masked(client, monkeypatch):
-    """不认识的异常不把内部细节下发"""
-    thread_id, _ = await start(client)
-    await resume(client, thread_id, {"answer": {"mode": "从零写一份"}})
-
-    def boom(row):
-        raise RuntimeError("psycopg connect 10.0.0.7:5432 failed")
-
-    monkeypatch.setattr(graph, "build_chat_model", boom)
-    evts = events(await resume(client, thread_id, {"answer": {
-        "direction": "只做多", "holding": "更长", "style": "保守"}}))
-    assert pick(evts, "error") == {"message": "生成失败，请重试"}
+    assert pick(evts, "error")["message"] == message
 
 
 async def test_unhandled_endpoint_error_is_json_500(client, monkeypatch):
@@ -263,26 +261,45 @@ async def test_unhandled_endpoint_error_is_json_500(client, monkeypatch):
 
 
 async def test_broken_generate_is_pending_and_resumable(client, monkeypatch):
-    thread_id, _ = await start(client)
-    await resume(client, thread_id, {"answer": {"mode": "从零写一份"}})
+    """第 2 版生成断了：刷新看到的不该是已经答过的 play 题；空 resume 把挂住的 generate 重跑"""
+    thread_id = await to_first_version(client)
 
     def boom(row):
         raise LlmError("上游抽风")
 
     monkeypatch.setattr(graph, "build_chat_model", boom)
-    evts = events(await resume(client, thread_id, {"answer": {
-        "direction": "只做多", "holding": "更长", "style": "保守"}}))
+    evts = events(await resume(client, thread_id, {"answer": {"play": "趋势跟随"}}))
     assert shape(evts)[-1] == "error"
+    # error 帧里带着出错后的线程快照，刷新页面拿到的也是它
+    state = pick(evts, "error")["state"]
+    assert state == (await client.get(f"/api/gen/threads/{thread_id}", headers=head())).json()["data"]
+    assert state["question"] is None and state["pending"] is True
+    assert [v["no"] for v in state["versions"]] == [1]
 
-    state = (await client.get(f"/api/gen/threads/{thread_id}", headers=head())).json()["data"]
-    assert state == {"versions": [], "question": None, "done": False, "pending": True}
-
-    # 空 resume：挂住的 generate 重跑
     use_model(monkeypatch, reply)
     evts = events(await resume(client, thread_id, {}))
-    assert pick(evts, "version")["no"] == 1
-    state = (await client.get(f"/api/gen/threads/{thread_id}", headers=head())).json()["data"]
-    assert len(state["versions"]) == 1
+    assert pick(evts, "version")["no"] == 2
+    assert pick(evts, "question")["items"][0]["key"] == "exit_rule"
+
+
+# ========== 心跳 ==========
+
+
+async def test_silent_graph_sends_pings(client, monkeypatch):
+    """模型思考期一个 token 都没有，也得隔一会儿发帧注释撑住连接"""
+    monkeypatch.setattr(main, "_PING_SECONDS", 0.01)
+
+    def slow_endpoint(endpoint_id, user_id):
+        time.sleep(0.05)
+        return {"id": endpoint_id}
+
+    monkeypatch.setattr(graph, "load_endpoint", slow_endpoint)
+    thread_id, _ = await start(client)
+    await resume(client, thread_id, {"answer": {"mode": "从零写一份"}})
+    resp = await resume(client, thread_id, {"answer": {
+        "direction": "只做多", "holding": "更长", "style": "保守"}})
+    assert ": ping\n\n" in resp.text
+    assert pick(events(resp), "version")["no"] == 1
 
 
 # ========== 端点先验 ==========

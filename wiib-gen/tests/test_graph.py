@@ -48,7 +48,7 @@ def facts(**over) -> dict[str, Any]:
 
 
 def initial(**over) -> dict[str, Any]:
-    return {"facts": facts(**over), "answers": [], "asked": [], "question": None,
+    return {"facts": facts(**over), "answers": [], "asked": [], "question": None, "fresh": [],
             "versions": [], "done": False}
 
 

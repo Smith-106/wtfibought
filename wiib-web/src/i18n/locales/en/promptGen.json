@@ -15,6 +15,7 @@
   "stage": {
     "idle": "Not started",
     "generating": "Writing this version",
+    "proposing": "Thinking of the next question",
     "asking": "Your turn",
     "done": "Finished"
   },

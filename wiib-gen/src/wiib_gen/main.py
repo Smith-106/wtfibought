@@ -27,7 +27,7 @@ from . import prompts
 from .config import config
 from .crypto import CryptoError
 from .graph import build_graph
-from .llm import LlmError, load_endpoint
+from .llm import LlmError, load_endpoint, upstream_error
 from .platform import AuthError, Platform, PlatformError
 
 logger = logging.getLogger(__name__)
@@ -103,13 +103,28 @@ async def _facts(who: Auth, endpoint_id: int, output_lang: str) -> dict[str, Any
 # ========== SSE ==========
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+# 静默超过这么久就发一帧注释撑住连接；与 alpha 同值
+_PING_SECONDS = 15.0
 # 节点 → 页面上的状态；连着的同一状态只发一次
 _STAGE = {"ask_mode": "asking", "ask_base": "asking", "ask_next": "asking",
-          "propose_next": "asking", "generate": "generating"}
+          "propose_next": "proposing", "generate": "generating"}
 
 
 def _frame(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _explain(exc: Exception, thread_id: str) -> str:
+    """错误给用户看的一句话"""
+    if isinstance(exc, (LlmError, PlatformError, CryptoError)):
+        return str(exc)
+    message = upstream_error(exc)
+    if message is None:
+        # 内部细节不下发，日志里留全栈
+        logger.exception("生成失败 thread=%s", thread_id)
+        return "生成失败，请重试"
+    logger.warning("上游模型调用失败 thread=%s %s：%s", thread_id, type(exc).__name__, message)
+    return message
 
 
 async def _events(graph, payload: Any, thread_id: str,
@@ -117,11 +132,29 @@ async def _events(graph, payload: Any, thread_id: str,
     if head is not None:
         yield _frame("thread", head)
     cfg = _cfg(thread_id)
+    # 图在自己的任务里跑、事件进队列；这边等不到事件就发 ping
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async for item in graph.astream(payload, cfg, stream_mode=["tasks", "updates", "messages", "custom"],
+                                            durability="sync"):
+                queue.put_nowait(item)
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(pump())
     stage = None
     try:
-        async for mode, chunk in graph.astream(
-                payload, cfg, stream_mode=["tasks", "updates", "messages", "custom"],
-                durability="sync"):
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=_PING_SECONDS)
+            except TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if item is None:
+                break
+            mode, chunk = item
             if mode == "tasks" and "input" in chunk:
                 nxt = _STAGE.get(chunk["name"])
                 if nxt and nxt != stage:
@@ -139,14 +172,14 @@ async def _events(graph, payload: Any, thread_id: str,
                     yield _frame("question", chunk["__interrupt__"][0].value)
                 elif "generate" in chunk:
                     yield _frame("version", chunk["generate"]["versions"][-1])
-    except (LlmError, PlatformError, CryptoError) as exc:
-        yield _frame("error", {"message": str(exc)})
+        await task
+    except Exception as exc:
+        # 出错后页面长什么样一并带下去
+        yield _frame("error", {"message": _explain(exc, thread_id), "state": _view(await graph.aget_state(cfg))})
         return
-    except Exception:
-        # 内部细节不下发，日志里留全栈
-        logger.exception("生成失败 thread=%s", thread_id)
-        yield _frame("error", {"message": "生成失败，请重试"})
-        return
+    finally:
+        # 页面断开时把图停掉
+        task.cancel()
     if not (await graph.aget_state(cfg)).next:
         yield _frame("done", {})
 
@@ -182,11 +215,11 @@ async def _own(request: Request, thread_id: str, user_id: int) -> None:
 def _view(snapshot: StateSnapshot) -> dict[str, Any]:
     """刷新页面与回退后都看这个形状"""
     values = snapshot.values
-    # 停在 interrupt 上时题目在 interrupt 里，刚分叉回退时题目在 state 里
+    # 停在 interrupt 上时题目在 interrupt 里，刚分叉回退时题目还在 state 里
     question = snapshot.interrupts[0].value if snapshot.interrupts else values.get("question")
     return {
         "versions": values.get("versions") or [],
-        "question": question if snapshot.next else None,
+        "question": question,
         "done": bool(values.get("done")),
         # 图还停在半路（生成断了也算），前端据此给「继续生成」
         "pending": bool(snapshot.next),
@@ -220,7 +253,7 @@ async def create_thread(body: CreateBody, request: Request, who: Auth = Depends(
     facts = await _facts(who, body.endpointId, body.outputLang)
     thread_id = uuid.uuid4().hex
     await _remember(request, thread_id, who.user_id)
-    state = {"facts": facts, "answers": [], "asked": [], "question": None,
+    state = {"facts": facts, "answers": [], "asked": [], "question": None, "fresh": [],
              "versions": [], "done": False}
     return _sse(request.app.state.graph, state, thread_id, {"id": thread_id})
 
