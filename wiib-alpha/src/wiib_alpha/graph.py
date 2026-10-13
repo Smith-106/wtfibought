@@ -1,5 +1,7 @@
-"""挖掘图：提假设 → 每条候选各自实现/评估/判门/评审 → 同批 BH → 等审批 → 入库。
+"""挖掘图：提假设 → 每条候选各自实现/评估/判门/评审 → 同批 BH → 幸存者算 holdout → 等审批 → 入库。
 
+评估、门、评审、BH 全部只看搜索段（cut 之前）；holdout 只给同批 BH 之后的幸存者算一次 IC，
+结果进 eval 和审批卡片，不进评审提示词，也不写进 tried 回灌给模型。
 panels、参照集、模型、store 都在 Context 里，不进 state。interrupt 节点无副作用，入库在它之后的独立节点。
 候选节点的落库都是按 id 覆盖写，节点重跑不会留重复。
 """
@@ -22,9 +24,11 @@ from langgraph.types import Send, interrupt
 from . import prompts
 from .data.panel import FEATURE_COLUMNS
 from .dsl import DslError, parse
+from .eval.combo import Combo, gain
 from .eval.evaluate import evaluate
-from .eval.gates import apply_fdr, judge, passed
+from .eval.gates import apply_fdr, fmt, judge, origin_gate, passed
 from .eval.params import EvalParams, Thresholds
+from .eval.recheck import recheck
 from .store import Store, clean, now_ms
 
 logger = logging.getLogger(__name__)
@@ -37,8 +41,13 @@ MAX_REVISES = 2
 class Context:
     gen: BaseChatModel
     review: BaseChatModel
+    # 全量面板只给 holdout 用；评估和门只看 search（cut 之前）
     panels: dict[str, pd.DataFrame]
+    search: dict[str, pd.DataFrame]
+    cut_ms: int
     references: dict[str, pd.DataFrame]
+    # 库里因子在搜索段上的组合，G9 的基线
+    combo: Combo
     known: set[str]
     library: list[dict[str, Any]]
     facts: dict[str, Any]
@@ -113,9 +122,11 @@ def build_graph(checkpointer: BaseCheckpointSaver, ctx: Context):
             cand["expr"], cand["canonical"], cand["status"] = str(expr), expr.canonical(), "evaluating"
             await _save(ctx.store, run_id, cand)
             async with evaluating:
-                ev = await asyncio.to_thread(evaluate, expr, ctx.panels, ctx.params, ctx.references)
+                ev = await asyncio.to_thread(evaluate, expr, ctx.search, ctx.params, ctx.references, ctx.combo)
             gates = judge(ev, ctx.thresholds, ctx.params.primary, ctx.known)
             cand["eval"], cand["gates"] = clean(ev), clean(gates)
+            # 每评估一次就是一次试验，被评审打回重写的版本也算
+            cand["evaluations"] = cand.get("evaluations", 0) + 1
             if not passed(gates):
                 cand["status"] = "rejected_gates"
                 cand["reason"] = "；".join(f"{g['id']} {g['note']}" for g in gates if not g["passed"])
@@ -172,17 +183,45 @@ def build_graph(checkpointer: BaseCheckpointSaver, ctx: Context):
         candidates = [dict(c) for c in state.get("candidates", [])]
         evaluated = [c for c in candidates if c.get("gates")]
         wrappers = [{"gates": c["gates"]} for c in evaluated]
-        apply_fdr(wrappers, ctx.thresholds.fdr_q, ctx.params.iterations)
+        # 被评审打回改掉的旧版本也各算一次检验：进 BH 的 m，也进试验数
+        superseded = sum(c["evaluations"] - 1 for c in evaluated)
+        apply_fdr(wrappers, ctx.thresholds.fdr_q, ctx.params.iterations, superseded)
         for c, w in zip(evaluated, wrappers):
             c["gates"] = clean(w["gates"])
             if c["status"] == "passed" and not w["passed"]:
                 c["status"] = "rejected_fdr"
                 c["reason"] = "同批 BH-FDR 没扛住"
             await _save(ctx.store, run_id, c)
-        total = await ctx.store.bump_trials(len(evaluated))
+        total = await ctx.store.bump_trials(len(evaluated) + superseded)
         survivors = [c for c in candidates if c["status"] == "passed"]
+        # 同批按增量从大到小排队：规范形和前面的重合就按 G8 拒；结构不同的再对前面已留下的组合算一次增量，写进 G9 备注给人看
+        survivors.sort(key=lambda c: -c["eval"]["gain"]["horizons"][str(ctx.params.primary)]["gain"])
+        kept, kept_names, kept_canon = ctx.combo, [], {}
+        for c in survivors:
+            expr = parse(c["expr"], FEATURE_COLUMNS)
+            if c["canonical"] in kept_canon:
+                c["gates"] = [clean(origin_gate(c["canonical"], kept_canon)) if g["id"] == "G8" else g for g in c["gates"]]
+                c["status"] = "rejected_gates"
+                c["reason"] = f"G8 规范形与同批 {kept_canon[c['canonical']]} 重合"
+                await _save(ctx.store, run_id, c)
+                await emit(ctx.store, run_id, "log", {"text": f"{c['name']}：{c['reason'][3:]}，拒掉"})
+                continue
+            if kept_names:
+                again = await asyncio.to_thread(gain, kept, c["name"], expr, ctx.params)
+                note = f"；排在同批 {'、'.join(kept_names)} 之后增量 {fmt(again['horizons'][ctx.params.primary]['gain'])}"
+                c["gates"] = [{**g, "note": g["note"] + note} if g["id"] == "G9" else g for g in c["gates"]]
+            kept = await asyncio.to_thread(kept.plus, c["name"], expr)
+            kept_names.append(c["name"])
+            kept_canon[c["canonical"]] = c["name"]
+            # holdout 只给留下的算，拒掉的碰都不碰
+            held = await asyncio.to_thread(recheck, expr, ctx.panels, ctx.cut_ms, ctx.params)
+            c["eval"] = {**c["eval"], "holdout": clean(held)}
+            await _save(ctx.store, run_id, c)
+            main = held["horizons"][ctx.params.primary]
+            await emit(ctx.store, run_id, "log", {
+                "text": f"{c['name']}：holdout 主档 IC {fmt(main['mean'])}，{main['sameSignSymbols']} 个币同号，{main['samples']} 个点"})
         await emit(ctx.store, run_id, "log", {
-            "text": f"本轮评估 {len(evaluated)} 条，过门 {len(survivors)} 条；累计试验 {total} 次，"
+            "text": f"本轮评估 {len(evaluated)} 条，过门 {len(kept_names)} 条；累计试验 {total} 次，"
                     f"按 0.05 门槛累计预期假阳 {total * 0.05:.1f} 条"})
         return {"candidates": candidates}
 

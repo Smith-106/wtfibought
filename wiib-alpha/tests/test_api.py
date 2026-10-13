@@ -40,7 +40,8 @@ def prepared(tmp_path, monkeypatch, planted_panels):
     monkeypatch.setattr(m, "build_models", lambda cfg: (model(gen_reply), model(review_reply)))
     monkeypatch.setattr(m, "_refresh_panels", lambda cfg: None)
     app = m.app
-    app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, surrogates=20)
+    app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, surrogates=20,
+                                  holdout_days=10)
     app.state.thresholds = Thresholds(min_samples=100, min_symbols_same_sign=3)
     app.state.authenticator = Authenticator("http://sim", httpx.AsyncClient(transport=httpx.MockTransport(sim)))
     yield app
@@ -85,7 +86,8 @@ async def wait_until(check, seconds: float = 20.0):
 # ========== 完整一轮 ==========
 
 
-async def test_full_round_over_http(client):
+async def test_full_round_over_http(client, planted_panels):
+    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None}
     run_id = data(await client.post("/api/alpha/runs", json={"k": 2}, headers=ADMIN))["id"]
 
     evts = await events(client, run_id)
@@ -100,10 +102,12 @@ async def test_full_round_over_http(client):
     assert ids == sorted(ids) and len(set(ids)) == len(ids)
 
     state = data(await client.get(f"/api/alpha/runs/{run_id}", headers=ADMIN))
-    assert state["run"]["status"] == "awaiting" and state["trials"] == 2
+    # planted 评估了两版（$volume 被打回、Mean($volume, 4)），noise 一版
+    assert state["run"]["status"] == "awaiting" and state["trials"] == 3
     by_name = {c["name"]: c for c in state["candidates"]}
     assert by_name["planted"]["status"] == "passed" and by_name["planted"]["brief"]["gates"][2]["passed"]
-    assert by_name["noise"]["status"] == "rejected_gates" and by_name["noise"]["brief"] is not None
+    assert by_name["planted"]["brief"]["holdout"]["horizons"]["12h"]["samples"] > 0
+    assert by_name["noise"]["status"] == "rejected_gates" and "holdout" not in by_name["noise"]["brief"]
     assert "eval" not in by_name["planted"]
 
     planted_id = by_name["planted"]["id"]
@@ -117,9 +121,16 @@ async def test_full_round_over_http(client):
     resp = await client.post(f"/api/alpha/runs/{run_id}/decide", json={"decisions": {}}, headers=ADMIN)
     assert resp.status_code == 409 and resp.json()["code"] == 409
 
-    factors = data(await client.get("/api/alpha/library", headers=ADMIN))["factors"]
+    lib = data(await client.get("/api/alpha/library", headers=ADMIN))
+    factors = lib["factors"]
     assert len(factors) == 1 and factors[0]["expr"] == "Mean($volume, 4)" and "eval" not in factors[0]
-    assert factors[0]["brief"]["horizons"]["12h"]["meanIc"] > 0.3
+    assert factors[0]["brief"]["horizons"]["12h"]["meanIc"] > 0.3 and "holdout" in factors[0]["brief"]
+    # 入库后库的组合就有了：搜索段三档加 holdout、主档权重、每币最后一根的信号
+    combo = lib["combo"]
+    assert [w["name"] for w in combo["weights"]] == ["planted"] and combo["weights"][0]["weight"] > 0
+    assert combo["brief"]["horizons"]["12h"]["meanIc"] > 0.3 and combo["brief"]["holdout"]["horizons"]["12h"]["samples"] > 0
+    assert set(combo["latest"]) == {"AAA", "BBB", "CCC"} and "surrogate" not in combo["brief"]
+    assert combo["asOf"] == int(planted_panels["AAA"].index[-1])
     full = data(await client.get(f"/api/alpha/library/{factors[0]['id']}", headers=ADMIN))
     assert "eval" in full and full["gates"][0]["id"] == "G0"
 
@@ -128,13 +139,31 @@ async def test_full_round_over_http(client):
     assert data(await client.get(f"/api/alpha/library/{factors[0]['id']}", headers=ADMIN))["recheck"]["since"] == full["approved_at"]
 
     runs = data(await client.get("/api/alpha/runs", headers=ADMIN))
-    assert runs["runs"][0]["id"] == run_id and runs["runs"][0]["status"] == "done" and runs["trials"] == 2
+    assert runs["runs"][0]["id"] == run_id and runs["runs"][0]["status"] == "done" and runs["trials"] == 3
     assert (await client.get("/api/alpha/runs/nope", headers=ADMIN)).status_code == 404
 
     # 入库之后它就进了冗余对比集：再评估同一条表达式，G6 认出是库里的那条
     out = data(await client.post("/api/alpha/eval", json={"expr": "Mean($volume, 4)"}, headers=ADMIN))
     assert out["brief"]["redundancy"]["with"] == "lib:planted" and out["brief"]["redundancy"]["maxAbs"] > 0.99
     assert not out["passed"]
+
+
+async def test_failed_round_marks_pending_candidates(client):
+    def boom(prompt: str) -> str:
+        if "写成一条表达式" in prompt:
+            raise RuntimeError("上游挂了")
+        return gen_reply(prompt)
+
+    m.app.state.models = (model(boom), model(review_reply))
+    run_id = data(await client.post("/api/alpha/runs", json={"k": 2}, headers=ADMIN))["id"]
+    evts = await events(client, run_id)
+    assert evts[-1]["data"]["status"] == "failed" and any(e["event"] == "error" for e in evts)
+    # 停在 proposed 的两条都标成 failed，而且推了事件，开着的页面能看到
+    failed = [e["data"]["name"] for e in evts if e["event"] == "candidate" and e["data"]["status"] == "failed"]
+    assert sorted(failed) == ["noise", "planted"]
+    state = data(await client.get(f"/api/alpha/runs/{run_id}", headers=ADMIN))
+    assert state["run"]["status"] == "failed"
+    assert all(c["status"] == "failed" and c["reason"] == "这一轮没跑完" for c in state["candidates"])
 
 
 async def test_only_one_round_runs_at_a_time(client):
@@ -150,8 +179,11 @@ async def test_only_one_round_runs_at_a_time(client):
 
 async def test_eval_endpoint(client):
     out = data(await client.post("/api/alpha/eval", json={"expr": "$volume"}, headers=ADMIN))
-    assert out["passed"] is True and len(out["gates"]) == 9 and out["canonical"] == "$volume"
+    assert out["passed"] is True and len(out["gates"]) == 10 and out["canonical"] == "$volume"
     assert out["brief"]["redundancy"]["with"] == "noise4" and out["brief"]["redundancy"]["maxAbs"] < 0.2
+    assert out["gates"][9]["id"] == "G9" and out["brief"]["gain"]["12h"] > 0.3
+    # 手填的也带 holdout：门看搜索段，holdout 另算
+    assert out["brief"]["holdout"]["horizons"]["12h"]["meanIc"] > 0 and out["eval"]["holdout"]["since"] == out["brief"]["holdout"]["since"]
     resp = await client.post("/api/alpha/eval", json={"expr": "Mean(close, 5)"}, headers=ADMIN)
     assert resp.status_code == 400 and "列要写成" in resp.json()["msg"]
     assert (await client.post("/api/alpha/runs", json={"k": 99}, headers=ADMIN)).status_code == 422
@@ -167,6 +199,8 @@ async def test_auth_rules(client):
 async def test_data_status_and_refresh(client):
     status = data(await client.get("/api/alpha/data/status", headers=ADMIN))
     assert status["loaded"] and set(status["symbols"]) == {"AAA", "BBB", "CCC"} and status["facts"]["rows"] == 6000
+    # 6000 根从 2025-01-01 起共 62.5 天，锁最近 10 天
+    assert status["facts"]["holdoutFrom"] == "2025-02-22"
     before = status["loadedAt"]
     assert data(await client.post("/api/alpha/data/refresh", headers=ADMIN)) == {"started": True}
 
@@ -193,6 +227,10 @@ async def test_reference_run(client):
 async def test_restart_marks_running_runs_failed(prepared):
     async with m.lifespan(prepared):
         await prepared.state.store.create_run("zz", 1, "", "zh")
+        await prepared.state.store.upsert_candidate({"id": "zz-1", "run_id": "zz", "seq": 1, "name": "x",
+                                                     "hypothesis": "h", "status": "evaluating"})
     async with m.lifespan(prepared):
         run = await prepared.state.store.run("zz")
         assert run["status"] == "failed" and "重启" in run["error"]
+        cand = (await prepared.state.store.candidates("zz"))[0]
+        assert cand["status"] == "failed" and "重启" in cand["reason"]

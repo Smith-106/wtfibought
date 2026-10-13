@@ -35,7 +35,7 @@ COLUMN_DOCS = {
     "taker_buy_base": "主动买入量（币）", "taker_buy_quote": "主动买入额（USDT）",
     "ret": "本根 bar 的对数收益 log(close/上一根 close)",
     "funding_rate": "最近一次已结算的资金费率，8 小时结算一次，期间不变",
-    "btc_close": "同一时刻 BTC 收盘价", "btc_ret": "同一时刻 BTC 的对数收益",
+    "btc_close": "同一时刻 BTC 收盘价，BTC 自己的面板上是空的", "btc_ret": "同一时刻 BTC 的对数收益，BTC 自己的面板上是空的",
     "liq_long": "本根 bar 内多头被强平的名义额（USDT）", "liq_short": "本根 bar 内空头被强平的名义额（USDT）",
     "liq_count": "本根 bar 内强平笔数", "hour": "bar 开始时刻的 UTC 小时 0~23",
 }
@@ -55,6 +55,7 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
     return f"""你在给一套加密永续合约的因子挖掘系统提假设、写因子表达式。
 
 数据：{', '.join(facts['symbols'])} 的 15 分钟 K 线，{facts['from']} 到 {facts['to']}，每币约 {facts['rows']} 根。{liq}。
+{facts['holdoutFrom']} 起是锁定的 holdout：硬门、评审、你看到的所有数字都只来自它之前的数据；过门的候选会在 holdout 上单独算一次 IC 给人审批看，结果不会反馈给你。
 标准答案：因子在 t 时刻的值，与 t 之后 6/12/24 小时的对数涨跌幅算 Spearman 相关（IC），主档 12 小时。只做时序，不做横截面。
 
 可用的列（表达式里写成 $列名）：
@@ -64,7 +65,7 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 {operators}
 
 评估是代码硬门，不是人看：
-- G0 前视自检；G1 样本量；G2 主档 IC 与替身检验；G3 四段同号；G4 三档同号；G5 扣 10 bps 成本后能赚且排列检验显著；G6 与参照集和库里的因子相关 |ρ| < 0.7；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6（解析时就会拒）；G8 换个窗口的翻版不算新。
+- G0 前视自检；G1 样本量；G2 主档 IC 与替身检验；G3 四段同号；G4 三档同号；G5 扣 {facts['costBps']:g} bps 成本后能赚且排列检验显著；G6 与参照集和库里的因子相关 |ρ| < 0.7；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6（解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进库里因子的组合之后，主档样本外 IC 要有提升；同批里排在更强候选后面的，还会算一次相对它们的增量写给审批的人看，不是门。
 - 替身检验会把裸价格、长窗口均线比、区间位置这类持久量在月内 IC 上的偏差识别出来并拒掉。用收益、比值、z-score、秩这类平稳量。
 - 资金费率 8 小时才变一次，对它做短窗差分几乎全是 0。强平列历史短，只用它的因子多半过不了样本量门。
 - 参数越少越好，先有一句能说清的经济理由，再写公式。
@@ -154,25 +155,46 @@ def _first(text: str, pattern: str, kind: type) -> Any:
 
 
 def eval_brief(ev: Mapping[str, Any], gates: Sequence[Mapping[str, Any]], primary: int) -> dict[str, Any]:
-    """给评审和页面看的精简数字：三档 IC、主档替身与方向腿、每门一句。落过库的 eval 键是字符串，先归一"""
-    by_bars = {int(k): v for k, v in ev["horizons"].items()}
-    horizons = {}
-    for bars, h in by_bars.items():
-        ic = h["ic"]
-        horizons[f"{bars // 4}h"] = {
-            "meanIc": _r(ic["mean"]), "icir": _r(ic["icir"]), "months": ic["months"],
-            "sameSignSymbols": ic["sameSignSymbols"], "segments": [_r(v) for v in ic["segments"]],
-            "netReturn": _r(h["leg"]["pooled"].get("netReturn")), "permPct": _r(h["leg"]["pooled"].get("permPct")),
-            "hitRate": _r(h["leg"]["pooled"].get("hitRate")), "exposure": _r(h["leg"]["pooled"].get("exposure")),
-        }
-    sur = by_bars[primary]["ic"].get("surrogate", {})
-    return {
-        "horizons": horizons,
+    """给评审和页面看的精简数字：三档 IC、主档替身与方向腿、每门一句；算过增量、holdout 的再各带一段。落过库的 eval 键是字符串，先归一"""
+    sur = {int(k): v for k, v in ev["horizons"].items()}[primary]["ic"].get("surrogate", {})
+    out = {
+        "horizons": horizons_brief(ev["horizons"]),
         "surrogate": {"p": _r(sur.get("p")), "nullMean": _r(sur.get("nullMean")), "k": sur.get("k")},
         "redundancy": {"maxAbs": _r(ev["redundancy"]["maxAbs"]), "with": ev["redundancy"]["with"]},
         "complexity": ev["complexity"],
         "gates": [{"id": g["id"], "passed": g["passed"], "note": g["note"]} for g in gates],
     }
+    if ev.get("gain"):
+        out["gain"] = {_hours(bars): _r(h["gain"]) for bars, h in ev["gain"]["horizons"].items()}
+    if ev.get("holdout"):
+        out["holdout"] = holdout_brief(ev["holdout"])
+    return out
+
+
+def horizons_brief(horizons: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
+    """三档的 IC 与方向腿，单因子和组合共用"""
+    out = {}
+    for bars, h in horizons.items():
+        ic = h["ic"]
+        out[_hours(bars)] = {
+            "meanIc": _r(ic["mean"]), "icir": _r(ic["icir"]), "months": ic["months"],
+            "sameSignSymbols": ic["sameSignSymbols"], "segments": [_r(v) for v in ic["segments"]],
+            "netReturn": _r(h["leg"]["pooled"].get("netReturn")), "permPct": _r(h["leg"]["pooled"].get("permPct")),
+            "hitRate": _r(h["leg"]["pooled"].get("hitRate")), "exposure": _r(h["leg"]["pooled"].get("exposure")),
+            "turnover": _r(h["leg"]["pooled"].get("turnover")),
+        }
+    return out
+
+
+def holdout_brief(held: Mapping[str, Any]) -> dict[str, Any]:
+    return {"since": held["since"], "horizons": {
+        _hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]), "months": h["months"],
+                       "sameSignSymbols": h["sameSignSymbols"], "samples": h["samples"]}
+        for bars, h in held["horizons"].items()}}
+
+
+def _hours(bars: Any) -> str:
+    return f"{int(bars) // 4}h"
 
 
 def _r(v: Any) -> float | None:

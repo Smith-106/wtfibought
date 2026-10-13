@@ -40,6 +40,18 @@ async def test_run_and_candidate_roundtrip(store):
     assert (await store.runs())[0]["id"] == "r1"
 
 
+async def test_fail_pending_marks_only_unfinished(store):
+    await store.create_run("r2", 3, "", "zh")
+    for i, status in enumerate(("evaluating", "rejected_gates", "passed"), 1):
+        await store.upsert_candidate({"id": f"r2-{i}", "run_id": "r2", "seq": i, "name": f"c{i}", "hypothesis": "h",
+                                      "status": status})
+    changed = await store.fail_pending("r2", "没跑完")
+    assert [c["id"] for c in changed] == ["r2-1", "r2-3"] and changed[0]["status"] == "failed"
+    rows = {c["id"]: c for c in await store.candidates("r2")}
+    assert rows["r2-1"]["status"] == "failed" and rows["r2-1"]["reason"] == "没跑完"
+    assert rows["r2-2"]["status"] == "rejected_gates" and rows["r2-3"]["status"] == "failed"
+
+
 async def test_claim_run_is_first_come_first_served(store):
     await store.create_run("r9", 1, "", "zh")
     await store.set_run_status("r9", "awaiting")

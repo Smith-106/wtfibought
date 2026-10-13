@@ -62,6 +62,19 @@ def build_chat_model(spec: ModelSpec, role: str) -> BaseChatModel:
     raise LlmError(f"{role} 角色的协议 {protocol} 不支持")
 
 
+def same_model(a: ModelSpec, b: ModelSpec) -> bool:
+    """协议、地址、模型名都一样就是同一个模型"""
+    return _identity(a) == _identity(b)
+
+
+def _identity(spec: ModelSpec) -> tuple[str, str, str]:
+    """地址带不带版本后缀算同一个，openai 与 responses 算同一个协议，模型名不分大小写"""
+    protocol = spec.protocol.strip().lower() or "openai"
+    if protocol == "responses":
+        protocol = "openai"
+    return (protocol, _strip(_strip(spec.base_url, "/v1"), "/v1beta"), spec.model.strip().lower())
+
+
 def _effort(value: str) -> str | None:
     """none / 空 = 不传，走模型默认"""
     effort = (value or "").strip().lower()

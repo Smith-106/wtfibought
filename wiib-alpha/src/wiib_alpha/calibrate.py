@@ -22,6 +22,7 @@ from .config import DEFAULT_SYMBOLS
 from .data.binance import BAR_MS, KLINE_COLUMNS
 from .data.panel import FEATURE_COLUMNS, PanelStore, assemble
 from .dsl import DslError, Expr, parse
+from .eval.combo import Combo
 from .eval.evaluate import evaluate
 from .eval.gates import apply_fdr, judge, passed
 from .eval.params import EvalParams, Thresholds
@@ -35,14 +36,14 @@ LEAKY = {
     "oracle_12h": "Lead(Sum($ret, 48), 48)",
     "hidden_lead": "Sum($ret, 4) - Lead($ret, 2) * 0.1",
 }
-GATE_IDS = [f"G{i}" for i in range(9)]
+GATE_IDS = [f"G{i}" for i in range(10)]
 
 
 # ========== 数据 ==========
 
 
 def synthetic_panels(symbols: tuple[str, ...], days: int, seed: int) -> dict[str, pd.DataFrame]:
-    """随机游走行情，列结构与真 panel 一样；没有强平数据"""
+    """随机游走行情，列结构与真 panel 一样；第一个币当 BTC 基准；没有强平数据"""
     n = days * 96
     rng = np.random.default_rng(seed)
     base = 1_700_000_000_000
@@ -62,7 +63,7 @@ def synthetic_panels(symbols: tuple[str, ...], days: int, seed: int) -> dict[str
         klines[s] = pd.DataFrame(rows, columns=KLINE_COLUMNS).astype({"open_time": "int64", "close_time": "int64", "trades": "int64"})
         times = klines[s]["close_time"].to_numpy()[31::32]
         funding[s] = pd.DataFrame({"funding_time": times, "funding_rate": rng.normal(0, 1e-4, len(times))})
-    return {s: assemble(klines[s], funding[s], klines[symbols[0]]) for s in symbols}
+    return {s: assemble(klines[s], funding[s], None if s == symbols[0] else klines[symbols[0]]) for s in symbols}
 
 
 def real_panels(data_dir: str, symbols: tuple[str, ...]) -> dict[str, pd.DataFrame]:
@@ -100,12 +101,13 @@ def random_expression(rng: np.random.Generator, panel: pd.DataFrame) -> Expr:
 
 
 def run(name: str, exprs: dict[str, Expr], panels: dict[str, pd.DataFrame], params: EvalParams,
-        thresholds: Thresholds, refs: dict[str, pd.DataFrame] | None, known: set[str]) -> list[dict[str, Any]]:
+        thresholds: Thresholds, refs: dict[str, pd.DataFrame] | None, known: set[str],
+        library: Combo) -> list[dict[str, Any]]:
     out = []
     print(f"\n== {name}：{len(exprs)} 条 ==", flush=True)
     for i, (label, expr) in enumerate(exprs.items(), 1):
         t = time.perf_counter()
-        ev = evaluate(expr, panels, params, refs)
+        ev = evaluate(expr, panels, params, refs, library)
         ev["name"] = label
         ev["gates"] = judge(ev, thresholds, params.primary, known)
         ev["passed"] = passed(ev["gates"])
@@ -160,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     ap.add_argument("--skip-alpha158", action="store_true", help="只跑 5 个基线，不跑 Alpha158")
     ap.add_argument("--alpha158-windows", default="", help="只跑这些窗口的 Alpha158，逗号分隔；空 = 全部")
-    ap.add_argument("--surrogates", type=int, default=20, help="替身个数")
+    ap.add_argument("--surrogates", type=int, default=100, help="替身个数")
     args = ap.parse_args(argv)
 
     symbols = tuple(s.strip().upper() for s in args.symbols.split(",") if s.strip())
@@ -183,15 +185,17 @@ def main(argv: list[str] | None = None) -> int:
     known = {e.canonical() for e in ref_exprs.values()}
     print(f"参照集 {len(ref_exprs)} 条算好，{time.perf_counter() - t0:.1f}s")
 
+    # 库是空的：G9 只看自己的组合 IC 是不是正的
+    empty = Combo.build([], panels)
     # 参照集自己不查冗余、不做 BH：它们是尺子不是候选
-    ref_evals = run("参照集", ref_exprs, panels, params, thresholds, None, set())
+    ref_evals = run("参照集", ref_exprs, panels, params, thresholds, None, set(), empty)
     baselines = [ev for ev in ref_evals if ev["name"] in reference.BASELINES]
     alpha = [ev for ev in ref_evals if ev["name"] not in reference.BASELINES]
 
     rng = np.random.default_rng(args.seed)
     first = panels[symbols[0]]
     random_exprs = {f"rand{i:02d}": random_expression(rng, first) for i in range(args.random)}
-    random_evals = run("随机因子", random_exprs, panels, params, thresholds, ref_values, known)
+    random_evals = run("随机因子", random_exprs, panels, params, thresholds, ref_values, known, empty)
     single_passes = sum(ev["passed"] for ev in random_evals)
     # 同批 BH 按生产的 K 分批做，和一轮的候选数一样
     for start in range(0, len(random_evals), args.k):
@@ -200,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     ops.OPERATORS["Lead"] = ops.Op("rolling", lambda x, n: x.shift(-n))
     try:
         leaky_exprs = {k: parse(v, FEATURE_COLUMNS) for k, v in LEAKY.items()}
-        leaky_evals = run("泄漏因子", leaky_exprs, panels, params, thresholds, ref_values, known)
+        leaky_evals = run("泄漏因子", leaky_exprs, panels, params, thresholds, ref_values, known, empty)
     finally:
         del ops.OPERATORS["Lead"]
 

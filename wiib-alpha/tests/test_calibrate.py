@@ -11,8 +11,9 @@ def test_synthetic_panels_have_the_real_column_layout():
     assert set(FEATURE_COLUMNS) <= set(df.columns) and set(TARGET_COLUMNS) <= set(df.columns)
     assert (df["high"] >= df[["open", "close"]].max(axis=1)).all()
     assert df["funding_rate"].notna().sum() > 0 and df["liq_count"].isna().all()
-    # BTC 基准就是第一个币自己
-    assert np.allclose(panels["AAA"]["btc_ret"].dropna(), panels["AAA"]["ret"].dropna())
+    # 第一个币当 BTC 基准：它自己的 btc 两列是空的，别的币拿它的收益
+    assert panels["AAA"]["btc_ret"].isna().all()
+    assert np.allclose(panels["BBB"]["btc_ret"].dropna(), panels["AAA"]["ret"].dropna())
 
 
 def test_random_expression_is_valid_and_not_degenerate():

@@ -4,7 +4,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from wiib_alpha.config import ModelSpec, config
-from wiib_alpha.llm import LlmError, build_chat_model
+from wiib_alpha.llm import LlmError, build_chat_model, same_model
 
 
 def spec(protocol, base_url="https://up.test", model="m-1", effort="", api_key="sk-plain") -> ModelSpec:
@@ -61,6 +61,16 @@ def test_missing_model_or_key_and_unknown_protocol():
         build_chat_model(spec("openai", api_key=" "), "review")
     with pytest.raises(LlmError, match="不支持"):
         build_chat_model(spec("azure"), "gen")
+
+
+def test_same_model_ignores_case_and_trailing_slash():
+    assert same_model(spec("OpenAI", base_url="https://up.test/"), spec("openai", base_url="https://up.test"))
+    assert same_model(spec("openai", base_url="https://up.test/v1"), spec("openai", base_url="https://up.test"))
+    assert same_model(spec(""), spec("openai"))
+    assert same_model(spec("openai"), spec("responses"))
+    assert same_model(spec("openai", model="M-1"), spec("openai"))
+    assert not same_model(spec("openai"), spec("openai", model="m-2"))
+    assert not same_model(spec("openai"), spec("anthropic"))
 
 
 def test_config_reads_both_roles(monkeypatch):

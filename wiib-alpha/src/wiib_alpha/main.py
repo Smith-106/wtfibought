@@ -27,15 +27,16 @@ from . import reference
 from .auth import Auth, AuthError, Authenticator, Forbidden, UpstreamError
 from .config import Config, config
 from .data.binance import Binance
-from .data.panel import FEATURE_COLUMNS, PanelStore, describe
+from .data.panel import FEATURE_COLUMNS, PanelStore, describe, holdout_cut, truncate
 from .dsl import DslError, parse
+from .eval import combo
 from .eval.evaluate import evaluate
 from .eval.gates import judge, passed
 from .eval.params import EvalParams, Thresholds
 from .eval.recheck import recheck
 from .graph import Context, brief, build_graph
-from .llm import LlmError, build_chat_model
-from .prompts import eval_brief
+from .llm import LlmError, build_chat_model, same_model
+from .prompts import eval_brief, holdout_brief, horizons_brief
 from .store import Store, clean, now_ms
 
 logger = logging.getLogger(__name__)
@@ -51,30 +52,69 @@ _PING_SECONDS = 15.0
 
 @dataclass
 class Data:
+    # 全量面板给 holdout 和入库后复查；评估、门、参照集都只看 search（cut 之前）
     panels: dict[str, pd.DataFrame]
+    search: dict[str, pd.DataFrame]
+    cut_ms: int
     references: dict[str, pd.DataFrame]
     reference_canonicals: set[str]
     facts: dict[str, Any]
     loaded_at: int
 
 
-def load_data(cfg: Config) -> Data | None:
-    """读 parquet 面板、算参照集；一张面板都没有就是 None（先刷新数据）"""
+def load_data(cfg: Config, params: EvalParams) -> Data | None:
+    """读 parquet 面板、切出搜索段、算参照集；一张面板都没有就是 None（先刷新数据）"""
     store = PanelStore(cfg.data_dir)
     panels = {s: store.load(s) for s in cfg.symbols if (store.panels / f"{s}.parquet").exists()}
     if not panels:
         return None
+    cut_ms = holdout_cut(panels, params.holdout_days)
+    search = {s: truncate(p, cut_ms) for s, p in panels.items()}
     exprs = reference.parsed()
     return Data(
         panels=panels,
-        references=reference.values(panels, exprs),
+        search=search,
+        cut_ms=cut_ms,
+        references=reference.values(search, exprs),
         reference_canonicals={e.canonical() for e in exprs.values()},
-        facts=_facts(panels),
+        facts=_facts(panels, cut_ms, params.cost_bps),
         loaded_at=now_ms(),
     )
 
 
-def _facts(panels: dict[str, pd.DataFrame]) -> dict[str, Any]:
+@dataclass
+class Library:
+    """库里的因子在当前数据上的派生物：冗余对比集、已知规范形、G9 的基线组合、组合报告"""
+    factors: list[dict[str, Any]]
+    references: dict[str, pd.DataFrame]
+    known: set[str]
+    combo: combo.Combo
+    # 组合在搜索段、holdout、最后一根上的表现；库空时 None
+    report: dict[str, Any] | None
+
+
+def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams) -> Library:
+    exprs = [(f["name"], parse(f["expr"], FEATURE_COLUMNS)) for f in factors]
+    # 冗余对比集 = 参照集 + 库里的因子（列名 lib:名字），都在搜索段上
+    refs = {s: df.copy() for s, df in data.references.items()}
+    for name, expr in exprs:
+        for s, p in data.search.items():
+            refs[s][f"lib:{name}"] = expr.evaluate(p)
+    base = combo.Combo.build(exprs, data.search)
+    report = None
+    if exprs:
+        full = combo.Combo.build(exprs, data.panels)
+        report = {
+            "brief": {"horizons": horizons_brief(combo.evaluate(base, params)),
+                      "holdout": holdout_brief(combo.holdout(full, data.cut_ms, params))},
+            **combo.latest(full, params),
+        }
+    known = data.reference_canonicals | {f["canonical"] for f in factors}
+    return Library(factors, refs, known, base, report)
+
+
+def _facts(panels: dict[str, pd.DataFrame], cut_ms: int, cost_bps: float) -> dict[str, Any]:
+    """给提示词和页面的数据事实"""
     described = {s: describe(p) for s, p in panels.items()}
     liq = [d["liqFrom"] for d in described.values() if d["liqFrom"]]
     return {
@@ -83,6 +123,8 @@ def _facts(panels: dict[str, pd.DataFrame]) -> dict[str, Any]:
         "to": _day(max(d["to"] for d in described.values())),
         "rows": min(d["rows"] for d in described.values()),
         "liqFrom": _day(min(liq)) if liq else None,
+        "holdoutFrom": _day(cut_ms),
+        "costBps": cost_bps,
     }
 
 
@@ -91,6 +133,8 @@ def _day(ms: int) -> str:
 
 
 def build_models(cfg: Config) -> tuple[Any, Any]:
+    if same_model(cfg.gen, cfg.review):
+        raise LlmError("生成和评审配成了同一个模型，评审只会附和；两个角色要用不同的模型")
     return build_chat_model(cfg.gen, "gen"), build_chat_model(cfg.review, "review")
 
 
@@ -150,6 +194,8 @@ async def _drive(app: FastAPI, run_id: str, payload: Any) -> None:
         logger.exception("run %s 失败", run_id)
         message = str(exc) if isinstance(exc, (LlmError, DslError)) else "运行失败，看服务日志"
         await store.set_run_status(run_id, "failed", str(exc)[:500])
+        for c in await store.fail_pending(run_id, "这一轮没跑完"):
+            await _publish(app, run_id, "candidate", brief(c))
         await _publish(app, run_id, "error", {"message": message})
     finally:
         app.state.runs.tasks.pop(run_id, None)
@@ -161,31 +207,26 @@ async def _graph(app: FastAPI):
     if app.state.models is None:
         app.state.models = build_models(config())
     gen, review = app.state.models
-    references, known, factors = await _references(app)
+    lib = await _library(app)
     library = [{"name": f["name"], "expr": f["expr"], "hypothesis": f["hypothesis"], "canonical": f["canonical"]}
-               for f in factors]
-    ctx = Context(gen=gen, review=review, panels=data.panels, references=references, known=known,
-                  library=library, facts=data.facts, store=app.state.store, params=app.state.params,
-                  thresholds=app.state.thresholds)
+               for f in lib.factors]
+    ctx = Context(gen=gen, review=review, panels=data.panels, search=data.search, cut_ms=data.cut_ms,
+                  references=lib.references, combo=lib.combo, known=lib.known, library=library, facts=data.facts,
+                  store=app.state.store, params=app.state.params, thresholds=app.state.thresholds)
     return build_graph(app.state.saver, ctx)
 
 
-async def _references(app: FastAPI) -> tuple[dict[str, pd.DataFrame], set[str], list[dict[str, Any]]]:
-    """冗余对比集 = 参照集 + 库里的因子（列名 lib:名字）；库或数据变了才重算"""
+async def _library(app: FastAPI) -> Library:
+    """库或数据变了才重算；同时来几个请求只算一次"""
     data: Data = _data(app)
-    factors = await app.state.store.factors()
-    key = (data.loaded_at, len(factors), max((int(f["approved_at"]) for f in factors), default=0))
-    cache = app.state.library_refs
-    if cache is None or cache[0] != key:
-        refs = {s: df.copy() for s, df in data.references.items()}
-        for f in factors:
-            expr = parse(f["expr"], FEATURE_COLUMNS)
-            for s, p in data.panels.items():
-                refs[s][f"lib:{f['name']}"] = expr.evaluate(p)
-        cache = (key, refs)
-        app.state.library_refs = cache
-    known = data.reference_canonicals | {f["canonical"] for f in factors}
-    return cache[1], known, factors
+    async with app.state.library_lock:
+        factors = await app.state.store.factors()
+        key = (data.loaded_at, tuple(f["id"] for f in factors))
+        cache = app.state.library
+        if cache is None or cache[0] != key:
+            cache = (key, await asyncio.to_thread(build_library, data, factors, app.state.params))
+            app.state.library = cache
+    return cache[1]
 
 
 def _data(app: FastAPI) -> Data:
@@ -257,8 +298,8 @@ async def data_refresh(request: Request):
         cfg = config()
         try:
             await asyncio.to_thread(_refresh_panels, cfg)
-            app.state.data = await asyncio.to_thread(load_data, cfg)
-            app.state.library_refs = None
+            app.state.data = await asyncio.to_thread(load_data, cfg, app.state.params)
+            app.state.library = None
             job.update(finishedAt=now_ms())
         except Exception as exc:
             logger.exception("刷新数据失败")
@@ -271,8 +312,8 @@ async def data_refresh(request: Request):
 
 
 def _refresh_panels(cfg: Config) -> None:
-    PanelStore(cfg.data_dir).refresh(Binance(cfg.binance_vision_url), cfg.symbols, cfg.history_days,
-                                     cfg.pg_conninfo if cfg.pg_user else None, cfg.force_order_tz)
+    PanelStore(cfg.data_dir).refresh(Binance(cfg.binance_vision_url, fapi_url=cfg.binance_fapi_url), cfg.symbols,
+                                     cfg.history_days, cfg.pg_conninfo if cfg.pg_user else None, cfg.force_order_tz)
 
 
 @router.post("/runs")
@@ -342,6 +383,11 @@ async def _events(app: FastAPI, run_id: str, after: int) -> AsyncIterator[str]:
         while True:
             run = await store.run(run_id)
             if run["status"] != "running" and queue.empty():
+                # 等后台任务退出再读一次状态
+                task = runs.tasks.get(run_id)
+                if task is not None:
+                    await asyncio.wait({task})
+                    run = await store.run(run_id)
                 for e in await store.events(run_id, last):
                     yield _frame(e)
                     last = e["id"]
@@ -366,8 +412,11 @@ def _frame(e: dict[str, Any]) -> str:
 
 @router.get("/library")
 async def library(request: Request):
-    rows = await request.app.state.store.factors()
-    return _ok({"factors": [_factor_view(f, full=False) for f in rows]})
+    """因子列表加组合报告；没装载数据时只有列表"""
+    app = request.app
+    rows = await app.state.store.factors()
+    report = (await _library(app)).report if app.state.data else None
+    return _ok({"factors": [_factor_view(f, full=False) for f in rows], "combo": report})
 
 
 @router.get("/library/{factor_id}")
@@ -408,13 +457,14 @@ async def library_recheck(factor_id: str, request: Request):
 
 @router.post("/eval")
 async def eval_expression(body: EvalBody, request: Request):
-    """手填一条表达式直接评估，不进循环不计试验数"""
+    """手填一条表达式直接评估，不进循环不计试验数；门看搜索段，holdout 另算一份给人看"""
     app = request.app
     data = _data(app)
     expr = parse(body.expr, FEATURE_COLUMNS)
-    references, known, _ = await _references(app)
-    ev = await asyncio.to_thread(evaluate, expr, data.panels, app.state.params, references)
-    gates = judge(ev, app.state.thresholds, app.state.params.primary, known)
+    lib = await _library(app)
+    ev = await asyncio.to_thread(evaluate, expr, data.search, app.state.params, lib.references, lib.combo)
+    gates = judge(ev, app.state.thresholds, app.state.params.primary, lib.known)
+    ev["holdout"] = await asyncio.to_thread(recheck, expr, data.panels, data.cut_ms, app.state.params)
     return _ok({"expr": str(expr), "canonical": expr.canonical(), "passed": passed(gates),
                 "brief": eval_brief(ev, gates, app.state.params.primary), "gates": gates, "eval": ev})
 
@@ -446,7 +496,7 @@ async def reference_run(body: ReferenceRun, request: Request):
     async def work() -> None:
         try:
             for name, expr in exprs.items():
-                ev = await asyncio.to_thread(evaluate, expr, data.panels, app.state.params, None)
+                ev = await asyncio.to_thread(evaluate, expr, data.search, app.state.params, None)
                 gates = judge(ev, app.state.thresholds, app.state.params.primary, set())
                 await app.state.store.set_reference_eval(name, str(expr), ev, gates, passed(gates))
                 job["done"] += 1
@@ -472,10 +522,11 @@ def _window_of(name: str) -> str:
 async def lifespan(app: FastAPI):
     cfg = config()
     Path(cfg.db_path).parent.mkdir(parents=True, exist_ok=True)
-    app.state.params = getattr(app.state, "params", None) or EvalParams()
+    app.state.params = getattr(app.state, "params", None) or EvalParams(cost_bps=cfg.cost_bps)
     app.state.thresholds = getattr(app.state, "thresholds", None) or Thresholds()
     app.state.models = None
-    app.state.library_refs = None
+    app.state.library = None
+    app.state.library_lock = asyncio.Lock()
     app.state.runs = Runs()
     app.state.authenticator = getattr(app.state, "authenticator", None) or Authenticator(cfg.sim_base_url)
     async with AsyncSqliteSaver.from_conn_string(cfg.db_path) as saver:
@@ -486,7 +537,8 @@ async def lifespan(app: FastAPI):
             # 上次进程死在半路的轮次没法续，明说；等审批的那些 checkpoint 还在，能继续
             for run in await app.state.store.running():
                 await app.state.store.set_run_status(run["id"], "failed", "服务重启时中断")
-            app.state.data = await asyncio.to_thread(load_data, cfg)
+                await app.state.store.fail_pending(run["id"], "服务重启时中断")
+            app.state.data = await asyncio.to_thread(load_data, cfg, app.state.params)
             yield
         finally:
             for task in list(app.state.runs.tasks.values()):

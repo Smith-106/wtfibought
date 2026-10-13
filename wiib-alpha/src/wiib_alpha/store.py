@@ -130,6 +130,18 @@ class Store:
     async def candidates(self, run_id: str) -> list[dict[str, Any]]:
         return await self._all("SELECT * FROM candidate WHERE run_id = ? ORDER BY seq", (run_id,))
 
+    async def fail_pending(self, run_id: str, reason: str) -> list[dict[str, Any]]:
+        """这一轮没跑完：还没到终态的候选标成 failed，返回改了的那些"""
+        pending = "('proposed', 'evaluating', 'reviewing', 'revise', 'passed')"
+        rows = await self._all(f"SELECT * FROM candidate WHERE run_id = ? AND status IN {pending} ORDER BY seq", (run_id,))
+        await self.db.execute(
+            f"UPDATE candidate SET status = 'failed', reason = ?, updated_at = ? WHERE run_id = ? AND status IN {pending}",
+            (reason, now_ms(), run_id))
+        await self.db.commit()
+        for r in rows:
+            r["status"], r["reason"] = "failed", reason
+        return rows
+
     # ========== 事件 ==========
 
     async def add_event(self, run_id: str, event: str, data: Any) -> int:

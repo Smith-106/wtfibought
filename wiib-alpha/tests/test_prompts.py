@@ -2,7 +2,7 @@ from wiib_alpha import ops, prompts
 from wiib_alpha.data.panel import FEATURE_COLUMNS
 
 FACTS = {"symbols": ["BTCUSDT", "ETHUSDT"], "from": "2024-09-21", "to": "2026-09-20", "rows": 70000,
-         "liqFrom": "2026-04-27"}
+         "liqFrom": "2026-04-27", "holdoutFrom": "2026-06-22", "costBps": 10.0}
 
 
 def test_parse_object_and_list_tolerate_fences_and_chatter():
@@ -21,6 +21,8 @@ def test_system_prompt_lists_every_column_and_operator():
     for name in ops.OPERATORS:
         assert f"- {name}：" in text
     assert "2026-04-27" in text and "中文" in text
+    assert "2026-06-22 起是锁定的 holdout" in text and "扣 10 bps" in text
+    assert "扣 12.5 bps" in prompts.system_gen({**FACTS, "costBps": 12.5}, "zh")
     assert "英文" in prompts.system_gen({**FACTS, "liqFrom": None}, "en")
 
 
@@ -49,4 +51,11 @@ def test_eval_brief_rounds_and_maps_nan():
     assert brief["horizons"]["12h"]["segments"] == [0.1, None]
     assert brief["surrogate"] == {"p": 0.0476, "nullMean": -0.01, "k": 20}
     assert brief["gates"] == [{"id": "G0", "passed": True, "note": "ok"}]
+    assert "holdout" not in brief
     assert "MA48" in prompts.review_message({"name": "x", "hypothesis": "h", "expr": "$ret"}, brief)
+    # 落过库的 holdout 键是字符串，NaN 已经成了 None
+    ev["holdout"] = {"since": 5, "at": 9, "horizons": {"48": {"mean": 0.05, "icir": None, "months": 1, "samples": 60,
+                                                              "bySymbol": {}, "sameSignSymbols": 3}}}
+    held = prompts.eval_brief(ev, gates, 48)["holdout"]
+    assert held == {"since": 5, "horizons": {"12h": {"meanIc": 0.05, "icir": None, "months": 1, "sameSignSymbols": 3,
+                                                     "samples": 60}}}
