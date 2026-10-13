@@ -8,8 +8,8 @@ import { useToast } from '../components/ui/use-toast';
 import { cn } from '../lib/utils';
 import { useUserStore } from '../stores/userStore';
 import type {
-  AlphaBrief, AlphaCandidate, AlphaCandidateStatus, AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor,
-  AlphaGate, AlphaReference, AlphaRun,
+  AlphaBrief, AlphaBriefCore, AlphaCandidate, AlphaCandidateStatus, AlphaCombo, AlphaDataStatus, AlphaEvalResult,
+  AlphaEvent, AlphaFactor, AlphaGate, AlphaHoldoutHorizon, AlphaReference, AlphaRun,
 } from '../types';
 
 /** 当前看的那一轮存这儿：刷新页接着看，关标签页就算了 */
@@ -44,6 +44,7 @@ export function Alpha() {
   const [runs, setRuns] = useState<AlphaRun[]>([]);
   const [trials, setTrials] = useState(0);
   const [library, setLibrary] = useState<AlphaFactor[]>([]);
+  const [combo, setCombo] = useState<AlphaCombo | null>(null);
   const [reference, setReference] = useState<AlphaReference | null>(null);
 
   const [k, setK] = useState(3);
@@ -66,7 +67,7 @@ export function Alpha() {
   const fail = useCallback((err: unknown) => toast((err as Error).message, 'error'), [toast]);
   const loadData = useCallback(() => alphaApi.dataStatus().then(setData).catch(fail), [fail]);
   const loadRuns = useCallback(() => alphaApi.runs().then(r => { setRuns(r.runs); setTrials(r.trials); }).catch(fail), [fail]);
-  const loadLibrary = useCallback(() => alphaApi.library().then(r => setLibrary(r.factors)).catch(fail), [fail]);
+  const loadLibrary = useCallback(() => alphaApi.library().then(r => { setLibrary(r.factors); setCombo(r.combo); }).catch(fail), [fail]);
   const loadReference = useCallback(() => alphaApi.reference().then(setReference).catch(fail), [fail]);
 
   /** 订阅一轮：after=0 是从头回放（日志清掉重来），否则只收后面的 */
@@ -241,6 +242,8 @@ export function Alpha() {
               {t('data.range', { from: data.facts.from, to: data.facts.to, rows: data.facts.rows })}
               {' · '}
               {data.facts.liqFrom ? t('data.liqFrom', { date: data.facts.liqFrom }) : t('data.noLiq')}
+              {' · '}
+              {t('data.holdout', { from: data.facts.holdoutFrom })}
             </span>
           ) : (
             <span className="text-[11px] text-muted-foreground">{t('data.none')}</span>
@@ -338,9 +341,24 @@ export function Alpha() {
         </div>
       </div>
 
-      {/* 因子库 */}
+      {/* 因子库：顶上是全部因子合成的组合，下面一条条因子 */}
       <div className="rounded-lg pt-card p-4 space-y-3">
         <span className="microlabel block">{t('library.title')}</span>
+        {combo && (
+          <div className="rounded-lg border border-border p-3 space-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="text-xs font-black">{t('library.combo', { n: combo.weights.length })}</span>
+              <span className="text-[10px] text-muted-foreground">{t('library.comboHint')}</span>
+            </div>
+            <BriefTable brief={combo.brief} />
+            <p className="text-[11px] text-muted-foreground num">
+              {t('library.weights')}：{combo.weights.map(w => `${w.name} ${fmt(w.weight, 3)}`).join(' · ')}
+            </p>
+            <p className="text-[11px] text-muted-foreground num">
+              {t('library.latest', { time: when(combo.asOf) })}：{Object.entries(combo.latest).map(([s, v]) => `${s} ${fmt(v, 2)}`).join(' · ')}
+            </p>
+          </div>
+        )}
         {library.length === 0 ? (
           <p className="text-[11px] text-muted-foreground">{t('library.empty')}</p>
         ) : library.map(f => (
@@ -511,8 +529,8 @@ function GateList({ gates }: { gates: AlphaGate[] }) {
   );
 }
 
-/** 三档并排的数字，加替身、冗余、复杂度三行 */
-function BriefTable({ brief }: { brief: AlphaBrief }) {
+/** 三档并排的数字；单因子再加组合增量一行和替身、冗余、复杂度一行；算过 holdout 的再来一张同样三档的小表 */
+function BriefTable({ brief }: { brief: AlphaBriefCore & Partial<Pick<AlphaBrief, 'surrogate' | 'redundancy' | 'complexity'>> }) {
   const { t } = useTranslation('alpha');
   const rows: { key: string; get: (h: AlphaBrief['horizons'][string]) => string }[] = [
     { key: 'meanIc', get: h => fmt(h.meanIc) },
@@ -522,7 +540,15 @@ function BriefTable({ brief }: { brief: AlphaBrief }) {
     { key: 'perm', get: h => fmt(h.permPct, 3) },
     { key: 'hit', get: h => fmt(h.hitRate, 3) },
     { key: 'exposure', get: h => fmt(h.exposure, 2) },
+    { key: 'turnover', get: h => fmt(h.turnover, 2) },
   ];
+  const holdoutRows: { key: string; get: (h: AlphaHoldoutHorizon) => string }[] = [
+    { key: 'meanIc', get: h => fmt(h.meanIc) },
+    { key: 'icir', get: h => fmt(h.icir, 2) },
+    { key: 'sameSign', get: h => String(h.sameSignSymbols) },
+    { key: 'samples', get: h => String(h.samples) },
+  ];
+  const { holdout, gain, surrogate, redundancy, complexity } = brief;
   return (
     <div className="space-y-1">
       <table className="text-[11px] num w-full max-w-md">
@@ -539,17 +565,43 @@ function BriefTable({ brief }: { brief: AlphaBrief }) {
               {HORIZONS.map(h => <td key={h} className="text-right">{brief.horizons[h] ? r.get(brief.horizons[h]) : '—'}</td>)}
             </tr>
           ))}
+          {gain && (
+            <tr>
+              <td className="text-muted-foreground">{t('gates.gain')}</td>
+              {HORIZONS.map(h => <td key={h} className="text-right">{fmt(gain[h])}</td>)}
+            </tr>
+          )}
         </tbody>
       </table>
-      <p className="text-[10px] text-muted-foreground num">
-        {t('gates.surrogate', { p: fmt(brief.surrogate.p, 3), mean: fmt(brief.surrogate.nullMean), k: brief.surrogate.k ?? 0 })}
-        {' · '}
-        {brief.redundancy.with
-          ? t('gates.redundancy', { name: brief.redundancy.with, r: fmt(brief.redundancy.maxAbs, 2) })
-          : t('gates.noRedundancy')}
-        {' · '}
-        {t('gates.complexity', brief.complexity)}
-      </p>
+      {surrogate && redundancy && complexity && (
+        <p className="text-[10px] text-muted-foreground num">
+          {t('gates.surrogate', { p: fmt(surrogate.p, 3), mean: fmt(surrogate.nullMean), k: surrogate.k ?? 0 })}
+          {' · '}
+          {redundancy.with
+            ? t('gates.redundancy', { name: redundancy.with, r: fmt(redundancy.maxAbs, 2) })
+            : t('gates.noRedundancy')}
+          {' · '}
+          {t('gates.complexity', complexity)}
+        </p>
+      )}
+      {holdout && (
+        <table className="text-[11px] num w-full max-w-md">
+          <thead>
+            <tr className="text-muted-foreground">
+              <th className="text-left font-normal">{t('gates.holdout', { from: day(holdout.since) })}</th>
+              {HORIZONS.map(h => <th key={h} className="text-right font-normal">{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {holdoutRows.map(r => (
+              <tr key={r.key}>
+                <td className="text-muted-foreground">{t(`gates.${r.key}`)}</td>
+                {HORIZONS.map(h => <td key={h} className="text-right">{holdout.horizons[h] ? r.get(holdout.horizons[h]) : '—'}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

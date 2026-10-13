@@ -6,7 +6,7 @@ import type { LedgerEntry, LedgerBizTypeOption, PublicTrade, UserProfile, Positi
 import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose, JevConfigView, JevSaveRequest } from '../types';
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
 import type { GenEvent, GenThreadState } from '../types';
-import type { AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor, AlphaReference, AlphaRun, AlphaRunState } from '../types';
+import type { AlphaCombo, AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor, AlphaReference, AlphaRun, AlphaRunState } from '../types';
 import type { User, PageResult, RankingItem, CommentItem, NotificationItem, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderExperience, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
@@ -809,7 +809,8 @@ export const alphaApi = {
   /** 审批：过了门的候选逐个入库或否决，图从 interrupt 处继续 */
   decide: (id: string, decisions: Record<string, boolean>) =>
     api.post<unknown, { resumed: boolean }>(`/alpha/runs/${id}/decide`, { decisions }),
-  library: () => api.get<unknown, { factors: AlphaFactor[] }>('/alpha/library'),
+  /** 因子列表加库的组合报告；库空时 combo 是 null */
+  library: () => api.get<unknown, { factors: AlphaFactor[]; combo: AlphaCombo | null }>('/alpha/library'),
   factor: (id: string) => api.get<unknown, AlphaFactor>(`/alpha/library/${id}`),
   /** 只用入库之后的数据重算 IC */
   recheck: (id: string) => api.post<unknown, AlphaFactor['recheck']>(`/alpha/library/${id}/recheck`),

@@ -1573,15 +1573,48 @@ export interface AlphaHorizonBrief {
   permPct: number | null;
   hitRate: number | null;
   exposure: number | null;
+  /** 方向变化的 bar 占比 */
+  turnover: number | null;
+}
+
+/** holdout 一档的数字：只用 cut 之后的数据算的 IC，门和模型都没看过 */
+export interface AlphaHoldoutHorizon {
+  meanIc: number | null;
+  icir: number | null;
+  months: number;
+  sameSignSymbols: number;
+  samples: number;
+}
+
+export interface AlphaHoldout {
+  since: number;
+  horizons: Record<string, AlphaHoldoutHorizon>;
+}
+
+/** 三档数字，可选 holdout 与组合增量；单因子和库的组合共用 */
+export interface AlphaBriefCore {
+  horizons: Record<string, AlphaHorizonBrief>;
+  /** 过了门的候选、库里的因子、手填评估才有 */
+  holdout?: AlphaHoldout;
+  /** 加进库里因子的组合后三档 OOS IC 的变化 */
+  gain?: Record<string, number | null>;
 }
 
 /** 评估摘要：给页面和评审看的，不带整份 eval */
-export interface AlphaBrief {
-  horizons: Record<string, AlphaHorizonBrief>;
+export interface AlphaBrief extends AlphaBriefCore {
   surrogate: { p: number | null; nullMean: number | null; k: number | null };
   redundancy: { maxAbs: number | null; with: string | null };
   complexity: { nodes: number; windows: number; constants: number };
   gates: AlphaGate[];
+}
+
+/** 库里全部因子合成一条信号的表现：搜索段三档加 holdout，主档权重，每币最后一根的信号 */
+export interface AlphaCombo {
+  brief: AlphaBriefCore;
+  weights: { name: string; weight: number }[];
+  latest: Record<string, number | null>;
+  /** latest 对应哪根 bar 的收盘时刻：全部币都有的最后一个时刻 */
+  asOf: number;
 }
 
 export type AlphaCandidateStatus =
@@ -1672,7 +1705,7 @@ export interface AlphaSymbolStatus {
 export interface AlphaDataStatus {
   loaded: boolean;
   loadedAt: number | null;
-  facts: { symbols: string[]; from: string; to: string; rows: number; liqFrom: string | null } | null;
+  facts: { symbols: string[]; from: string; to: string; rows: number; liqFrom: string | null; holdoutFrom: string } | null;
   symbols: Record<string, AlphaSymbolStatus>;
   referenceCount: number;
   refresh: { running: boolean; startedAt?: number; finishedAt?: number; error?: string | null };

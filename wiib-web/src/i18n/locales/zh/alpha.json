@@ -1,7 +1,7 @@
 {
   "title": "因子挖掘",
   "back": "返回管理台",
-  "desc": "模型提假设、写表达式，九道代码硬门判真假，另一个模型评审，最后由你决定入不入库。",
+  "desc": "模型提假设、写表达式，十道代码硬门判真假，另一个模型评审，最后由你决定入不入库。",
   "trials": "累计试验 {{n}} 次，按 0.05 门槛预期假阳 {{fp}} 条",
   "data": {
     "title": "行情数据",
@@ -9,6 +9,7 @@
     "range": "{{from}} 至 {{to}}，每币约 {{rows}} 根 15m",
     "liqFrom": "强平列从 {{date}} 起有数",
     "noLiq": "强平列暂时没有数据",
+    "holdout": "{{from}} 起锁定为 holdout，硬门和模型都看不到",
     "refresh": "刷新数据",
     "refreshing": "正在拉取",
     "refreshError": "上次刷新失败：{{msg}}",
@@ -69,7 +70,7 @@
     "rejected_gates": "硬门拒",
     "rejected_review": "评审拒",
     "rejected_fdr": "同批 BH 拒",
-    "failed": "写不出",
+    "failed": "失败",
     "approved": "已入库",
     "declined": "已否决"
   },
@@ -83,14 +84,22 @@
     "perm": "排列分位",
     "hit": "命中率",
     "exposure": "敞口",
+    "turnover": "换向比例",
     "surrogate": "替身检验 p = {{p}}（替身 IC 均值 {{mean}}，{{k}} 个）",
     "redundancy": "与 {{name}} 的 |ρ| = {{r}}",
     "noRedundancy": "没有参照因子",
-    "complexity": "节点 {{nodes}}，窗口 {{windows}}，常量 {{constants}}"
+    "complexity": "节点 {{nodes}}，窗口 {{windows}}，常量 {{constants}}",
+    "holdout": "Holdout（{{from}} 起）",
+    "samples": "样本点数",
+    "gain": "组合 IC 增量"
   },
   "library": {
     "title": "因子库",
     "empty": "还没有入库的因子。",
+    "combo": "组合（{{n}} 条）",
+    "comboHint": "库里全部因子按训练窗 IC 加权的 tanh(z) 之和，走和单因子一样的 walk-forward；holdout 用搜索段整段定权重",
+    "weights": "主档权重",
+    "latest": "{{time}} 收盘那根的信号",
     "approvedAt": "入库",
     "recheck": "入库后复查",
     "recheckHint": "只用入库之后的数据算 IC，样本 {{n}} 个",
