@@ -1,6 +1,6 @@
-"""入库后复查：只用入库时刻之后的数据算 IC，让真正的未来当裁判。
+"""只用某个时刻之后的数据算 IC：holdout（cut 之后）和入库后复查（入库之后）都是这一套。
 
-因子用全量数据算（滚动窗口需要之前的历史），再截到入库之后；没有训练窗、没有门，只出 IC 数字。
+因子用全量数据算（滚动窗口需要之前的历史），再截到时刻之后；没有训练窗、没有门，只出 IC 数字。
 """
 
 from __future__ import annotations
@@ -32,6 +32,5 @@ def recheck(expr: Expr, panels: dict[str, pd.DataFrame], since_ms: int, params: 
             rows = np.arange(0, len(f), bars)
             ok = np.isfinite(f[rows]) & np.isfinite(y[rows])
             points[s] = pd.DataFrame({"t": times[rows][ok], "f": f[rows][ok], "y": y[rows][ok]})
-        summary = ic.summary(points, params.segments, params.min_points)
-        out["horizons"][bars] = {k: summary[k] for k in ("mean", "icir", "months", "samples", "bySymbol", "sameSignSymbols")}
+        out["horizons"][bars] = ic.compact(ic.summary(points, params.segments, params.min_points))
     return out

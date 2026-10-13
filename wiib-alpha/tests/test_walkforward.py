@@ -36,21 +36,21 @@ def test_train_stats_match_direct_numpy():
     y[[50, 300]] = np.nan
     st = TrainStats(f, y)
     for end in (2, 60, 250, 500):
-        mean, std, sign = st.at(end)
+        mean, std, corr = st.at(end)
         ff, yy = f[:end], y[:end]
         ok = np.isfinite(ff)
         assert mean == pytest.approx(ff[ok].mean())
         assert std == pytest.approx(ff[ok].std(ddof=1))
         both = ok & np.isfinite(yy)
-        assert sign == np.sign(np.corrcoef(ff[both], yy[both])[0, 1])
-    assert TrainStats(f, -y).at(500)[2] == -1
+        assert corr == pytest.approx(np.corrcoef(ff[both], yy[both])[0, 1])
+    assert TrainStats(f, -y).at(500)[2] == pytest.approx(-st.at(500)[2])
 
 
 def test_train_stats_degenerate():
     st = TrainStats(np.array([1.0, np.nan]), np.array([0.1, 0.2]))
-    assert np.isnan(st.at(0)[0]) and st.at(0)[2] == 0
-    mean, std, sign = st.at(2)
-    assert np.isnan(mean) and np.isnan(std) and sign == 0
+    assert np.isnan(st.at(0)[0]) and np.isnan(st.at(0)[2])
+    mean, std, corr = st.at(2)
+    assert np.isnan(mean) and np.isnan(std) and np.isnan(corr)
     flat = TrainStats(np.array([2.0, 2.0, 2.0]), np.array([1.0, 2.0, 3.0]))
-    mean, std, sign = flat.at(3)
-    assert mean == 2.0 and np.isnan(std) and sign == 0
+    mean, std, corr = flat.at(3)
+    assert mean == 2.0 and np.isnan(std) and np.isnan(corr)

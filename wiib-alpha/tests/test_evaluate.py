@@ -30,7 +30,7 @@ def test_planted_signal_passes_every_gate(panels):
     assert pooled["netReturn"] > 0 and pooled["permPct"] >= 0.95
     gates = judge(ev, GATES, primary=48)
     assert passed(gates), [g for g in gates if not g["passed"]]
-    assert [g["id"] for g in gates] == [f"G{i}" for i in range(9)]
+    assert [g["id"] for g in gates] == [f"G{i}" for i in range(10)]
 
 
 def test_noise_factor_fails(panels):
@@ -63,7 +63,7 @@ def test_evaluate_output_is_plain_data(panels):
     assert ev["columns"] == ["volume"] and ev["complexity"]["nodes"] == 4
     assert set(ev["horizons"]) == {24, 48, 96}
     assert set(ev["horizons"][24]["leg"]["bySymbol"]) == {"AAA", "BBB", "CCC"}
-    assert ev["redundancy"] == {"maxAbs": 0.0, "with": None}
+    assert ev["redundancy"] == {"maxAbs": 0.0, "with": None} and ev["gain"] is None
 
 
 def test_redundancy_finds_the_twin(panels):
@@ -110,6 +110,25 @@ def test_apply_fdr_flips_the_marginal_one(panels):
     assert g2_flags == [True, True, False, False, False]
     assert batch[0]["passed"] and not batch[1]["passed"]
     assert "BH" in next(g for g in batch[1]["gates"] if g["id"] == "G5")["note"]
+
+
+def test_apply_fdr_extra_tests_only_make_it_stricter(panels):
+    """被评审打回改掉的旧版本按 p=1 占位：m 变大，边缘的那条就过不去"""
+    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+    ev["gates"] = judge(ev, GATES, 48)
+
+    def with_pct(pct: float) -> dict:
+        e = copy.deepcopy(ev)
+        g5 = next(g for g in e["gates"] if g["id"] == "G5")
+        g5["value"]["permPct"], g5["passed"] = pct, True
+        return e
+
+    batch = [with_pct(0.988), with_pct(0.97)]  # p = 0.012、0.03
+    apply_fdr(batch, q=0.10, iterations=1000)
+    assert [e["passed"] for e in batch] == [True, True]
+    batch = [with_pct(0.988), with_pct(0.97)]
+    apply_fdr(batch, q=0.10, iterations=1000, extra_tests=6)  # m = 8，第二条的门槛变成 0.025
+    assert [e["passed"] for e in batch] == [True, False]
 
 
 def test_a_real_factor_survives_batch_fdr_at_production_k(panels):

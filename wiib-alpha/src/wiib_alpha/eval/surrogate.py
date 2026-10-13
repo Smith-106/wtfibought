@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..data.panel import HORIZON_BARS
+from ..data.panel import add_targets, aligned
 from ..dsl import Expr
 from . import ic
 from .params import EvalParams
@@ -39,8 +39,7 @@ def surrogate_panel(panel: pd.DataFrame, order: np.ndarray) -> pd.DataFrame:
             df[c] = df[c].to_numpy(dtype="float64") * scale
     if "btc_close" in df and "btc_ret" in df and panel["btc_close"].notna().any():
         _rechain(df, "btc_close", "btc_ret", float(panel["btc_close"].dropna().iloc[0]))
-    for bars in HORIZON_BARS.values():
-        df[f"fwd_ret_{bars}"] = np.log(df["close"].shift(-bars) / df["close"])
+    add_targets(df)
     return df
 
 
@@ -54,15 +53,6 @@ def _rechain(df: pd.DataFrame, price_col: str, ret_col: str, start: float) -> np
     df[ret_col] = np.log(new_price / np.concatenate([[np.nan], new_price[:-1]]))
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(old_price > 0, new_price / old_price, 1.0)
-
-
-def aligned(panels: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    """只留全部币都有的时刻，同一套顺序才能套到每个币上"""
-    common = None
-    for p in panels.values():
-        common = p.index if common is None else common.intersection(p.index)
-    common = common.sort_values()
-    return {s: p.loc[common] for s, p in panels.items()}
 
 
 def null_ics(expr: Expr, panels: dict[str, pd.DataFrame], params: EvalParams, bars: int,

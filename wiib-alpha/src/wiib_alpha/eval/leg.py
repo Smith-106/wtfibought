@@ -35,14 +35,14 @@ def simulate(factor: np.ndarray, target: np.ndarray, wins: list[Window], stats: 
     for w in wins:
         seg = slice(w.test_start, w.test_end)
         valid[seg] = True
-        mean, std, sign = stats.at(w.train_end)
-        if sign == 0 or not np.isfinite(std):
+        mean, std, corr = stats.at(w.train_end)
+        if not np.isfinite(corr) or not np.isfinite(std):
             continue
         with np.errstate(invalid="ignore"):
             z = (factor[seg] - mean) / std
         d = np.where(z > 1, 1, np.where(z < -1, -1, 0))
         d[~np.isfinite(z)] = 0
-        dirs[seg] = sign * d
+        dirs[seg] = int(np.sign(corr)) * d
     rows_all = np.flatnonzero(valid & np.isfinite(target))
     if len(rows_all) == 0:
         return None

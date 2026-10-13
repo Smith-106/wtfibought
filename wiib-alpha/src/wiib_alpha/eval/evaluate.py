@@ -1,4 +1,4 @@
-"""一条表达式的完整评估：前视自检 → 每档 h 的 IC 与方向腿 → 主档 IC 的替身检验 → 冗余 → 复杂度。
+"""一条表达式的完整评估：前视自检 → 每档 h 的 IC 与方向腿 → 主档 IC 的替身检验 → 冗余 → 复杂度 → 对组合的增量。
 
 输出是可直接落库/下发的 dict，判门在 gates.py。
 """
@@ -12,15 +12,15 @@ import pandas as pd
 
 from ..data.panel import HORIZON_BARS
 from ..dsl import Expr
-from . import ic, leg, surrogate
+from . import combo, surrogate
+from .horizon import horizon
 from .params import EvalParams
 from .stats import spearman
-from .walkforward import TrainStats, windows
 
 
 def evaluate(expr: Expr, panels: dict[str, pd.DataFrame], params: EvalParams = EvalParams(),
-             references: dict[str, pd.DataFrame] | None = None) -> dict[str, Any]:
-    """panels 一币一张；references 一币一张，列是参照因子名"""
+             references: dict[str, pd.DataFrame] | None = None, library: combo.Combo | None = None) -> dict[str, Any]:
+    """panels 一币一张；references 一币一张，列是参照因子名；library 是库里因子的组合，不给就不算增量"""
     factors = {s: expr.evaluate(p) for s, p in panels.items()}
     out: dict[str, Any] = {
         "expr": str(expr),
@@ -31,7 +31,7 @@ def evaluate(expr: Expr, panels: dict[str, pd.DataFrame], params: EvalParams = E
         "horizons": {},
     }
     for bars in HORIZON_BARS.values():
-        out["horizons"][bars] = _horizon(bars, panels, factors, params)
+        out["horizons"][bars] = horizon(bars, panels, factors, params)
     main = out["horizons"][params.primary]["ic"]
     nulls = surrogate.null_ics(expr, panels, params, params.primary, params.surrogates, params.seed)
     valid = [v for v in nulls if np.isfinite(v)]
@@ -43,6 +43,7 @@ def evaluate(expr: Expr, panels: dict[str, pd.DataFrame], params: EvalParams = E
         "ics": nulls,
     }
     out["redundancy"] = redundancy(factors, references, params.redundancy_stride)
+    out["gain"] = combo.gain(library, str(expr), expr, params) if library is not None else None
     return out
 
 
@@ -61,29 +62,6 @@ def _lookahead_free(expr: Expr, panels: dict[str, pd.DataFrame], factors: dict[s
         if not np.allclose(part, full, rtol=1e-9, atol=1e-12, equal_nan=True):
             return False
     return True
-
-
-def _horizon(bars: int, panels: dict[str, pd.DataFrame], factors: dict[str, pd.Series],
-             params: EvalParams) -> dict[str, Any]:
-    points: dict[str, pd.DataFrame] = {}
-    legs: dict[str, leg.Leg] = {}
-    leg_rows: dict[str, dict[str, Any]] = {}
-    for s, panel in panels.items():
-        f = factors[s].to_numpy(dtype="float64")
-        y = panel[f"fwd_ret_{bars}"].to_numpy(dtype="float64")
-        wins = windows(len(panel), params.test_size, bars, params.embargo, params.min_train)
-        if not wins:
-            continue
-        points[s] = ic.oos_points(panel.index.to_numpy(dtype="int64"), f, y, wins, bars)
-        simulated = leg.simulate(f, y, wins, TrainStats(f, y), bars, params.cost)
-        if simulated is not None:
-            legs[s] = simulated
-            leg_rows[s] = leg.summarize(simulated, bars, params)
-    return {
-        "bars": bars,
-        "ic": ic.summary(points, params.segments, params.min_points),
-        "leg": {"pooled": leg.pool(legs, bars, params), "bySymbol": leg_rows},
-    }
 
 
 def redundancy(factors: dict[str, pd.Series], references: dict[str, pd.DataFrame] | None,

@@ -34,7 +34,7 @@ def windows(total: int, test_size: int, horizon_bars: int, embargo: int, min_tra
 
 
 class TrainStats:
-    """因子的均值/样本标准差，与因子-答案 Pearson 相关的符号；只用 [0, train_end) 里有数的行"""
+    """因子的均值/样本标准差，与因子-答案的 Pearson 相关；只用 [0, train_end) 里有数的行"""
 
     def __init__(self, factor: np.ndarray, target: np.ndarray):
         f = np.asarray(factor, dtype="float64")
@@ -56,23 +56,23 @@ class TrainStats:
         self._sxx = np.cumsum(xp * xp)
         self._syy = np.cumsum(yp * yp)
 
-    def at(self, train_end: int) -> tuple[float, float, int]:
-        """(mean, std, sign)；样本不够或没波动时 std=NaN、sign=0"""
+    def at(self, train_end: int) -> tuple[float, float, float]:
+        """(mean, std, corr)；样本不够或没波动时 std、corr 是 NaN"""
         if train_end <= 0:
-            return np.nan, np.nan, 0
+            return np.nan, np.nan, np.nan
         i = min(train_end, len(self._n)) - 1
         n = int(self._n[i])
         if n < 2:
-            return np.nan, np.nan, 0
+            return np.nan, np.nan, np.nan
         mean = self._s[i] / n + self._base
         var = (self._s2[i] - self._s[i] ** 2 / n) / (n - 1)
         std = float(np.sqrt(var)) if var > 0 else np.nan
         m = int(self._m[i])
-        sign = 0
+        corr = np.nan
         if m >= 2:
             cov = self._sxy[i] - self._sx[i] * self._sy[i] / m
             vx = self._sxx[i] - self._sx[i] ** 2 / m
             vy = self._syy[i] - self._sy[i] ** 2 / m
             if vx > 0 and vy > 0:
-                sign = int(np.sign(cov))
-        return float(mean), std, sign
+                corr = float(cov / np.sqrt(vx * vy))
+        return float(mean), std, corr

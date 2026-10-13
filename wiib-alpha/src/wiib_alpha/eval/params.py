@@ -26,8 +26,9 @@ class EvalParams:
     min_points: int = 8         # 一个月/一段少于这么多非重叠点不算 IC
     redundancy_stride: int = 4  # 算冗余时每几行取一行
     segments: int = 4
-    surrogates: int = 20        # 替身个数；0 = 不做，G2 直接不过
+    surrogates: int = 100       # 替身个数，p 的分辨率是 1/(k+1)；0 = 不做，G2 直接不过
     surrogate_block: int = 8    # 替身打乱的块长，2 小时
+    holdout_days: int = 90      # 最近这么多天锁成 holdout：门和模型都看不到，过门后只算一次 IC 给人看
 
     @property
     def cost(self) -> float:

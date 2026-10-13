@@ -76,6 +76,11 @@ def segments(points: dict[str, pd.DataFrame], k: int, min_points: int) -> list[f
     return out
 
 
+def compact(summary: dict[str, Any]) -> dict[str, Any]:
+    """holdout 和入库后复查只要这几个数"""
+    return {k: summary[k] for k in ("mean", "icir", "months", "samples", "bySymbol", "sameSignSymbols")}
+
+
 def summary(points: dict[str, pd.DataFrame], k: int, min_points: int) -> dict[str, Any]:
     table = monthly(points, min_points)
     series = pooled(table)

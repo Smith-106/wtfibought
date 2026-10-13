@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from wiib_alpha import calibrate
-from wiib_alpha.data.panel import FEATURE_COLUMNS
+from wiib_alpha.data.panel import FEATURE_COLUMNS, aligned
 from wiib_alpha.dsl import parse
 from wiib_alpha.eval import surrogate
 from wiib_alpha.eval.params import EvalParams
@@ -57,7 +57,7 @@ def test_one_order_is_shared_by_every_symbol():
 def test_aligned_keeps_only_common_timestamps():
     panels = calibrate.synthetic_panels(("AAA", "BBB"), days=2, seed=2)
     panels["BBB"] = panels["BBB"].iloc[10:]
-    same = surrogate.aligned(panels)
+    same = aligned(panels)
     assert len(same["AAA"]) == len(same["BBB"]) == len(panels["AAA"]) - 10
     assert same["AAA"].index.equals(same["BBB"].index)
 
