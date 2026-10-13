@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping, Sequence
 
@@ -19,8 +20,14 @@ NOTES_MARK = "=====NOTES====="
 # 风格 → 单笔风险（占权益 %），顺序与题库里的 styles 标签一一对上
 _RISK_PCT = [("conservative", 0.5), ("balanced", 1.0), ("aggressive", 2.0)]
 
-# 5m/15m 上比这个还小的止损距离基本落在噪音里
+# 15m 上比这个还小的止损距离基本落在噪音里；别的周期按时间的平方根缩放
 NOISE_STOP_PCT = 0.3
+_UNIT_MINUTES = {"m": 1, "h": 60, "d": 1440}
+
+# 护栏认的论点标签与两门语言的叫法，顺序同 TradeGuard.PLAY_TYPES；OTHER 不当主打法选项
+_PLAYS = [("BREAKOUT", "突破", "Breakout"), ("PULLBACK", "顺势回调", "Pullback"), ("REVERSAL", "反转", "Reversal"),
+          ("TREND_FOLLOW", "趋势跟随", "Trend following"), ("RANGE", "区间震荡", "Range"),
+          ("NEWS", "消息面", "News-driven"), ("FUNDING", "资金费率", "Funding-rate")]
 
 
 def pick_lang(raw: str | None) -> str:
@@ -54,7 +61,7 @@ _BANK: dict[str, dict[str, Any]] = {
         "direction": ("方向上你想让它怎么做？", ["只做多", "多空都做", "只做空"]),
         "holding": ("一笔单大概拿多久？", ["日内几根 K 线", "波段 1~3 天", "更长"]),
         "style": ("风格偏哪边？", ["保守", "均衡", "激进"]),
-        "play": ("主打法想用哪种？", ["趋势跟随", "区间震荡", "突破", "均值回归"]),
+        "play": ("主打法想用哪种？", [zh for _, zh, _ in _PLAYS]),
         "free": ("还想调整什么？", []),
         "styles": ["保守", "均衡", "激进"],
     },
@@ -63,7 +70,7 @@ _BANK: dict[str, dict[str, Any]] = {
         "direction": ("Which side should it trade?", ["Long only", "Both sides", "Short only"]),
         "holding": ("How long should a trade be held?", ["Intraday, a few candles", "Swing, 1-3 days", "Longer"]),
         "style": ("Which style fits you?", ["Conservative", "Balanced", "Aggressive"]),
-        "play": ("Which play should be the main one?", ["Trend following", "Range", "Breakout", "Mean reversion"]),
+        "play": ("Which play should be the main one?", [en for _, _, en in _PLAYS]),
         "free": ("Anything else you want to change?", []),
         "styles": ["Conservative", "Balanced", "Aggressive"],
     },
@@ -132,19 +139,28 @@ def _round2(value: float) -> float:
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def noise_stop_pct(interval_code: str) -> float:
+    """这个周期上止损距离的噪音线（%）"""
+    minutes = int(interval_code[:-1]) * _UNIT_MINUTES[interval_code[-1]]
+    return _round2(NOISE_STOP_PCT * math.sqrt(minutes / 15))
+
+
 # ========== 生成指令的提示词 ==========
 
 _LANG_NAME = {"zh": "中文", "en": "英文"}
 
-_HARNESS_RULES = """harness 的硬现实（指令必须绕开，不能装看不见）：
+_PLAY_TAGS = "、".join(f"{tag} {zh}" for tag, zh, _ in _PLAYS) + "、OTHER 其它"
+
+_HARNESS_RULES = f"""harness 的硬现实（指令必须绕开，不能装看不见）：
 - 挂不了一排单：网格、马丁这类「铺一层层限价单等回调」的玩法做不了。最接近的可行写法是分批建仓 + 分批止盈。
 - 限价方向是死的：买入限价必须低于现价，卖出限价必须高于现价；反了会当场成交，不算挂单。想立刻进场只能用市价单。
 - 挂单也占仓位数：单仓模式下一张没成交的限价单就占掉了唯一的坑，再开新仓会被护栏拒。
 - 最多 3 个可交易币，且币种由主人在配置页定，指令改不了。
 - 每根 K 线才醒一次，单轮最多 12 次模型调用（最后一次要留给写结论）。不要写「持续盯盘」「每分钟检查」「一小时内复查」这类节奏。
-- 开仓必须给论点标签、数据引用、失效条件，缺一样护栏直接拒；失效条件只能是市场条件，不能是盈亏数字。
+- 开仓必须带论点标签、失效条件、止损价、止盈价，缺一样护栏直接拒；想让利润奔跑只能先把止盈设远再调。失效条件只能是市场条件，不能是盈亏数字。数据引用护栏不查，指令里照样要求写。
+- 论点标签只认这几个：{_PLAY_TAGS}。指令里提到打法就用这些名字（带英文标签），别造新词。
 - 没有「暂停交易」这种工具：回撤到几个点就停手、连亏几笔就休息，只能写成纪律条文由交易员自己遵守，系统不会强制执行。
-- 指令正文不超过 4000 字。"""
+- 指令正文不超过 {MAX_CHARS} 字。"""
 
 
 def _spec_block(facts: Mapping[str, Any]) -> str:
@@ -170,7 +186,7 @@ def _risk_block(facts: Mapping[str, Any]) -> str:
     return (
         "风险档位（代码按上面的规格用「风险 = 止损距离% × 杠杆 × 保证金占比」反算好了，直接引用，不要自己算）：\n"
         f"{rows}\n"
-        f"5m/15m 这种小周期上，止损距离低于 {NOISE_STOP_PCT}% 基本落在噪音里，随时被扫。"
+        f"{facts['interval_code']} 周期上，止损距离低于 {noise_stop_pct(facts['interval_code'])}% 基本落在噪音里，随时被扫。"
         "某一档的整段范围都低于它，就在 notes 里明说这档在当前规格下不可行，并指出哪一档可行。"
     )
 

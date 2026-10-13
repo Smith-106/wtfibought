@@ -86,7 +86,8 @@ def transcript():
         if "只输出一个 JSON 对象" in text:
             return f"```json\n{DETAIL_JSON}\n```"
         log.append(text)
-        play = "突破" if "突破" in text else "趋势跟随"
+        # 只认答案行：标签表里常驻「BREAKOUT 突破」
+        play = "突破" if "→ 突破" in text else "趋势跟随"
         return f"【方法】第{len(log)}版 {play}\n{MARK}\n本版改了什么"
 
     return log, reply
@@ -131,7 +132,7 @@ async def test_full_line_with_rollback(saver):
     snap = await step(app, Command(resume={"answer": {"play": "突破"}}))
     assert [v["no"] for v in versions(snap)] == [1, 2]
     assert versions(snap)[1]["text"] == "【方法】第3版 突破"
-    assert "突破" in log[-1] and "只做多" in log[-1]
+    assert "→ 突破" in log[-1] and "→ 只做多" in log[-1]
 
     # 两条分支都还在 history 里：第 2 版有两份，正文不一样
     history = [h async for h in app.aget_state_history(CFG)]
@@ -336,9 +337,13 @@ def test_risk_table_uses_spec_range():
     assert rows[0]["stop_min"] == 0.13
 
 
+def test_noise_floor_scales_with_interval():
+    assert [prompts.noise_stop_pct(i) for i in ("5m", "15m", "1h", "4h")] == [0.17, 0.3, 0.6, 1.2]
+
+
 def test_english_bank_and_lang_pick():
     assert prompts.pick_lang("en-US") == "en"
     assert prompts.pick_lang("zh-CN") == "zh"
     assert prompts.pick_lang(None) == "zh"
-    assert prompts.play_question("en")["items"][0]["options"][0] == "Trend following"
+    assert prompts.play_question("en")["items"][0]["options"][0] == "Breakout"
     assert prompts.is_incremental("Edit the existing one", "en") is True
