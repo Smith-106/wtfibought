@@ -82,10 +82,37 @@ def test_describe_counts_index_gaps():
     assert panel.describe(holed)["gaps"] == 2
 
 
+def test_holdout_cut_and_truncate():
+    df = build(with_liq=False)
+    cut = panel.holdout_cut({"X": df, "Y": df.iloc[:-5]}, 1)
+    assert cut == close_time(N - 1) - DAY
+    search = panel.truncate(df, cut)
+    assert search.index.max() <= cut and len(search) == 2 * 96
+    # 搜索段末尾的答案在截断处重算：最后 96 根的 24h 答案看不到 holdout 的价格
+    assert search["fwd_ret_96"].iloc[-96:].isna().all() and df["fwd_ret_96"].iloc[len(search) - 1] > 0
+    assert search["fwd_ret_24"].iloc[0] == df["fwd_ret_24"].iloc[0]
+    assert set(search.columns) == set(df.columns)
+
+
 def test_feature_columns_exist_and_targets_excluded():
     df = build()
     assert set(panel.FEATURE_COLUMNS) <= set(df.columns)
     assert not set(panel.TARGET_COLUMNS) & set(panel.FEATURE_COLUMNS)
+
+
+class StubBinance:
+    def klines(self, symbol, start, end):
+        return klines(N, 100.0)
+
+    def funding(self, symbol, start, end):
+        return pd.DataFrame({"funding_time": [0], "funding_rate": [0.0001]})
+
+
+def test_benchmark_panel_has_no_btc_columns(tmp_path):
+    store = panel.PanelStore(tmp_path)
+    store.refresh(StubBinance(), ("BTCUSDT", "ETHUSDT"), history_days=3, now_ms=N * BAR_MS)
+    assert store.load("BTCUSDT")[["btc_close", "btc_ret"]].isna().all().all()
+    assert store.load("ETHUSDT")["btc_close"].notna().sum() == N
 
 
 def test_store_grows_incrementally(tmp_path):

@@ -48,6 +48,12 @@ def funding_lines(a: int, b_: int) -> list[str]:
 def make_fake(log: list[str]):
     def fake_vision(request: httpx.Request) -> httpx.Response:
         log.append(request.url.path)
+        if request.url.host == "f":
+            # fapi：[startTime, endTime] 内 8 小时一条，只有上市后、已结算的
+            a = max(int(request.url.params["startTime"]), LISTED)
+            b_ = min(int(request.url.params["endTime"]) + 1, NOW)
+            return httpx.Response(200, json=[{"symbol": "X", "fundingTime": t, "fundingRate": "0.0002", "markPrice": "1"}
+                                             for t in range(-(-a // H8) * H8, b_, H8)])
         m = _PATH.match(request.url.path)
         if not m:
             return httpx.Response(404)
@@ -73,7 +79,8 @@ def make_fake(log: list[str]):
 
 
 def client(log: list[str] | None = None) -> b.Binance:
-    return b.Binance("https://v", httpx.Client(transport=httpx.MockTransport(make_fake(log if log is not None else []))))
+    return b.Binance("https://v", httpx.Client(transport=httpx.MockTransport(make_fake(log if log is not None else []))),
+                     fapi_url="https://f")
 
 
 def test_klines_monthly_then_daily_for_recent_months():
@@ -102,10 +109,22 @@ def test_klines_incremental_start_only_touches_needed_days():
     assert not any("2026-09-09" in p for p in log) and not any("/monthly/klines/X/15m/X-15m-2026-08" in p for p in log)
 
 
-def test_funding_monthly_only():
-    df = client().funding("X", LISTED, NOW)
+def test_funding_recent_month_comes_from_rest():
+    log: list[str] = []
+    df = client(log).funding("X", LISTED, NOW)
+    # 7、8 月走月度文件，9 月月度 404 改走 fapi，补到最近一次结算
+    assert df["funding_time"].tolist() == list(range(LISTED, ms(2026, 9, 21, 8) + H8, H8))
+    assert df["funding_rate"].iloc[0] == 0.0001 and df["funding_rate"].iloc[-1] == 0.0002
+    assert df["funding_time"].dtype == "int64"
+    assert [p for p in log if p.startswith("/fapi/")] == ["/fapi/v1/fundingRate"]
+
+
+def test_funding_rest_can_be_switched_off():
+    log: list[str] = []
+    api = b.Binance("https://v", httpx.Client(transport=httpx.MockTransport(make_fake(log))), fapi_url="")
+    df = api.funding("X", LISTED, NOW)
     assert df["funding_time"].tolist() == list(range(LISTED, MONTHLY_END, H8))
-    assert df["funding_rate"].iloc[0] == 0.0001 and df["funding_time"].dtype == "int64"
+    assert not any(p.startswith("/fapi/") for p in log)
 
 
 def test_empty_range_gives_typed_empty():

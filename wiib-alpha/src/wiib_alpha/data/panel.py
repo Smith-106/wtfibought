@@ -33,10 +33,10 @@ FEATURE_COLUMNS = ["open", "high", "low", "close", "volume", "quote_volume", "tr
 TARGET_COLUMNS = [f"fwd_ret_{bars}" for bars in HORIZON_BARS.values()]
 
 
-def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFrame,
+def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFrame | None,
              liq: pd.DataFrame | None = None, liq_start: int | None = None,
              outage: frozenset[int] = frozenset()) -> pd.DataFrame:
-    """liq 是这个币的桶；liq_start 是全部币里最早的一桶，之前没数据不是没强平；outage 是断档的桶 key"""
+    """btc_klines 是基准，BTC 自己传 None 两列留空；liq 是这个币的桶；liq_start 是全部币里最早的一桶，之前没数据不是没强平；outage 是断档的桶 key"""
     df = klines.drop_duplicates("close_time").set_index("close_time").sort_index()
     df["ret"] = np.log(df["close"] / df["close"].shift(1))
     # 收盘时刻最近一次已结算的费率；离上次结算太久还没新的是数据断了（月度文件只到上个整月），记 NaN 不硬填
@@ -49,9 +49,14 @@ def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFra
     _liq_columns(df, liq, liq_start, outage)
     # bar 开始时刻的 UTC 小时：00:45~01:00 那根算 0 点的（closeTime 是边界减 1ms，加回去再退一根）
     df["hour"] = ((df.index.to_numpy() + 1 - BAR_MS) // 3_600_000) % 24
+    add_targets(df)
+    return df
+
+
+def add_targets(df: pd.DataFrame) -> None:
+    """标准答案三档：t 之后 h 根的对数涨跌幅，末尾不够 h 根的是 NaN"""
     for bars in HORIZON_BARS.values():
         df[f"fwd_ret_{bars}"] = np.log(df["close"].shift(-bars) / df["close"])
-    return df
 
 
 def _asof(index: pd.Index, source: pd.DataFrame | None, time_col: str, value_col: str) -> np.ndarray:
@@ -79,6 +84,27 @@ def _liq_columns(df: pd.DataFrame, liq: pd.DataFrame | None, liq_start: int | No
         values[known & np.isnan(values)] = 0.0
         values[~known] = np.nan
         df[c] = values
+
+
+def holdout_cut(panels: dict[str, pd.DataFrame], holdout_days: int) -> int:
+    """全部币最后一根的收盘时刻往前数 holdout_days 天；之后的是 holdout"""
+    return max(int(p.index.max()) for p in panels.values()) - holdout_days * DAY_MS
+
+
+def truncate(panel: pd.DataFrame, cut_ms: int) -> pd.DataFrame:
+    """只留 cut 及之前的行，标准答案在截断处重算"""
+    df = panel[panel.index <= cut_ms].copy()
+    add_targets(df)
+    return df
+
+
+def aligned(panels: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """只留全部币都有的时刻：替身要同一套顺序套到每个币上，组合要同一个窗口切全部币"""
+    common = None
+    for p in panels.values():
+        common = p.index if common is None else common.intersection(p.index)
+    common = common.sort_values()
+    return {s: p.loc[common] for s, p in panels.items()}
 
 
 def describe(panel: pd.DataFrame) -> dict[str, Any]:
@@ -120,7 +146,9 @@ class PanelStore:
         status = {}
         for s in symbols:
             sym_liq = None if liq is None else liq[liq["symbol"] == s]
-            panel = assemble(klines[s], funding[s], klines[BENCHMARK], sym_liq, liq_start, outage)
+            # BTC 自己没有基准，btc 两列留空
+            panel = assemble(klines[s], funding[s], None if s == BENCHMARK else klines[BENCHMARK], sym_liq, liq_start,
+                             outage)
             panel.to_parquet(self.panels / f"{s}.parquet")
             status[s] = describe(panel)
             logger.info("panel %s：%s", s, status[s])

@@ -2,7 +2,8 @@
 
 K 线 CSV 与 REST 同 12 列：open_time,open,high,low,close,volume,close_time,quote_volume,count,
 taker_buy_volume,taker_buy_quote_volume,ignore。费率 CSV 三列：calc_time,funding_interval_hours,last_funding_rate。
-月度文件要到下月初才出：当月与上月 404 就改走日度文件（K 线有日度，费率没有），更早的 404 是那时还没上市。
+月度文件要到下月初才出：当月与上月 404 就改走日度文件；费率没有日度文件，这两个月改走 fapi 的 /fapi/v1/fundingRate
+（公开接口，不要 key）。更早的 404 是那时还没上市。
 老文件没有头行、2025 年后的时间戳可能是微秒，解析时一并归一。
 """
 
@@ -13,6 +14,7 @@ import logging
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 import numpy as np
@@ -50,8 +52,9 @@ def empty_funding() -> pd.DataFrame:
 
 
 class Binance:
-    def __init__(self, base_url: str, client: httpx.Client | None = None):
+    def __init__(self, base_url: str, client: httpx.Client | None = None, fapi_url: str = "https://fapi.binance.com"):
         self._base = base_url.rstrip("/")
+        self._fapi = fapi_url.rstrip("/")
         self._client = client if client is not None else httpx.Client(timeout=60.0)
 
     def klines(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
@@ -75,12 +78,14 @@ class Binance:
         return df.drop_duplicates("open_time").sort_values("open_time").reset_index(drop=True)
 
     def funding(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-        """[start_ms, end_ms) 内已结算的资金费率；只有月度文件，当月的要等月底"""
+        """[start_ms, end_ms) 内已结算的资金费率；月度文件还没出的月份走 REST，fapi 地址留空就不补"""
         frames: list[pd.DataFrame] = []
         for month in _months(start_ms, end_ms):
             csv = self._zip(f"/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month:%Y-%m}.zip")
             if csv is not None:
                 frames.append(_parse(csv, _FUNDING_CSV, ["funding_time"]))
+            elif self._fapi and _recent(month, end_ms):
+                frames.append(self._funding_rest(symbol, max(_ms(month), start_ms), min(_ms(_next_month(month)), end_ms)))
         if not frames:
             return empty_funding()
         df = pd.concat(frames, ignore_index=True)[FUNDING_COLUMNS]
@@ -88,28 +93,49 @@ class Binance:
         df = df[(df["funding_time"] >= start_ms) & (df["funding_time"] < end_ms)]
         return df.drop_duplicates("funding_time").sort_values("funding_time").reset_index(drop=True)
 
+    def _funding_rest(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """一页最多 1000 条；一个月最多 186 条（4 小时结算的币），一页够"""
+        rows = self._rest("/fapi/v1/fundingRate",
+                          {"symbol": symbol, "startTime": start_ms, "endTime": end_ms - 1, "limit": 1000})
+        if not rows:
+            return empty_funding()
+        return pd.DataFrame({"funding_time": [int(r["fundingTime"]) for r in rows],
+                             "funding_rate": [float(r["fundingRate"]) for r in rows]})
+
     def _zip(self, path: str) -> bytes | None:
         """下载 zip 解出里面唯一的 CSV；404 是没这个文件"""
-        url = self._base + path
+        resp = self._get(self._base + path, None)
+        if resp is None:
+            return None
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            return zf.read(zf.namelist()[0])
+
+    def _rest(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        resp = self._get(self._fapi + path, params)
+        if resp is None:
+            raise BinanceError(f"fapi {path} 返回 404")
+        return resp.json()
+
+    def _get(self, url: str, params: dict[str, Any] | None) -> httpx.Response | None:
+        """带重试的 GET；404 返回 None"""
         for attempt in range(_RETRIES):
             if attempt:
                 time.sleep(2 ** attempt)
             try:
-                resp = self._client.get(url)
+                resp = self._client.get(url, params=params)
             except httpx.TransportError as exc:
-                logger.warning("vision %s 网络错误，第 %d 次：%s", path, attempt + 1, exc)
+                logger.warning("%s 网络错误，第 %d 次：%s", url, attempt + 1, exc)
                 continue
             if resp.status_code == 200:
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                    return zf.read(zf.namelist()[0])
+                return resp
             if resp.status_code == 404:
                 return None
             # 429 是限流，5xx 是对面抖，都值得再试；其它直接报
             if resp.status_code == 429 or resp.status_code >= 500:
-                logger.warning("vision %s HTTP %d，第 %d 次", path, resp.status_code, attempt + 1)
+                logger.warning("%s HTTP %d，第 %d 次", url, resp.status_code, attempt + 1)
                 continue
-            raise BinanceError(f"vision {path} 返回 HTTP {resp.status_code}")
-        raise BinanceError(f"vision {path} 连试 {_RETRIES} 次都失败")
+            raise BinanceError(f"{url} 返回 HTTP {resp.status_code}")
+        raise BinanceError(f"{url} 连试 {_RETRIES} 次都失败")
 
 
 def _parse(csv: bytes, names: list[str], time_cols: list[str]) -> pd.DataFrame:
@@ -124,6 +150,10 @@ def _parse(csv: bytes, names: list[str], time_cols: list[str]) -> pd.DataFrame:
 
 def _utc(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
 
 
 def _next_month(month: datetime) -> datetime:

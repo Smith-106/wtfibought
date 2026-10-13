@@ -26,6 +26,8 @@ class Config:
     gen: ModelSpec
     review: ModelSpec
     binance_vision_url: str
+    # 月度费率文件还没出的月份走这里的 REST 补；留空就不补，尾巴保持 NaN（本地连不上 fapi 时用）
+    binance_fapi_url: str
     symbols: tuple[str, ...]
     history_days: int
     data_dir: str
@@ -70,6 +72,7 @@ def config() -> Config:
         gen=_model("ALPHA_GEN"),
         review=_model("ALPHA_REVIEW"),
         binance_vision_url=os.getenv("BINANCE_VISION_URL", "https://data.binance.vision").rstrip("/"),
+        binance_fapi_url=os.getenv("BINANCE_FAPI_URL", "https://fapi.binance.com").rstrip("/"),
         symbols=symbols or DEFAULT_SYMBOLS,
         history_days=int(os.getenv("ALPHA_HISTORY_DAYS", "730")),
         data_dir=os.getenv("ALPHA_DATA_DIR", "./data"),
