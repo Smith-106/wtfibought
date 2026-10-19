@@ -73,18 +73,50 @@ def test_monthly_trained_and_segments():
 def test_monotonic_groups_follow_the_factor():
     rng = np.random.default_rng(4)
     cells = []
-    for i in range(4):
+    for i in range(30):
         y = rng.normal(0, 0.01, 25)
         cells.append((i, y + 0.002 * rng.normal(size=25), y))
     rows, f = skeleton(cells)
     p = cs_ic.points(rows, f, 24, min_names=20)
-    mono = cs_ic.monotonic(p, 0, p.total, 5)
-    assert mono["rho"] == pytest.approx(1.0) and mono["spread"] > 0
-    assert mono["groups"] == sorted(mono["groups"]) and len(mono["groups"]) == 5
+    mono = cs_ic.monotonic(p, 0, p.total, 5, 0.05)
+    assert mono["rho"] == pytest.approx(1.0) and mono["spread"] > 0 and mono["spreadT"] > 2
+    assert mono["groups"] == sorted(mono["groups"]) and len(mono["groups"]) == 5 and len(mono["steps"]) == 4
+    # 组均值是跑赢当期平均多少：各组一样大时加起来是 0
+    assert sum(mono["groups"]) == pytest.approx(0.0, abs=1e-12)
     # 因子全部并列：都落中间一组，其余组是空的，算不出单调性
     rows, flat = skeleton([(0, np.ones(25), cells[0][2])])
-    mono = cs_ic.monotonic(cs_ic.points(rows, flat, 24, 20), 0, 1, 5)
-    assert np.isnan(mono["rho"]) and np.isfinite(mono["groups"][2])
+    mono = cs_ic.monotonic(cs_ic.points(rows, flat, 24, 20), 0, 1, 5, 0.05)
+    assert np.isnan(mono["rho"]) and np.isnan(mono["spreadT"]) and np.isfinite(mono["groups"][2])
+
+
+def test_one_exploding_coin_cannot_carry_the_spread():
+    # 因子和收益无关，只有因子最小的那个币每期涨 5 倍：不截尾顶减底被它一个拉成大负数，截尾后几乎是 0
+    rng = np.random.default_rng(6)
+    cells = []
+    for i in range(20):
+        y = rng.normal(0, 0.01, 60)
+        y[0] = np.log(6.0)
+        cells.append((i, np.arange(60.0), y))
+    rows, f = skeleton(cells)
+    p = cs_ic.points(rows, f, 24, min_names=20)
+    raw, trimmed = cs_ic.monotonic(p, 0, p.total, 3, 0.0), cs_ic.monotonic(p, 0, p.total, 3, 0.05)
+    assert raw["spread"] < -0.2 and abs(trimmed["spread"]) < 0.003
+
+
+def test_shape_reads_from_the_weak_end_to_the_strong_end():
+    def mono(low, high):
+        return {"steps": [low, high]}
+
+    assert cs_ic.shape(mono(3.0, 2.5), 0.02) == "monotone" and cs_ic.shape(mono(1.0, 1.0), 0.02) == "flat"
+    # IC 为正：因子小的那头是弱的一头
+    assert cs_ic.shape(mono(8.6, -0.8), 0.02) == "weakEnd" and cs_ic.shape(mono(1.2, 5.9), 0.02) == "strongEnd"
+    assert cs_ic.shape(mono(5.0, -3.0), 0.02) == "midHigh" and cs_ic.shape(mono(-3.0, 5.0), 0.02) == "midLow"
+    # IC 为负：因子大的那头才是弱的一头，顺序和符号都翻过来
+    assert cs_ic.shape(mono(0.8, -8.6), -0.02) == "weakEnd" and cs_ic.shape(mono(5.0, -3.0), -0.02) == "midHigh"
+    assert cs_ic.shape(mono(-3.0, 5.0), -0.02) == "midLow"
+    # 老结果没有 steps、落过库的 NaN 成了 None：算不出
+    assert cs_ic.shape({}, 0.02) is None and cs_ic.shape(mono(None, 1.0), 0.02) is None
+    assert cs_ic.shape(mono(1.0, 1.0), None) is None and cs_ic.shape(mono(1.0, 1.0), 0.0) is None
 
 
 def test_summary_only_counts_the_given_range():

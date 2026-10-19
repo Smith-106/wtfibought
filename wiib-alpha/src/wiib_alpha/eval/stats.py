@@ -84,6 +84,16 @@ def annualized_sharpe(returns: np.ndarray, periods_per_year: float) -> float:
     return float(r.mean() / sd * np.sqrt(periods_per_year)) if sd > 0 else np.nan
 
 
+def t_stat(values: np.ndarray) -> float:
+    """均值 ÷ 标准误，NaN 不算；不到两个数或没波动是 NaN"""
+    x = np.asarray(values, dtype="float64")
+    x = x[np.isfinite(x)]
+    if len(x) < 2:
+        return np.nan
+    sd = x.std(ddof=1)
+    return float(x.mean() / sd * np.sqrt(len(x))) if sd > 0 else np.nan
+
+
 def compound(returns: np.ndarray) -> float:
     """Π(1+r) − 1"""
     r = np.asarray(returns, dtype="float64")

@@ -28,6 +28,7 @@ class EvalParams:
     min_points: int = 8         # 一个月/一段少于这么多有效时刻（时序报告是非重叠点）不算 IC
     min_names: int = 20         # 一个时刻有数的币少于这么多就跳过
     groups: int = 3             # 分组单调性的组数
+    trim: float = 0.05          # 分组单调性：每期收益两头各截掉这么多，一两个暴涨暴跌的币拉不动组均值
     leg_enter: float = 0.2      # 多空腿：排进头部这么多才做多，空头看尾部
     leg_exit: float = 0.4       # 掉出头部这么多才平
     segments: int = 4
@@ -53,7 +54,8 @@ class EvalParams:
 class Thresholds:
     min_samples: int = 300              # G1：24h 档样本外有效时刻数
     ic_min: float = 0.01                # G2：主档 |月度截面 IC 均值|
-    t_min: float = 3.0                  # G2：主档 |ICIR| × √月数，月度 IC 均值的 t；三组收益还得严格按组序排、和 IC 同向
+    t_min: float = 3.0                  # G2：主档 |ICIR| × √月数，月度 IC 均值的 t
+    spread_t_min: float = 2.0           # G2：截尾后顶组减底组每期之差的 t，得和 IC 同向
     min_segments: int = 3               # G3：四段里同号的段数，最后一段必须同号
     perm_pct: float = 0.95              # G5：截面排列分位
     fdr_q: float = 0.10                 # G5：同批 BH-FDR

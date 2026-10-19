@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .cs_ic import SHAPES, shape
 from .params import Thresholds
 from .stats import bh_reject
 
@@ -20,7 +21,7 @@ def judge(ev: dict[str, Any], t: Thresholds, primary: int = 48,
     main = h[primary]["ic"]
     mean_ic = main["mean"]
     mono = main["monotonic"]
-    rho, spread = mono["rho"], mono["spread"]
+    spread, spread_t, form = mono["spread"], mono["spreadT"], shape(mono, mean_ic)
     others = [b for b in h if b != primary]
     same_sign_h = [np.sign(h[b]["ic"]["mean"]) == np.sign(mean_ic) for b in others
                    if np.isfinite(h[b]["ic"]["mean"])]
@@ -43,15 +44,15 @@ def judge(ev: dict[str, Any], t: Thresholds, primary: int = 48,
               "截断重算与全量一致" if ev["lookaheadFree"] else "截断重算结果变了，算子偷看了未来"),
         _gate("G1", "最小样本", samples >= t.min_samples, {"samples": samples}, {"min": t.min_samples},
               f"{longest} 根档样本外有效时刻 {samples} 个"),
-        # 单调性：三组收益得严格按组序排、和 IC 同向，防止 IC 全靠一头的几个币撑着。3 组的秩相关只有 ±1、±0.5，只认 ±1
+        # 顶组减底组：收益截尾后每期之差得显著、和 IC 同向，IC 不能靠一两个暴涨暴跌的币撑着；三组的形状只报不判
         _gate("G2", "IC",
               _finite(mean_ic) and abs(mean_ic) >= t.ic_min and _finite(t_stat) and t_stat >= t.t_min
-              and _finite(rho) and bool(np.isclose(rho, np.sign(mean_ic))),
-              {"meanIc": mean_ic, "icir": main["icir"], "months": main["months"], "t": t_stat, "monotonic": rho,
-               "spread": spread},
-              {"icMin": t.ic_min, "tMin": t.t_min, "monotonic": "三组严格按组序、与 IC 同向"},
+              and _finite(spread_t) and spread_t * np.sign(mean_ic) >= t.spread_t_min,
+              {"meanIc": mean_ic, "icir": main["icir"], "months": main["months"], "t": t_stat, "spread": spread,
+               "spreadT": spread_t, "shape": form},
+              {"icMin": t.ic_min, "tMin": t.t_min, "spreadTMin": t.spread_t_min},
               f"主档月度截面 IC 均值 {fmt(mean_ic)}，ICIR {fmt(main['icir'])}，t {fmt(t_stat, 2)}（{main['months']} 个月），"
-              f"三组单调性 ρ={fmt(rho, 2)}，顶减底 {fmt(spread)}"),
+              f"截尾后顶组减底组每期 {fmt(spread * 1e4, 1)} bps、t {fmt(spread_t, 1)}，三组形状：{SHAPES.get(form, '算不出')}"),
         _gate("G3", "四段稳定", seg_same >= t.min_segments and last_same,
               {"segments": segs, "sameSign": seg_same, "lastSame": last_same},
               {"min": t.min_segments, "last": "最后一段与总体同号"},

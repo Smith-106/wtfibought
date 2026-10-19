@@ -2,7 +2,8 @@
 
 只用因子、答案都有数的 (t, 币)；有数的币不到 min_names 个的时刻整个丢掉（2021 年初池子里只有 30 个）。
 网格点按全局 h 档网格编号，切窗按编号切，所以样本外区间、四段都是时间上的划分。
-分组单调性：每个 t 按因子从小到大分组，各组平均算术收益跨 t 平均，看这几个数是不是跟着组序走。
+分组单调性：每个 t 按因子从小到大分组，收益截尾、减掉当期均值后各组取平均，跨 t 再平均；
+G2 只要顶组减底组每期之差显著、和 IC 同向，三组的形状（按序排开、只有一头有效、中间反了）只做标签。
 """
 
 from __future__ import annotations
@@ -16,7 +17,19 @@ import pandas as pd
 from ..data.binance import BAR_MS
 from ..data.pool import month_label, month_of, on_grid
 from .params import EvalParams
-from .stats import spearman
+from .stats import spearman, t_stat
+
+# 相邻两组每期之差的 t 到这个数算分得开，三组形状的标签按它判
+SEPARATED_T = 2.0
+# 三组的形状，按 IC 方向从弱的一头看到强的一头
+SHAPES = {
+    "monotone": "三组按序排开",
+    "weakEnd": "只有弱的一头有效（中、强两组分不开）",
+    "strongEnd": "只有强的一头有效（弱、中两组分不开）",
+    "flat": "相邻两组都分不开，只有两头拉得开",
+    "midHigh": "中间组显著强过强的一头",
+    "midLow": "中间组显著弱过弱的一头",
+}
 
 
 @dataclass(frozen=True)
@@ -123,11 +136,14 @@ def segments(ic: np.ndarray, k: int, min_points: int) -> list[float]:
     return out
 
 
-def monotonic(p: Points, lo: int, hi: int, groups: int) -> dict[str, Any]:
-    """[lo, hi) 里每个网格点按因子分 groups 组，各组平均算术收益跨点平均；ρ 是组均值与组序的 Spearman"""
+def monotonic(p: Points, lo: int, hi: int, groups: int, trim: float) -> dict[str, Any]:
+    """[lo, hi) 里每个网格点按因子从小到大分 groups 组。收益每期先截在当期 trim ~ 1 − trim 分位之间、再减当期均值，
+    组均值是跑赢当期平均多少；groups 是各组跨点的平均，spreadT 是顶组减底组每期之差的 t，
+    steps 是相邻两组每期之差的 t（从小到大），ρ 是组均值与组序的 Spearman"""
     inside = (p.g >= lo) & (p.g < hi)
     if not inside.any():
-        return {"rho": np.nan, "spread": np.nan, "groups": [np.nan] * groups}
+        return {"rho": np.nan, "spread": np.nan, "spreadT": np.nan, "steps": [np.nan] * (groups - 1),
+                "groups": [np.nan] * groups}
     g = p.g[inside]
     n = np.bincount(g)[g]
     # 平均秩 − 0.5 再除以币数落在 (0, 1)，乘组数取整就是第几组；并列的落同一组
@@ -135,14 +151,38 @@ def monotonic(p: Points, lo: int, hi: int, groups: int) -> dict[str, Any]:
     key = g * groups + group
     cells = (g.max() + 1) * groups
     size = np.bincount(key, minlength=cells).reshape(-1, groups)
-    total = np.bincount(key, np.expm1(p.y[inside]), minlength=cells).reshape(-1, groups)
-    # 每组只在有币的网格点上平均（因子大面积并列时有的组是空的）
-    present = size > 0
-    count = present.sum(axis=0)
-    summed = np.where(present, total / np.maximum(size, 1), 0.0).sum(axis=0)
-    means = np.where(count > 0, summed / np.maximum(count, 1), np.nan)
+    total = np.bincount(key, _trimmed_excess(g, np.expm1(p.y[inside]), trim), minlength=cells).reshape(-1, groups)
+    # 每期每组的均值；因子大面积并列时有的组是空的，记 NaN
+    cell = np.where(size > 0, total / np.maximum(size, 1), np.nan)
+    count = (size > 0).sum(axis=0)
+    means = np.where(count > 0, np.nansum(cell, axis=0) / np.maximum(count, 1), np.nan)
     return {"rho": spearman(np.arange(groups), means), "spread": float(means[-1] - means[0]),
+            "spreadT": t_stat(cell[:, -1] - cell[:, 0]),
+            "steps": [t_stat(cell[:, j + 1] - cell[:, j]) for j in range(groups - 1)],
             "groups": [float(v) for v in means]}
+
+
+def _trimmed_excess(g: np.ndarray, r: np.ndarray, trim: float) -> np.ndarray:
+    """每期把收益截在当期 trim 与 1 − trim 分位之间，再减当期均值"""
+    by = pd.Series(r).groupby(g)
+    clipped = np.clip(r, by.transform("quantile", trim).to_numpy(), by.transform("quantile", 1 - trim).to_numpy())
+    return clipped - pd.Series(clipped).groupby(g).transform("mean").to_numpy()
+
+
+def shape(mono: dict[str, Any], ic: float | None) -> str | None:
+    """三组的形状（SHAPES 的键），只做标签。ic 是这一档的 IC：负的时候因子大的那头才是弱的一头；
+    老结果里没有 steps、落过库的 NaN 成了 None，算不出来是 None"""
+    steps = mono.get("steps") or []
+    finite = [v is not None and np.isfinite(v) for v in (*steps, ic)]
+    if len(steps) != 2 or not all(finite) or ic == 0:
+        return None
+    low, high = (steps[0], steps[1]) if ic > 0 else (-steps[1], -steps[0])
+    if high <= -SEPARATED_T:
+        return "midHigh"
+    if low <= -SEPARATED_T:
+        return "midLow"
+    return {(True, True): "monotone", (True, False): "weakEnd", (False, True): "strongEnd",
+            (False, False): "flat"}[(low >= SEPARATED_T, high >= SEPARATED_T)]
 
 
 def summary(p: Points, ic: np.ndarray, lo: int, hi: int, params: EvalParams) -> dict[str, Any]:
@@ -161,7 +201,7 @@ def summary(p: Points, ic: np.ndarray, lo: int, hi: int, params: EvalParams) -> 
         "monthly": {m: float(v) for m, v in table.items()},
         "segments": segments(part, params.segments, params.min_points),
         "samples": int(np.isfinite(part).sum()),
-        "monotonic": monotonic(p, lo, hi, params.groups),
+        "monotonic": monotonic(p, lo, hi, params.groups, params.trim),
     }
 
 

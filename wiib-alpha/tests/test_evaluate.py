@@ -119,15 +119,19 @@ def test_g6_compares_against_observing_candidates(planted_pool, planted_grid):
     assert [n for n, _ in cross_corr(planted_pool.search, f, twins, PARAMS)] == ["vol_ma", "vol_ma"]
 
 
-def test_g2_needs_strict_monotonic_groups_and_t(planted):
+def test_g2_needs_a_clear_top_minus_bottom_and_t(planted):
     ev = copy.deepcopy(planted)
     main = ev["horizons"][48]["ic"]
-    assert judge(ev, GATES, primary=48)[2]["passed"]
-    # 三组的秩相关只有 ±1、±0.5：相邻一次颠倒（0.5）不再算，和 IC 反向（−1）更不算
-    for rho in (0.5, -1.0):
-        main["monotonic"]["rho"] = rho
+    g2 = judge(ev, GATES, primary=48)[2]
+    assert g2["passed"] and g2["value"]["shape"] == "monotone" and "三组形状：三组按序排开" in g2["note"]
+    # 截尾后顶减底分不开（t 不到 2），或者和 IC 反向：不过
+    for spread_t in (1.9, -5.0):
+        main["monotonic"]["spreadT"] = spread_t
         assert not judge(ev, GATES, primary=48)[2]["passed"]
-    main["monotonic"]["rho"] = 1.0
+    # 形状只报不判：中间组显著反了照样过，备注里写出来
+    main["monotonic"].update(spreadT=5.0, steps=[5.0, -3.0])
+    g2 = judge(ev, GATES, primary=48)[2]
+    assert g2["passed"] and g2["value"]["shape"] == "midHigh" and "中间组显著强过强的一头" in g2["note"]
     # t = ICIR × √月数 不到 3：不过
     main["icir"] = 2.9 / np.sqrt(main["months"])
     g2 = judge(ev, GATES, primary=48)[2]
