@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* 颜色都走变量，深色在下面按系统偏好整组换掉 */
+@theme {
+  --color-bg: #f6f6f3;
+  --color-panel: #ffffff;
+  --color-panel-2: #f1f1ed;
+  --color-fg: #15161a;
+  --color-muted: #70747d;
+  --color-line: #e4e4df;
+  --color-primary: #e5590a;
+  --color-primary-fg: #ffffff;
+  --color-gain: #0b8a5c;
+  --color-loss: #cf3a2e;
+  --color-warn: #b07800;
+  --color-info: #2563eb;
+  --font-sans: "Inter", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0e0f11;
+    --color-panel: #16171a;
+    --color-panel-2: #1e1f23;
+    --color-fg: #ececE7;
+    --color-muted: #8d9099;
+    --color-line: #2a2c31;
+    --color-primary: #f97316;
+    --color-gain: #3ecf8e;
+    --color-loss: #ff6b6b;
+    --color-warn: #f3b73d;
+    --color-info: #60a5fa;
+  }
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, kbd, pre {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  /* 区块小标题 */
+  .microlabel {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  /* 数字一律等宽对齐 */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .input {
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-2);
+    font-size: 12px;
+    outline: none;
+  }
+  .input:focus {
+    border-color: var(--color-primary);
+  }
+  /* 数据表：数字列加 r 右对齐 */
+  .tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .tbl th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--color-muted);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--color-line);
+    background: var(--color-panel);
+    white-space: nowrap;
+  }
+  .tbl td {
+    padding: 5px 8px;
+    border-bottom: 1px solid color-mix(in oklab, var(--color-line) 65%, transparent);
+    vertical-align: top;
+  }
+  .tbl tbody tr:hover > td {
+    background: var(--color-panel-2);
+  }
+  .tbl .r {
+    text-align: right;
+  }
+  .tbl-sticky thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+}
