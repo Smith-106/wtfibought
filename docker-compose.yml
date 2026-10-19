@@ -1,10 +1,14 @@
 # ============================================================
-# WhatIfIBought 五服务部署 (feed / sim / agent / gen / alpha)
+# WhatIfIBought 三个 Java 服务 (feed / sim / agent)
 #   1. 建 .env（cp .env.example 填值，HOST 填法见 .env.example 注释）
 #   2. mvn clean package -pl wiib-feed,wiib-agent,wiib-sim -am -DskipTests
 #      wiib-quant 是 agent 依赖的库，-am 会带上，不用单列
-#      wiib-gen / wiib-alpha 是 Python，不进 mvn，依赖由镜像里的 uv 装
 #   3. docker compose up -d --build
+#
+# 两个 Python 服务各自一个文件，不跟着这里的 up -d --build 一起重建：
+#   wiib-gen   → gen-compose.yml    docker compose -f gen-compose.yml up -d --build
+#   wiib-alpha → alpha-compose.yml  docker compose -f alpha-compose.yml up -d --build
+# 三个文件共用外部网络 wiib-network，容器名就是网络里的主机名，跨文件照样 wiib-sim:8080 寻址。
 #
 # 配置只改 .env，本文件不含任何环境私有值，直接入库。
 # env_file 把 .env 全量注入容器，application.yml 占位符自行解析，
@@ -75,47 +79,6 @@ services:
     mem_limit: 6144m
     mem_reservation: 2g
     cpus: "3"
-
-  # gen 指令生成器：Python FastAPI + LangGraph，一问一答写主人交易指令
-  # nginx 那边加一段（配置在服务器上，不在仓里）：
-  #   location /api/gen/ { proxy_pass http://127.0.0.1:8083; proxy_buffering off; }
-  wiib-gen:
-    <<: *svc-base
-    build: { context: ./wiib-gen, dockerfile: Dockerfile }
-    container_name: wiib-gen
-    ports:
-      - "127.0.0.1:8083:8083"
-    volumes:
-      - ./wiib-gen/data:/data    # checkpoint + 线程归属表的 sqlite
-    environment:
-      <<: *shared-env
-      GEN_DB_PATH: /data/gen.sqlite
-      SIM_BASE_URL: http://wiib-sim:8080
-      AGENT_BASE_URL: http://wiib-agent:8082
-    mem_limit: 1024m
-    mem_reservation: 256m
-    cpus: "1"
-
-  # alpha 因子挖掘：Python FastAPI + LangGraph，LLM 提假设写 DSL、代码硬门判真假，只有管理员能用
-  # 模型走 .env 的 ALPHA_GEN_* / ALPHA_REVIEW_*，行情直连 Binance 合约接口（服务器所在地区得能访问）
-  # nginx 那边加一段（配置在服务器上，不在仓里）：
-  #   location /api/alpha/ { proxy_pass http://127.0.0.1:8084; proxy_buffering off; }
-  wiib-alpha:
-    <<: *svc-base
-    build: { context: ./wiib-alpha, dockerfile: Dockerfile }
-    container_name: wiib-alpha
-    ports:
-      - "127.0.0.1:8084:8084"
-    volumes:
-      - ./wiib-alpha/data:/data    # 行情 parquet + checkpoint 与因子库的 sqlite
-    environment:
-      <<: *shared-env
-      ALPHA_DATA_DIR: /data
-      ALPHA_DB_PATH: /data/alpha.sqlite
-      SIM_BASE_URL: http://wiib-sim:8080
-    mem_limit: 4096m
-    mem_reservation: 512m
-    cpus: "2"
 
 networks:
   default:
