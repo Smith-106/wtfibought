@@ -1,4 +1,4 @@
-"""方向腿：训练窗学因子的方向与尺度，样本外按 |z| > 1 开仓，与 Java DirectionLegSimulator 同口径。
+"""时序报告的方向腿：训练窗学因子的方向与尺度，样本外按 |z| > 1 开仓，与 Java DirectionLegSimulator 同口径。截面多空腿在 cs_leg.py。
 
 非重叠采样是固定步长网格：从第一个 OOS 点起每 h 根 bar 取一个点，平仓信号也占格子。
 每个非零信号当一笔独立往返交易扣一次成本；排列检验用不扣成本的收益，成本对洗牌不变。
@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -84,7 +84,8 @@ def pool(legs: dict[str, Leg], horizon_bars: int, params: EvalParams) -> dict[st
         exposure=float(np.average([l.exposure for l in legs.values()], weights=counts)) if counts.sum() else 0.0,
         turnover=float(np.average([l.turnover for l in legs.values()], weights=counts)) if counts.sum() else 0.0,
     )
-    out = summarize(merged, horizon_bars, params)
+    # 排列分位用下面的币内洗牌，summarize 里那个不跑
+    out = summarize(merged, horizon_bars, replace(params, iterations=0))
     groups = np.concatenate([np.full(len(l.net), i) for i, l in enumerate(legs.values())])
     out["permPct"] = grouped_permutation_percentile(merged.positions, merged.targets, groups,
                                                     params.iterations, params.seed)

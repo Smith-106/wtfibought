@@ -1,6 +1,7 @@
-"""IC = Spearman(因子_t, 答案_{t+h})，只在样本外非重叠点上算。
+"""时序报告的 IC = Spearman(因子_t, 答案_{t+h})，一币一条时间序列，只在样本外非重叠点上算。
 
 先按币算再跨币等权平均，不把不同币混在一起排名：量纲不同（Amihud、成交额）会让排名变成"哪个币"而不是"哪个时刻"。
+截面口径在 cs_ic.py。
 """
 
 from __future__ import annotations
@@ -47,12 +48,6 @@ def pooled(table: pd.DataFrame) -> pd.Series:
     return table.dropna().groupby("month")["ic"].mean().sort_index()
 
 
-def mean_monthly(points: dict[str, pd.DataFrame], min_points: int) -> float:
-    """跨币等权平均后的月度 IC 均值；替身检验只要这一个数"""
-    series = pooled(monthly(points, min_points))
-    return float(series.mean()) if len(series) else np.nan
-
-
 def by_symbol(points: dict[str, pd.DataFrame]) -> dict[str, float]:
     return {s: spearman(p["f"].to_numpy(), p["y"].to_numpy()) for s, p in points.items() if not p.empty}
 
@@ -74,11 +69,6 @@ def segments(points: dict[str, pd.DataFrame], k: int, min_points: int) -> list[f
                 values.append(spearman(g["f"].to_numpy(), g["y"].to_numpy()))
         out.append(float(np.nanmean(values)) if values and np.isfinite(values).any() else np.nan)
     return out
-
-
-def compact(summary: dict[str, Any]) -> dict[str, Any]:
-    """holdout 和入库后复查只要这几个数"""
-    return {k: summary[k] for k in ("mean", "icir", "months", "samples", "bySymbol", "sameSignSymbols")}
 
 
 def summary(points: dict[str, pd.DataFrame], k: int, min_points: int) -> dict[str, Any]:

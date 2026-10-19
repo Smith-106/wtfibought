@@ -1,120 +1,220 @@
 import copy
 
+import numpy as np
 import pandas as pd
 import pytest
+from conftest import PRODUCTS
 
+from wiib_alpha import ops, reference
+from wiib_alpha.data.pool import on_grid
+from wiib_alpha.data.panel import truncate
 from wiib_alpha.dsl import parse
-from wiib_alpha.eval.evaluate import evaluate, redundancy
+from wiib_alpha.eval.combo import Combo
+from wiib_alpha.eval.evaluate import cross_corr, evaluate
 from wiib_alpha.eval.gates import apply_fdr, judge, passed
 from wiib_alpha.eval.params import EvalParams, Thresholds
 
 COLS = ["close", "ret", "volume", "trades"]
-PARAMS = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, surrogates=20)
-GATES = Thresholds(min_samples=100, min_symbols_same_sign=3)
+PARAMS = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
+GATES = Thresholds(min_samples=30)
 
 
 @pytest.fixture(scope="module")
-def panels(planted_panels):
-    return planted_panels
+def planted(planted_pool, planted_grid):
+    return evaluate(parse("$volume", COLS), planted_pool, PARAMS, planted_grid)
 
 
-def test_planted_signal_passes_every_gate(panels):
-    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+def test_planted_signal_passes_every_gate(planted):
+    ev = planted
     assert ev["lookaheadFree"]
     main = ev["horizons"][48]["ic"]
-    assert main["mean"] > 0.3 and main["sameSignSymbols"] == 3 and main["months"] >= 2
-    assert main["surrogate"]["k"] == 20 and main["surrogate"]["p"] <= 0.05
-    # 块内 8 根的顺序没打乱，埋进去的强信号有一小部分留在替身里，但离观测值远
-    assert abs(main["surrogate"]["nullMean"]) < 0.5 * main["mean"]
-    pooled = ev["horizons"][48]["leg"]["pooled"]
-    assert pooled["netReturn"] > 0 and pooled["permPct"] >= 0.95
+    assert main["mean"] > 0.3 and main["months"] >= 2 and main["monotonic"]["rho"] > 0.9
+    assert main["monotonic"]["spread"] > 0 and len(main["monotonic"]["groups"]) == 3
+    leg = ev["horizons"][48]["leg"]
+    assert leg["netReturn"] > 0 and leg["permPct"] >= 0.95 and leg["breakEvenBps"] > 12
+    # 排列检验只给主档做
+    assert ev["horizons"][24]["leg"]["permPct"] is None and ev["horizons"][24]["leg"]["netReturn"] > 0
     gates = judge(ev, GATES, primary=48)
     assert passed(gates), [g for g in gates if not g["passed"]]
-    assert [g["id"] for g in gates] == [f"G{i}" for i in range(10)]
+    # 去老效应只是标签，不在门里
+    assert [g["id"] for g in gates] == [f"G{i}" for i in range(11)]
+    assert gates[5]["value"]["breakEvenBps"] == leg["breakEvenBps"] and "盈亏平衡单边成本" in gates[5]["note"]
+    assert gates[2]["value"]["t"] == pytest.approx(abs(main["icir"]) * np.sqrt(main["months"]))
+    # 植入池子没有结算记录，资金费是 0
+    assert leg["fundingBps"] == 0
 
 
-def test_noise_factor_fails(panels):
-    ev = evaluate(parse("$trades", COLS), panels, PARAMS)
+def test_g10_checks_the_declared_direction(planted):
+    # 植入信号是越大越强：声明 1 对上、声明 -1 对不上；不声明（手填、参照集）不判
+    assert judge(planted, GATES, primary=48, direction=1)[10]["passed"]
+    g10 = judge(planted, GATES, primary=48, direction=-1)[10]
+    assert g10["id"] == "G10" and not g10["passed"] and "越大越弱" in g10["note"] and "对不上" in g10["note"]
+    assert judge(planted, GATES, primary=48)[10] == {"id": "G10", "name": "方向", "passed": True, "value": None,
+                                                     "threshold": None, "note": "没有声明方向，不判"}
+
+
+def test_noise_factor_fails(planted_pool, planted_grid):
+    ev = evaluate(parse("$trades", COLS), planted_pool, PARAMS, planted_grid)
     gates = judge(ev, GATES, primary=48)
-    assert not passed(gates)
-    assert abs(ev["horizons"][48]["ic"]["mean"]) < 0.1
-    assert ev["horizons"][48]["ic"]["surrogate"]["p"] > 0.05
+    # 24 个币、样本外两个多月，噪音的 IC 与 ICIR 偶尔也够；排列检验不显著
+    assert not passed(gates) and not gates[5]["passed"]
+    assert abs(ev["horizons"][48]["ic"]["mean"]) < 0.05
+    # 参照网格里那条就是 trades 的均线，冗余对得上
+    assert ev["redundancy"]["with"] == "noise4" and ev["redundancy"]["maxAbs"] > 0.3
 
 
-def test_high_surrogate_mean_fails_g2_even_with_small_p(panels):
-    """裸价格这类持久量：真值比 20 个替身都极端一点点，p 停在 1/21，但替身自己的 IC 就很高"""
-    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+def known_grid(pool, column: np.ndarray, name: str = "mom_7d") -> reference.Grid:
+    """只有一条老效应的参照网格：主档每个时刻把 column 转成截面秩"""
+    rows = pool.search
+    main = on_grid(rows["t"].to_numpy(), 48)
+    ranks = pd.Series(column[main]).groupby(rows["t"].to_numpy()[main]).rank(pct=True).to_numpy()
+    return reference.Grid((name,), ranks[:, None].astype("float32"))
+
+
+def test_neutral_regresses_out_known_effects(planted_pool):
+    expr = parse("Mean($volume, 4)", COLS)
+    f = planted_pool.values(expr).f[planted_pool.in_search]
+    raw = evaluate(expr, planted_pool, PARAMS, known_grid(planted_pool, f, "noise4"))
+    # 网格里的那条不在老效应名单里：回归掉 0 条，去老效应后的 IC 就是原来的
+    assert raw["neutral"]["against"] == 0
+    assert raw["neutral"]["mean"] == pytest.approx(raw["horizons"][48]["ic"]["mean"], abs=1e-9)
+    # 老效应和它无关：系数在训练窗里整体估，回归掉以后 IC 几乎不变（逐时刻估会被机械地压掉一截）
+    noise = np.random.default_rng(3).normal(size=len(f))
+    kept = evaluate(expr, planted_pool, PARAMS, known_grid(planted_pool, noise))
+    assert kept["neutral"]["against"] == 1
+    assert kept["neutral"]["mean"] == pytest.approx(kept["horizons"][48]["ic"]["mean"], rel=0.05)
+    # 老效应就是它自己：回归掉以后几乎什么都不剩
+    gone = evaluate(expr, planted_pool, PARAMS, known_grid(planted_pool, f))
+    assert abs(gone["neutral"]["mean"]) < 0.1 < gone["horizons"][48]["ic"]["mean"]
+    # 只是标签：几乎什么都不剩也不多挡一道门，挡它的只有 G6（参照里那条就是它自己）
+    assert passed(judge(kept, GATES, primary=48))
+    assert [g["id"] for g in judge(gone, GATES, primary=48) if not g["passed"]] == ["G6"]
+
+
+def test_g9_needs_net_sharpe_up_and_ic_not_down(planted):
+    ev = copy.deepcopy(planted)
+    ev["gain"] = {"horizons": {48: {"base": 0.03, "with": 0.04, "gain": 0.01}}, "months": 10, "monthsBetter": 7,
+                  "sharpe": {"base": 1.0, "with": 0.9, "gain": -0.1}}
+    g9 = judge(ev, GATES, primary=48)[9]
+    # IC 涨了、净 Sharpe 降了：不过
+    assert g9["id"] == "G9" and not g9["passed"] and "净 Sharpe 1.00 → 0.90" in g9["note"]
+    ev["gain"]["sharpe"] = {"base": 1.0, "with": 1.2, "gain": 0.2}
+    assert judge(ev, GATES, primary=48)[9]["passed"]
+    # 净 Sharpe 涨了但 IC 降了：也不过
+    ev["gain"]["horizons"][48] = {"base": 0.03, "with": 0.02, "gain": -0.01}
+    assert not judge(ev, GATES, primary=48)[9]["passed"]
+
+
+def test_g6_compares_against_observing_candidates(planted_pool, planted_grid):
+    # 观察区里已经有一条成交量均线：换个写法再交一遍，和它截面上几乎一样，G6 拒
+    f = planted_pool.values(parse("Mean($volume, 4)", COLS)).f[planted_pool.in_search]
+    observing = Combo.empty(planted_pool.search, planted_pool.symbols).plus("vol_ma", f)
+    ev = evaluate(parse("EMA($volume, 8)", COLS), planted_pool, PARAMS, planted_grid, observing=observing)
+    assert ev["redundancy"]["with"] == "obs:vol_ma" and ev["redundancy"]["maxAbs"] > 0.9
+    assert not judge(ev, GATES, primary=48)[6]["passed"]
+    [(name, corr)] = cross_corr(planted_pool.search, f, observing, PARAMS)
+    assert name == "vol_ma" and corr == pytest.approx(1.0)
+    # 同名的两条各比各的，不会互相盖掉
+    twins = observing.plus("vol_ma", -f)
+    assert [n for n, _ in cross_corr(planted_pool.search, f, twins, PARAMS)] == ["vol_ma", "vol_ma"]
+
+
+def test_g2_needs_strict_monotonic_groups_and_t(planted):
+    ev = copy.deepcopy(planted)
+    main = ev["horizons"][48]["ic"]
     assert judge(ev, GATES, primary=48)[2]["passed"]
-    ev["horizons"][48]["ic"]["surrogate"]["nullMean"] = 0.9 * ev["horizons"][48]["ic"]["mean"]
+    # 三组的秩相关只有 ±1、±0.5：相邻一次颠倒（0.5）不再算，和 IC 反向（−1）更不算
+    for rho in (0.5, -1.0):
+        main["monotonic"]["rho"] = rho
+        assert not judge(ev, GATES, primary=48)[2]["passed"]
+    main["monotonic"]["rho"] = 1.0
+    # t = ICIR × √月数 不到 3：不过
+    main["icir"] = 2.9 / np.sqrt(main["months"])
     g2 = judge(ev, GATES, primary=48)[2]
-    assert not g2["passed"] and g2["threshold"]["nullRatio"] == 0.5
+    assert not g2["passed"] and g2["threshold"]["tMin"] == 3.0 and g2["value"]["t"] == pytest.approx(2.9)
 
 
-def test_no_surrogates_means_g2_cannot_pass(panels):
-    ev = evaluate(parse("$volume", COLS), panels, EvalParams(test_size=96, embargo=4, min_train=500,
-                                                              iterations=50, seed=7, surrogates=0))
-    assert ev["horizons"][48]["ic"]["surrogate"]["k"] == 0
-    assert not judge(ev, GATES, primary=48)[2]["passed"]
+def test_g3_needs_the_last_segment_in_the_same_direction(planted):
+    ev = copy.deepcopy(planted)
+    segs = ev["horizons"][48]["ic"]["segments"]
+    assert judge(ev, GATES, primary=48)[3]["passed"]
+    # 前三段同号、最近一段翻了：样本内已经在衰减，不过
+    segs[-1] = -abs(segs[-1])
+    g3 = judge(ev, GATES, primary=48)[3]
+    assert not g3["passed"] and g3["value"]["sameSign"] == 3 and "最后一段不同号" in g3["note"]
 
 
-def test_evaluate_output_is_plain_data(panels):
-    ev = evaluate(parse("Mean($volume, 4) / 2", COLS), panels, PARAMS)
+def test_evaluate_output_is_plain_data(planted_pool, planted_panels):
+    products = {s: truncate(planted_panels[s], planted_pool.cut_ms) for s in PRODUCTS}
+    ev = evaluate(parse("Mean($volume, 4) / 2", COLS), planted_pool, PARAMS, None, None, products, holdout=True)
     assert ev["expr"] == "(Mean($volume, 4) / 2)" and ev["canonical"] == "(Mean($volume, w) / c)"
-    assert ev["columns"] == ["volume"] and ev["complexity"]["nodes"] == 4
-    assert set(ev["horizons"]) == {24, 48, 96}
-    assert set(ev["horizons"][24]["leg"]["bySymbol"]) == {"AAA", "BBB", "CCC"}
-    assert ev["redundancy"] == {"maxAbs": 0.0, "with": None} and ev["gain"] is None
+    assert ev["columns"] == ["volume"] and ev["complexity"] == {"nodes": 4, "windows": 1, "constants": 1, "cross": 0}
+    assert set(ev["horizons"]) == {24, 48, 96} and ev["gain"] is None
+    # 参照网格没算好：G6 不过
+    assert ev["redundancy"] == {"maxAbs": None, "with": None, "ready": False}
+    g6 = judge(ev, GATES, primary=48)[6]
+    assert not g6["passed"] and g6["note"] == "参照网格还没算好"
+    # 时序报告：产品币按币算，只出数字
+    ts = ev["timeseries"]
+    assert ts["symbols"] == list(PRODUCTS) and set(ts["horizons"]) == {24, 48, 96}
+    assert ts["horizons"][48]["mean"] > 0.3 and set(ts["horizons"][48]["bySymbol"]) == set(PRODUCTS)
+    held = ev["holdout"]
+    assert held["since"] == planted_pool.cut_ms and held["horizons"][48]["mean"] > 0.3 and held["horizons"][48]["samples"] > 0
 
 
-def test_redundancy_finds_the_twin(panels):
-    factors = {s: p["volume"] for s, p in panels.items()}
-    refs = {s: pd.DataFrame({"twin": p["volume"] * 3 + 1, "noise": p["trades"]}) for s, p in panels.items()}
-    red = redundancy(factors, refs, stride=4)
-    assert red["with"] == "twin" and red["maxAbs"] == pytest.approx(1.0)
-    assert redundancy(factors, {}, 4) == {"maxAbs": 0.0, "with": None}
+def test_redundancy_sees_the_library(planted_pool, planted_grid):
+    twin = planted_pool.values(parse("$volume * 3 + 1", COLS)).f[planted_pool.in_search]
+    library = Combo.empty(planted_pool.search, planted_pool.symbols).plus("twin", twin)
+    ev = evaluate(parse("$volume", COLS), planted_pool, PARAMS, planted_grid, library)
+    assert ev["redundancy"]["with"] == "lib:twin" and ev["redundancy"]["maxAbs"] == pytest.approx(1.0)
+    assert not judge(ev, GATES, primary=48)[6]["passed"]
+    # 和库里的一样，组合加不进新东西
+    assert abs(ev["gain"]["horizons"][48]["gain"]) < 0.01
 
 
-def test_gates_structural_checks(panels):
-    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+def test_cross_section_expression_and_hidden_lookahead(planted_pool, planted_grid, monkeypatch):
+    ev = evaluate(parse("CsZ(Mean($volume, 4)) - CsRank($trades)", COLS), planted_pool, PARAMS, planted_grid)
+    assert ev["lookaheadFree"] and ev["complexity"]["cross"] == 2 and ev["horizons"][48]["ic"]["mean"] > 0.3
+    monkeypatch.setitem(ops.OPERATORS, "Lead", ops.Op("rolling", lambda x, n: x.shift(-n)))
+    leaky = evaluate(parse("CsRank(Lead($ret, 1))", COLS), planted_pool, PARAMS, planted_grid)
+    assert not leaky["lookaheadFree"] and not judge(leaky, GATES, primary=48)[0]["passed"]
+
+
+def test_gates_structural_checks(planted):
+    ev = planted
     assert not judge(ev, GATES, 48, known_canonicals={"$volume"})[8]["passed"]
     fat = copy.deepcopy(ev)
-    fat["complexity"] = {"nodes": 41, "windows": 1, "constants": 0}
+    fat["complexity"] = {"nodes": 41, "windows": 1, "constants": 0, "cross": 0}
     assert not judge(fat, GATES, 48)[7]["passed"]
     leaky = copy.deepcopy(ev)
     leaky["lookaheadFree"] = False
     g0 = judge(leaky, GATES, 48)[0]
     assert not g0["passed"] and g0["value"] is False and g0["threshold"] is True
     dup = copy.deepcopy(ev)
-    dup["redundancy"] = {"maxAbs": 0.9, "with": "x"}
+    dup["redundancy"] = {"maxAbs": 0.9, "with": "x", "ready": True}
     assert not judge(dup, GATES, 48)[6]["passed"]
 
 
-def test_apply_fdr_flips_the_marginal_one(panels):
-    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+def test_apply_fdr_flips_the_marginal_one(planted):
+    ev = copy.deepcopy(planted)
     ev["gates"] = judge(ev, GATES, 48)
     batch = []
-    for pct, sp in zip((0.999, 0.955, 0.5, 0.4, 0.3), (0.01, 0.045, 0.5, 0.6, 0.7)):
+    for pct in (0.999, 0.955, 0.5, 0.4, 0.3):
         e = copy.deepcopy(ev)
         g5 = next(g for g in e["gates"] if g["id"] == "G5")
         g5["value"]["permPct"] = pct
         g5["passed"] = pct >= 0.95
-        g2 = next(g for g in e["gates"] if g["id"] == "G2")
-        g2["value"]["surrogateP"] = sp
-        g2["passed"] = sp <= 0.05
         batch.append(e)
     apply_fdr(batch, q=0.10, iterations=1000)
     g5_flags = [next(g for g in e["gates"] if g["id"] == "G5")["passed"] for e in batch]
-    g2_flags = [next(g for g in e["gates"] if g["id"] == "G2")["passed"] for e in batch]
     assert g5_flags == [True, False, False, False, False]
-    # 替身 p 是离散的，不做 BH：G2 保持单条判的结果
-    assert g2_flags == [True, True, False, False, False]
     assert batch[0]["passed"] and not batch[1]["passed"]
     assert "BH" in next(g for g in batch[1]["gates"] if g["id"] == "G5")["note"]
 
 
-def test_apply_fdr_extra_tests_only_make_it_stricter(panels):
+def test_apply_fdr_extra_tests_only_make_it_stricter(planted):
     """被评审打回改掉的旧版本按 p=1 占位：m 变大，边缘的那条就过不去"""
-    ev = evaluate(parse("$volume", COLS), panels, PARAMS)
+    ev = copy.deepcopy(planted)
     ev["gates"] = judge(ev, GATES, 48)
 
     def with_pct(pct: float) -> dict:
@@ -131,14 +231,14 @@ def test_apply_fdr_extra_tests_only_make_it_stricter(panels):
     assert [e["passed"] for e in batch] == [True, False]
 
 
-def test_a_real_factor_survives_batch_fdr_at_production_k(panels):
+def test_a_real_factor_survives_batch_fdr_at_production_k(planted, planted_pool, planted_grid):
     """默认 K=3：一条真信号加两条噪音一起做 BH，真信号必须还能过"""
-    good = evaluate(parse("$volume", COLS), panels, PARAMS)
+    good = copy.deepcopy(planted)
     good["gates"] = judge(good, GATES, 48)
     batch = [good]
     for seed in (1, 2):
-        noise = evaluate(parse("$trades", COLS), panels, EvalParams(test_size=96, embargo=4, min_train=500,
-                                                                     iterations=200, seed=seed, surrogates=20))
+        params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=seed, holdout_days=10)
+        noise = evaluate(parse("$trades", COLS), planted_pool, params, planted_grid)
         noise["gates"] = judge(noise, GATES, 48)
         batch.append(noise)
     apply_fdr(batch, q=0.10, iterations=200)

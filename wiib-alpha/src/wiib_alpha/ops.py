@@ -1,6 +1,7 @@
 """DSL 算子的 pandas 实现。
 
-全部只看 [t−w, t]（含当前 bar），窗口不满或窗内有 NaN 就是 NaN；输入一律是对齐好的 float Series，输出同 index。
+时序算子全部只看 [t−w, t]（含当前 bar），窗口不满或窗内有 NaN 就是 NaN；输入一律是对齐好的 float Series，输出同 index。
+截面算子只看同一时刻：输入是全部在池币拼起来的长 Series 和每行的时刻，按时刻分组算。
 Std / Var / Cov 用样本口径（ddof=1），与 Java FactorMath 同。
 """
 
@@ -16,7 +17,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 @dataclass(frozen=True)
 class Op:
-    # unary(x) binary(x,y) ternary(c,a,b) rolling(x,w) quantile(x,w,q) pair(x,y,w)
+    # unary(x) binary(x,y) ternary(c,a,b) rolling(x,w) quantile(x,w,q) pair(x,y,w) cross(x)
     kind: str
     fn: Callable[..., pd.Series]
 
@@ -223,6 +224,25 @@ def _cov(x: pd.Series, y: pd.Series, w: int) -> pd.Series:
     return x.rolling(w).cov(y)
 
 
+# ========== 截面：x 是全部在池币的长 Series，t 是每行的时刻 ==========
+
+
+def _cs_rank(x: pd.Series, t: np.ndarray) -> pd.Series:
+    """同一时刻有数的币里的平均秩 / 币数，取值 (0, 1]"""
+    return x.groupby(t).rank(pct=True)
+
+
+def _cs_demean(x: pd.Series, t: np.ndarray) -> pd.Series:
+    return x - x.groupby(t).transform("mean")
+
+
+def _cs_z(x: pd.Series, t: np.ndarray) -> pd.Series:
+    """减截面均值除截面样本标准差；那一刻只有一个币或全一样是 NaN"""
+    g = x.groupby(t)
+    with np.errstate(all="ignore"):
+        return (x - g.transform("mean")) / g.transform("std")
+
+
 OPERATORS: dict[str, Op] = {
     "Abs": Op("unary", _abs),
     "Sign": Op("unary", _sign),
@@ -256,4 +276,7 @@ OPERATORS: dict[str, Op] = {
     "Quantile": Op("quantile", _quantile),
     "Corr": Op("pair", _corr),
     "Cov": Op("pair", _cov),
+    "CsRank": Op("cross", _cs_rank),
+    "CsDemean": Op("cross", _cs_demean),
+    "CsZ": Op("cross", _cs_z),
 }

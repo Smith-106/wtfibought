@@ -2,6 +2,7 @@
 
 写法就是 Python 表达式：$列 引用 panel 的列，函数名查 ops.OPERATORS，只放行 + - * / 与负号，其它一律拒。
 解析出的树能求值、算复杂度、抹掉窗口和常量得规范形（查换皮用）、做前视自检。
+求值一币一算；截面算子（CsRank 等）要同一时刻全部在池币的值，由调用方先跨币算好按节点传进来（见 data/pool.py）。
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,8 +19,8 @@ from . import ops
 
 MAX_WINDOW = 2016  # 三周
 MAX_TEXT = 500
-# 复杂度上限在解析时就卡住，评估之前拦下堆参数的公式；G7 只做报告
-COMPLEXITY = {"nodes": 40, "windows": 6, "constants": 6}
+# 复杂度上限在解析时就卡住，评估之前拦下堆参数的公式；G7 只做报告。cross 是截面算子个数，每个都要全池多读一遍
+COMPLEXITY = {"nodes": 40, "windows": 6, "constants": 6, "cross": 2}
 _COL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 _MARK = "__col__"
 _BIN = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
@@ -60,6 +61,8 @@ class Call:
 
 
 Node = Col | Const | Neg | Bin | Call
+# 截面节点 → 这个币在池时刻的值（index 是收盘时刻）
+Cross = Mapping[Call, pd.Series]
 
 
 class Expr:
@@ -81,11 +84,20 @@ class Expr:
         windows = sum(1 for n in nodes if isinstance(n, Call) and n.params)
         constants = sum(1 for n in nodes if isinstance(n, Const))
         constants += sum(1 for n in nodes if isinstance(n, Call) and len(n.params) > 1)
-        return {"nodes": len(nodes), "windows": windows, "constants": constants}
+        cross = sum(1 for n in nodes if _is_cross(n))
+        return {"nodes": len(nodes), "windows": windows, "constants": constants, "cross": cross}
 
-    def evaluate(self, df: pd.DataFrame) -> pd.Series:
-        """一币一算；除零之类的 inf 一律变 NaN"""
-        out = _eval(self.root, df)
+    def cross_nodes(self) -> list[Call]:
+        """截面节点，里层的在前、相同的只留一个；求值前要按这个顺序跨币算好"""
+        out: list[Call] = []
+        for n in _post_order(self.root):
+            if _is_cross(n) and n not in out:
+                out.append(n)
+        return out
+
+    def evaluate(self, df: pd.DataFrame, cross: Cross | None = None) -> pd.Series:
+        """一币一算；截面节点的值从 cross 里取，不在池的时刻是 NaN。除零之类的 inf 一律变 NaN"""
+        out = _eval(self.root, df, cross or {})
         return out.replace([np.inf, -np.inf], np.nan)
 
 
@@ -105,19 +117,21 @@ def parse(text: str, columns: Iterable[str]) -> Expr:
         raise DslError("表达式得至少引用一个列")
     expr = Expr(root)
     cx = expr.complexity()
-    for key, label in (("nodes", "节点"), ("windows", "窗口"), ("constants", "常量")):
+    for key, label in (("nodes", "节点"), ("windows", "窗口"), ("constants", "常量"), ("cross", "截面算子")):
         if cx[key] > COMPLEXITY[key]:
             raise DslError(f"表达式太复杂：{label} {cx[key]} 个，上限 {COMPLEXITY[key]}")
     return expr
 
 
-def lookahead_free(expr: Expr, df: pd.DataFrame, cuts: Sequence[int]) -> bool:
-    """截到第 c 行重算，前 c 行必须与全量算出来的一样；不一样就是偷看了未来"""
-    full = expr.evaluate(df).to_numpy(dtype="float64")
-    for c in cuts:
-        part = expr.evaluate(df.iloc[:c]).to_numpy(dtype="float64")
-        if not np.allclose(part, full[:c], rtol=1e-9, atol=1e-12, equal_nan=True):
-            return False
+def lookahead_free(expr: Expr, df: pd.DataFrame, cuts: Sequence[int], cross: Cross | None = None) -> bool:
+    """截到第 c 行重算，前 c 行必须与全量算出来的一样；不一样就是偷看了未来。
+    截面算子本身只看同一时刻，它的输入各自也截断查一遍：输入不看未来，整条就不看未来"""
+    for sub in [expr, *(Expr(n.args[0]) for n in expr.cross_nodes())]:
+        full = sub.evaluate(df, cross).to_numpy(dtype="float64")
+        for c in cuts:
+            part = sub.evaluate(df.iloc[:c], cross).to_numpy(dtype="float64")
+            if not np.allclose(part, full[:c], rtol=1e-9, atol=1e-12, equal_nan=True):
+                return False
     return True
 
 
@@ -154,8 +168,8 @@ def _convert(node: ast.AST, columns: set[str]) -> Node:
 
 
 def _call(name: str, op: ops.Op, args: list[ast.expr], columns: set[str]) -> Call:
-    arity = {"unary": 1, "binary": 2, "ternary": 3, "rolling": 1, "quantile": 1, "pair": 2}[op.kind]
-    params = {"unary": 0, "binary": 0, "ternary": 0, "rolling": 1, "quantile": 2, "pair": 1}[op.kind]
+    arity = {"unary": 1, "binary": 2, "ternary": 3, "rolling": 1, "quantile": 1, "pair": 2, "cross": 1}[op.kind]
+    params = {"unary": 0, "binary": 0, "ternary": 0, "rolling": 1, "quantile": 2, "pair": 1, "cross": 0}[op.kind]
     if len(args) != arity + params:
         raise DslError(f"{name} 要 {arity + params} 个参数，给了 {len(args)} 个")
     series = tuple(_convert(a, columns) for a in args[:arity])
@@ -197,6 +211,24 @@ def _walk(node: Node):
                 yield from _walk(a)
 
 
+def _post_order(node: Node):
+    """子节点先于父节点"""
+    match node:
+        case Neg(x=x):
+            yield from _post_order(x)
+        case Bin(left=left, right=right):
+            yield from _post_order(left)
+            yield from _post_order(right)
+        case Call(args=args):
+            for a in args:
+                yield from _post_order(a)
+    yield node
+
+
+def _is_cross(node: Node) -> bool:
+    return isinstance(node, Call) and ops.OPERATORS[node.name].kind == "cross"
+
+
 def _render(node: Node, masked: bool) -> str:
     match node:
         case Col(name=name):
@@ -217,16 +249,16 @@ def _render(node: Node, masked: bool) -> str:
     raise TypeError(node)
 
 
-def _eval(node: Node, df: pd.DataFrame) -> pd.Series:
+def _eval(node: Node, df: pd.DataFrame, cross: Cross) -> pd.Series:
     match node:
         case Col(name=name):
             return df[name].astype("float64")
         case Const(value=v):
             return pd.Series(v, index=df.index, dtype="float64")
         case Neg(x=x):
-            return -_eval(x, df)
+            return -_eval(x, df, cross)
         case Bin(op=op, left=left, right=right):
-            a, b = _eval(left, df), _eval(right, df)
+            a, b = _eval(left, df, cross), _eval(right, df, cross)
             with np.errstate(all="ignore"):
                 if op == "+":
                     return a + b
@@ -235,8 +267,10 @@ def _eval(node: Node, df: pd.DataFrame) -> pd.Series:
                 if op == "*":
                     return a * b
                 return a / b
+        case Call() if _is_cross(node):
+            return cross[node].reindex(df.index).astype("float64")
         case Call(name=name, args=args, params=params):
-            series = [_eval(a, df) for a in args]
+            series = [_eval(a, df, cross) for a in args]
             params = tuple(int(p) if i == 0 else p for i, p in enumerate(params))
             return ops.OPERATORS[name].fn(*series, *params)
     raise TypeError(node)

@@ -28,7 +28,7 @@ def test_parse_renders_canonical_and_counts():
     assert e.canonical() == "((Mean($close, w) / $close) - (Quantile($volume, w, c) * c))"
     assert e.columns() == {"close", "volume"}
     # 节点：Bin, Bin, Call, Col, Col, Bin, Call, Col, Const = 9；窗口 2；常量 = Const 1 + 分位 1
-    assert e.complexity() == {"nodes": 9, "windows": 2, "constants": 2}
+    assert e.complexity() == {"nodes": 9, "windows": 2, "constants": 2, "cross": 0}
 
 
 def test_same_shape_different_window_is_same_canonical():
@@ -61,6 +61,8 @@ def test_same_shape_different_window_is_same_canonical():
     (" + ".join(["$close"] * 21), "节点"),
     (" + ".join(["Mean($close, 4)"] * 7), "窗口 7"),
     ("$close + 1 + 2 + 3 + 4 + 5 + 6 + 7", "常量 7"),
+    ("CsRank($close) + CsZ($volume) - CsDemean($ret)", "截面算子 3"),
+    ("CsRank($close, 4)", "参数"),
 ])
 def test_rejects(text, message):
     with pytest.raises(DslError, match=message):
@@ -71,6 +73,40 @@ def test_complexity_limits_are_inclusive():
     parse(" + ".join(["$close"] * 20), COLS)          # 39 个节点
     parse(" + ".join(["Mean($close, 4)"] * 6), COLS)  # 6 个窗口
     parse("$close + 1 + 2 + 3 + 4 + 5 + 6", COLS)      # 6 个常量
+    parse("CsRank(CsZ($close))", COLS)                 # 2 个截面算子
+
+
+# ========== 截面算子 ==========
+
+
+def test_cross_ops_by_moment():
+    x = pd.Series([1.0, 3.0, 2.0, 5.0, 5.0, np.nan])
+    t = np.array([0, 0, 0, 1, 1, 1])
+    assert ops.OPERATORS["CsRank"].fn(x, t).tolist()[:5] == pytest.approx([1 / 3, 1.0, 2 / 3, 0.75, 0.75])
+    assert ops.OPERATORS["CsDemean"].fn(x, t).tolist()[:5] == pytest.approx([-1.0, 1.0, 0.0, 0.0, 0.0])
+    z = ops.OPERATORS["CsZ"].fn(x, t)
+    assert z.tolist()[:3] == pytest.approx([-1.0, 1.0, 0.0])
+    # 那一刻全一样：标准差 0 出 NaN；NaN 还是 NaN
+    assert np.isnan(z.iloc[3:]).all() and np.isnan(ops.OPERATORS["CsRank"].fn(x, t).iloc[5])
+
+
+def test_cross_nodes_inner_first_and_deduplicated():
+    inner, outer = parse("CsRank(Mean(CsZ($close), 2))", COLS).cross_nodes()
+    assert str(dsl.Expr(inner)) == "CsZ($close)" and str(dsl.Expr(outer)) == "CsRank(Mean(CsZ($close), 2))"
+    twice = parse("CsZ($close) * CsZ($close)", COLS)
+    assert twice.complexity()["cross"] == 2 and len(twice.cross_nodes()) == 1
+
+
+def test_evaluate_takes_cross_values_and_nan_outside_the_pool():
+    e = parse("Mean(CsZ($close), 2) + $close", COLS)
+    node = e.cross_nodes()[0]
+    df = frame(5)
+    # 这个币只在后三根在池：截面值只给那三根，其余时刻是 NaN
+    out = e.evaluate(df, {node: pd.Series([1.0, 2.0, 3.0], index=df.index[2:])}).to_numpy()
+    close = df["close"].to_numpy()
+    assert np.isnan(out[:3]).all() and out[3:] == pytest.approx([1.5 + close[3], 2.5 + close[4]])
+    with pytest.raises(KeyError):
+        e.evaluate(df)
 
 
 # ========== 每个算子对手算值 ==========
@@ -200,13 +236,24 @@ def expression_for(name: str) -> str:
         "rolling": f"{name}($close, 5)",
         "quantile": f"{name}($close, 5, 0.3)",
         "pair": f"{name}($close, $volume, 5)",
+        "cross": f"{name}(Mean($close, 3))",
     }[kind]
+
+
+def single_coin_cross(expr: dsl.Expr, df: pd.DataFrame) -> dict:
+    """只有这一个币的截面：截面节点的值就按这个币自己算"""
+    out = {}
+    for node in expr.cross_nodes():
+        x = dsl.Expr(node.args[0]).evaluate(df, out).reset_index(drop=True)
+        out[node] = pd.Series(ops.OPERATORS[node.name].fn(x, df.index.to_numpy()).to_numpy(), index=df.index)
+    return out
 
 
 @pytest.mark.parametrize("name", sorted(ops.OPERATORS))
 def test_every_operator_is_lookahead_free(name):
     df = frame(60)
-    assert dsl.lookahead_free(parse(expression_for(name), COLS), df, [6, 17, 40, 59])
+    expr = parse(expression_for(name), COLS)
+    assert dsl.lookahead_free(expr, df, [6, 17, 40, 59], single_coin_cross(expr, df))
 
 
 def test_lookahead_check_catches_a_leading_operator(monkeypatch):
@@ -214,6 +261,9 @@ def test_lookahead_check_catches_a_leading_operator(monkeypatch):
     df = frame(60)
     assert not dsl.lookahead_free(parse("Lead($close, 1)", COLS), df, [6, 17, 40])
     assert not dsl.lookahead_free(parse("Mean($close, 3) - Lead($ret, 2)", COLS), df, [30])
+    # 偷看藏在截面算子里面：截面值是全量算好传进来的，靠查它的输入抓
+    hidden = parse("CsRank(Lead($ret, 1))", COLS)
+    assert not dsl.lookahead_free(hidden, df, [30], single_coin_cross(hidden, df))
 
 
 def test_evaluate_keeps_index_and_turns_inf_into_nan():
