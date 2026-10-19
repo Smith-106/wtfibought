@@ -70,10 +70,9 @@ class Config:
 
 
 def _csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+    """逗号分隔、转大写；没设或留空都用 default"""
+    raw = os.getenv(name) or ""
+    return tuple(s.strip().upper() for s in raw.split(",") if s.strip()) or default
 
 
 def _tiers(text: str) -> tuple[float, float, float]:
@@ -92,7 +91,7 @@ def config() -> Config:
         binance_vision_list_url=os.getenv("BINANCE_VISION_LIST_URL",
                                           "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision").rstrip("/"),
         binance_fapi_url=os.getenv("BINANCE_FAPI_URL", "https://fapi.binance.com").rstrip("/"),
-        symbols=_csv("ALPHA_SYMBOLS", ()) or DEFAULT_SYMBOLS,
+        symbols=_csv("ALPHA_SYMBOLS", DEFAULT_SYMBOLS),
         history_from=_day_ms(os.getenv("ALPHA_HISTORY_FROM", "2021-01-01")),
         universe_size=int(os.getenv("ALPHA_UNIVERSE_SIZE", "80")),
         min_daily_quote_volume=float(os.getenv("ALPHA_MIN_DAILY_QUOTE_VOLUME", "20000000")),
