@@ -1,8 +1,10 @@
 import math
+import sqlite3
 
 import numpy as np
 import pytest
 
+from wiib_alpha.config import ModelSpec
 from wiib_alpha.store import Store, clean, dumps
 
 
@@ -20,9 +22,9 @@ def test_clean_turns_nan_and_numpy_into_json():
 
 
 async def test_run_and_candidate_roundtrip(store):
-    await store.create_run("r1", 3, "试试", "zh")
+    await store.create_run("r1", 3, "试试", "zh", None)
     run = await store.run("r1")
-    assert run["status"] == "running" and run["k"] == 3 and run["note"] == "试试"
+    assert run["status"] == "running" and run["k"] == 3 and run["note"] == "试试" and run["campaign_id"] is None
     assert [r["id"] for r in await store.running()] == ["r1"]
 
     cand = {"id": "r1-1", "run_id": "r1", "seq": 1, "name": "mom", "hypothesis": "动量", "status": "proposed"}
@@ -41,27 +43,82 @@ async def test_run_and_candidate_roundtrip(store):
 
 
 async def test_fail_pending_marks_only_unfinished(store):
-    await store.create_run("r2", 3, "", "zh")
-    for i, status in enumerate(("evaluating", "rejected_gates", "passed"), 1):
+    await store.create_run("r2", 3, "", "zh", None)
+    for i, status in enumerate(("evaluating", "rejected_gates", "passed", "rewrite", "observing"), 1):
         await store.upsert_candidate({"id": f"r2-{i}", "run_id": "r2", "seq": i, "name": f"c{i}", "hypothesis": "h",
                                       "status": status})
     changed = await store.fail_pending("r2", "没跑完")
-    assert [c["id"] for c in changed] == ["r2-1", "r2-3"] and changed[0]["status"] == "failed"
+    assert [c["id"] for c in changed] == ["r2-1", "r2-3", "r2-4"] and changed[0]["status"] == "failed"
     rows = {c["id"]: c for c in await store.candidates("r2")}
     assert rows["r2-1"]["status"] == "failed" and rows["r2-1"]["reason"] == "没跑完"
-    assert rows["r2-2"]["status"] == "rejected_gates" and rows["r2-3"]["status"] == "failed"
+    assert rows["r2-2"]["status"] == "rejected_gates" and rows["r2-5"]["status"] == "observing"
 
 
-async def test_claim_run_is_first_come_first_served(store):
-    await store.create_run("r9", 1, "", "zh")
-    await store.set_run_status("r9", "awaiting")
-    assert await store.claim_run("r9", "awaiting", "running") is True
-    assert await store.claim_run("r9", "awaiting", "running") is False
-    assert (await store.run("r9"))["status"] == "running"
+async def test_observation_and_claim_candidate(store):
+    await store.create_run("r1", 2, "", "zh", "c1")
+    await store.create_run("r2", 2, "", "zh", "c1")
+    for run_id, seq, status in (("r1", 1, "observing"), ("r1", 2, "rejected_gates"), ("r2", 1, "observing")):
+        await store.upsert_candidate({"id": f"{run_id}-{seq}", "run_id": run_id, "seq": seq, "name": "x",
+                                      "hypothesis": "h", "status": status})
+    rows = await store.observing()
+    # 只要 observing 的，带它那一轮的开始时间
+    assert {r["id"] for r in rows} == {"r1-1", "r2-1"} and all(r["run_created_at"] > 0 for r in rows)
+    # 入库、丢弃同时点：只有一个抢得到
+    assert await store.claim_candidate("r1-1", "observing", "approved") is True
+    assert await store.claim_candidate("r1-1", "observing", "declined") is False
+    assert (await store.candidate("r1-1"))["status"] == "approved" and await store.candidate("nope") is None
+    assert [r["id"] for r in await store.observing()] == ["r2-1"]
+
+
+async def test_campaign_lifecycle_and_lessons(store):
+    await store.create_campaign("c1", 10, 5, "费率", "zh", None, 123)
+    camp = await store.campaign("c1")
+    assert camp["status"] == "running" and camp["rounds"] == 10 and camp["k"] == 5 and camp["deadline_ms"] == 123
+    assert camp["done_rounds"] == 0 and camp["survivors"] == 0 and camp["max_survivors"] is None
+    assert (await store.active_campaign())["id"] == "c1"
+    await store.create_run("r1", 5, "费率", "zh", "c1")
+    await store.create_run("r2", 5, "费率", "zh", "c1")
+    await store.create_run("solo", 1, "", "zh", None)
+    assert [r["id"] for r in await store.campaign_runs("c1")] == ["r2", "r1"]
+    # 点停：running → stopping 只能抢一次
+    assert await store.claim_campaign("c1", "running", "stopping") is True
+    assert await store.claim_campaign("c1", "running", "stopping") is False
+    assert (await store.active_campaign())["status"] == "stopping"
+    await store.update_campaign("c1", done_rounds=2, survivors=1, status="stopped", stop_reason="手动停止")
+    camp = await store.campaign("c1")
+    assert (camp["done_rounds"], camp["survivors"], camp["status"], camp["stop_reason"]) == (2, 1, "stopped", "手动停止")
+    assert await store.active_campaign() is None and [c["id"] for c in await store.campaigns()] == ["c1"]
+
+    await store.add_lessons("r1", "c1", [{"kind": "avoid", "text": "a"}, {"kind": "try", "text": "b"}])
+    await store.add_lessons("solo", None, [{"kind": "note", "text": "c"}])
+    assert [x["text"] for x in await store.lessons()] == ["c", "b", "a"]
+    assert [x["text"] for x in await store.lessons(1)] == ["c"]
+    assert [(x["text"], x["run_id"]) for x in await store.lessons(20, "c1")] == [("b", "r1"), ("a", "r1")]
+
+
+async def test_open_adds_campaign_id_to_an_old_run_table(tmp_path):
+    """线上库的 run 表是加 campaign 之前建的：open 时补上这一列，旧行是空的"""
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE run(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL,
+                    k INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, error TEXT)""")
+    conn.execute("INSERT INTO run VALUES ('old', 1, 'done', 3, '', 'zh', NULL)")
+    conn.commit()
+    conn.close()
+    for _ in range(2):  # 第二次 open 不再加
+        s = await Store.open(str(path))
+        columns = [r["name"] for r in await s.db.execute_fetchall("PRAGMA table_info(run)")]
+        assert columns.count("campaign_id") == 1
+        assert (await s.run("old"))["campaign_id"] is None
+        await s.close()
+    s = await Store.open(str(path))
+    await s.create_run("new", 1, "", "zh", "c1")
+    assert (await s.run("new"))["campaign_id"] == "c1" and await s.campaigns() == []
+    await s.close()
 
 
 async def test_events_tried_factors_trials(store):
-    await store.create_run("r1", 1, "", "en")
+    await store.create_run("r1", 1, "", "en", None)
     first = await store.add_event("r1", "status", {"stage": "proposing"})
     await store.add_event("r1", "log", {"text": "x"})
     events = await store.events("r1")
@@ -88,3 +145,21 @@ async def test_events_tried_factors_trials(store):
     assert await store.trials() == 0
     assert await store.bump_trials(3) == 3
     assert await store.bump_trials(2) == 5
+
+
+async def test_universe_is_replaced_whole(store):
+    await store.replace_universe([("2026-01", "BTCUSDT", 1, 5e9), ("2026-01", "AAAUSDT", 2, 2e8)])
+    rows = await store.universe()
+    assert [(r["month"], r["symbol"], r["rank"]) for r in rows] == [("2026-01", "BTCUSDT", 1), ("2026-01", "AAAUSDT", 2)]
+    await store.replace_universe([("2026-02", "BTCUSDT", 1, 5e9)])
+    assert [r["month"] for r in await store.universe()] == ["2026-02"]
+
+
+async def test_models_are_one_row_per_role(store):
+    assert await store.models() == {}
+    await store.set_model("gen", ModelSpec("openai", "https://a", "m1", "k1", ""))
+    await store.set_model("gen", ModelSpec("anthropic", "", "claude", "k2", "high"))
+    await store.set_model("review", ModelSpec("gemini", "", "g", "k3", ""))
+    rows = await store.models()
+    assert set(rows) == {"gen", "review"}
+    assert (rows["gen"]["protocol"], rows["gen"]["model"], rows["gen"]["api_key"], rows["gen"]["effort"]) == ("anthropic", "claude", "k2", "high")

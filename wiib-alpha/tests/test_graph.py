@@ -1,19 +1,20 @@
+import json
+
 import pytest
-from fakes import gen_reply, model, review_reply
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.types import Command
+from conftest import PRODUCTS
+from fakes import LESSONS, gen_reply, model, review_reply
 
 from wiib_alpha import graph as graph_module
-from wiib_alpha.data.panel import holdout_cut, truncate
+from wiib_alpha.data.panel import truncate
 from wiib_alpha.eval.combo import Combo
 from wiib_alpha.eval.params import EvalParams, Thresholds
 from wiib_alpha.graph import Context, build_graph
 from wiib_alpha.store import Store
 
-PARAMS = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, surrogates=20, holdout_days=10)
-GATES = Thresholds(min_samples=100, min_symbols_same_sign=3)
-FACTS = {"symbols": ["AAA", "BBB", "CCC"], "from": "2025-01-01", "to": "2025-03-04", "rows": 6000, "liqFrom": None,
-         "holdoutFrom": "2025-02-22", "costBps": 10.0}
+PARAMS = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
+GATES = Thresholds(min_samples=30)
+FACTS = {"symbols": list(PRODUCTS), "from": "2025-01-01", "to": "2025-03-04", "rows": 6000, "liqFrom": None,
+         "holdoutFrom": "2025-02-22", "costTiers": [5.0, 8.0, 12.0], "poolSize": 80, "poolSymbols": 24}
 
 
 @pytest.fixture
@@ -29,131 +30,202 @@ def review_blind_to_holdout(prompt: str) -> str:
     return review_reply(prompt)
 
 
-def context(store, panels, gen=gen_reply, review=review_blind_to_holdout) -> Context:
-    cut = holdout_cut(panels, PARAMS.holdout_days)
-    search = {s: truncate(p, cut) for s, p in panels.items()}
-    return Context(gen=model(gen), review=model(review), panels=panels, search=search, cut_ms=cut, references={},
-                   combo=Combo.build([], search), known=set(), library=[], facts=FACTS, store=store, params=PARAMS,
-                   thresholds=GATES)
+@pytest.fixture
+def ctx_of(planted_pool, planted_grid, planted_panels):
+    def build(store, gen=gen_reply, review=review_blind_to_holdout) -> Context:
+        products = {s: truncate(planted_panels[s], planted_pool.cut_ms) for s in PRODUCTS}
+        empty = Combo.empty(planted_pool.search, planted_pool.symbols)
+        return Context(gen=model(gen), review=model(review), pool=planted_pool, products=products,
+                       reference_grid=planted_grid, combo=empty, observing=empty, known=set(), library=[], facts=FACTS,
+                       store=store, params=PARAMS, thresholds=GATES)
+    return build
 
 
-async def run_until_stop(graph, payload, cfg):
-    events = []
-    async for mode, chunk in graph.astream(payload, cfg, stream_mode=["updates", "custom"]):
-        events.append((mode, chunk))
-    return events
+def recording(reply, seen: list[str]):
+    def ask(prompt: str) -> str:
+        seen.append(prompt)
+        return reply(prompt)
+    return ask
 
 
-async def test_full_round_with_retry_revise_fdr_and_approval(store, planted_panels):
-    await store.create_run("r1", 2, "", "zh")
-    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
-        graph = build_graph(saver, context(store, planted_panels))
-        cfg = {"configurable": {"thread_id": "r1"}}
-        events = await run_until_stop(graph, {"run_id": "r1", "lang": "zh", "k": 2, "note": ""}, cfg)
+async def run_round(ctx: Context, run_id: str, k: int, campaign_id: str | None = None) -> list[dict]:
+    """跑一轮到底，收图里推出来的事件"""
+    await ctx.store.create_run(run_id, k, "", "zh", campaign_id)
+    payload = {"run_id": run_id, "campaign_id": campaign_id, "lang": "zh", "k": k, "note": ""}
+    return [chunk async for chunk in build_graph(ctx).astream(payload, stream_mode="custom")]
 
-        interrupts = [c for m, c in events if m == "updates" and "__interrupt__" in c]
-        assert len(interrupts) == 1
-        survivors = interrupts[0]["__interrupt__"][0].value["candidates"]
-        assert [s["name"] for s in survivors] == ["planted"]
-        assert survivors[0]["expr"] == "Mean($volume, 4)" and survivors[0]["review"]["verdict"] == "pass"
-        assert survivors[0]["brief"]["surrogate"]["k"] == 20
-        # 幸存者带着 holdout 的数字去审批；埋进去的信号在 holdout 上也该是正的
-        held = survivors[0]["brief"]["holdout"]
-        assert held["since"] == holdout_cut(planted_panels, PARAMS.holdout_days)
-        assert held["horizons"]["12h"]["meanIc"] > 0 and held["horizons"]["12h"]["samples"] > 0
 
-        rows = {c["name"]: c for c in await store.candidates("r1")}
-        # planted：第一次少窗口重写、第二次 $volume 被评审打回、第三次过
-        assert rows["planted"]["status"] == "passed" and rows["planted"]["attempts"] == 3
-        assert rows["planted"]["eval"]["holdout"]["since"] == held["since"]
-        # 库是空的：G9 的基线是 0，增量就是它自己的组合 IC
-        assert rows["planted"]["gates"][9]["id"] == "G9" and rows["planted"]["gates"][9]["passed"]
-        assert rows["planted"]["eval"]["gain"]["horizons"]["48"]["base"] == 0
-        assert rows["planted"]["eval"]["gain"]["horizons"]["48"]["gain"] > 0.3 and survivors[0]["brief"]["gain"]["12h"] > 0.3
-        assert rows["noise"]["status"] == "rejected_gates" and "G2" in rows["noise"]["reason"]
-        assert rows["noise"]["gates"] is not None and "holdout" not in rows["noise"]["eval"]
-        custom = [c for m, c in events if m == "custom"]
-        # planted 评估了两版、noise 一版
-        assert any(c["event"] == "log" and "累计试验 3 次" in c["data"]["text"] for c in custom)
-        assert (await store.run("r1"))["status"] == "running"
+async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, planted_pool):
+    seen: list[str] = []
+    events = await run_round(ctx_of(store, gen=recording(gen_reply, seen)), "r1", 2, "c1")
 
-        planted_id = survivors[0]["id"]
-        events = await run_until_stop(graph, Command(resume={"decisions": {planted_id: True}}), cfg)
-        assert any(m == "custom" and c["event"] == "done" and c["data"] == {"approved": 1} for m, c in events)
-
-    assert (await store.run("r1"))["status"] == "done"
-    factors = await store.factors()
-    assert len(factors) == 1 and factors[0]["expr"] == "Mean($volume, 4)" and factors[0]["columns"] == ["volume"]
-    assert factors[0]["eval"]["holdout"]["since"] == held["since"]
     rows = {c["name"]: c for c in await store.candidates("r1")}
-    assert rows["planted"]["status"] == "approved" and rows["planted"]["decision"] == "approve"
-    tried = await store.tried()
-    assert {t["outcome"] for t in tried} == {"approved", "rejected_gates"}
-    assert await store.trials() == 3
-    kinds = [e["event"] for e in await store.events("r1")]
-    assert kinds[0] == "status" and "done" in kinds and kinds.count("candidate") >= 6
+    # planted：第一次少窗口重写、第二次 $volume 被评审打回、第三次过，进观察区等人入库
+    planted = rows["planted"]
+    assert planted["status"] == "observing" and planted["attempts"] == 3 and planted["review"]["verdict"] == "pass"
+    assert planted["expr"] == "Mean($volume, 4)" and planted["reason"] is None and planted["direction"] == 1
+    assert planted["gates"][10]["id"] == "G10" and planted["gates"][10]["passed"]
+    # 幸存者带着 holdout 的数字；埋进去的信号在 holdout 上也该是正的
+    assert planted["eval"]["holdout"]["since"] == planted_pool.cut_ms
+    assert planted["eval"]["holdout"]["horizons"]["48"]["mean"] > 0
+    # 库是空的：G9 的基线是 0，增量就是它自己的组合 IC
+    assert planted["gates"][9]["id"] == "G9" and planted["gates"][9]["passed"]
+    assert planted["eval"]["gain"]["horizons"]["48"]["base"] == 0 and planted["eval"]["gain"]["horizons"]["48"]["gain"] > 0.3
+    # noise：门没过，带着数字重写两版还是没过，拒掉；拒掉的不算 holdout
+    noise = rows["noise"]
+    assert noise["status"] == "rejected_gates" and noise["attempts"] == 3 and "G5" in noise["reason"]
+    assert noise["expr"] == "Sum($trades, 16)"
+    assert "holdout" not in noise["eval"]
+    rewrites = [e["data"] for e in events if e["event"] == "candidate" and e["data"]["status"] == "rewrite"]
+    assert [c["name"] for c in rewrites] == ["noise", "noise"] and all("G5" in c["reason"] for c in rewrites)
+    # 重写的提示词：同一假设、上一版表达式、没过的门、主档数字，不替模型下结论
+    again = [p for p in seen if "[noise]" in p and "上一版表达式" in p]
+    assert len(again) == 2 and "上一版表达式：$trades（声明的方向 1，因子值越大越强）\n没过的门：\n- G" in again[0]
+    assert "盈亏平衡单边成本" in again[0] and "多空腿每期资金费" in again[0]
+    assert "同一假设，换一种写法；这些数字说明了什么由你判断" in again[0]
+    # planted 评估了两版、noise 三版，都计入试验数
+    assert any(e["event"] == "log" and "累计试验 5 次" in e["data"]["text"] for e in events)
+    assert await store.trials() == 5
 
+    # 复盘：看得到每条的结局和数字，经验存表、推事件
+    reflect = next(p for p in seen if "这一轮的候选与结局" in p)
+    assert "[planted]" in reflect and "进观察区" in reflect and "硬门拒" in reflect and "评估了 3 版" in reflect
+    assert {"event": "lessons", "data": {"items": LESSONS}} in [{k: e[k] for k in ("event", "data")} for e in events]
+    stored = await store.lessons()
+    assert [(x["kind"], x["text"]) for x in stored] == [(x["kind"], x["text"]) for x in reversed(LESSONS)]
+    assert {(x["run_id"], x["campaign_id"]) for x in stored} == {("r1", "c1")}
 
-async def test_declined_survivor_is_not_stored(store, planted_panels):
-    await store.create_run("r2", 2, "", "en")
-    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
-        graph = build_graph(saver, context(store, planted_panels))
-        cfg = {"configurable": {"thread_id": "r2"}}
-        await run_until_stop(graph, {"run_id": "r2", "lang": "en", "k": 2, "note": ""}, cfg)
-        await run_until_stop(graph, Command(resume={"decisions": {}}), cfg)
+    stages = [e["data"]["stage"] for e in events if e["event"] == "status"]
+    assert stages == ["proposing", "summarizing", "reflecting", "committing"]
+    assert events[-1]["event"] == "done" and events[-1]["data"] == {"observing": 1}
+    assert (await store.run("r1"))["status"] == "done"
+    # 观察区不自动入库
     assert await store.factors() == []
-    rows = {c["name"]: c for c in await store.candidates("r2")}
-    assert rows["planted"]["status"] == "declined"
+    assert {t["outcome"] for t in await store.tried()} == {"observing", "rejected_gates"}
+
+    # 下一轮出题带着经验，最新在前
+    seen.clear()
+    await run_round(ctx_of(store, gen=recording(lambda p: "[]", seen)), "r2", 1)
+    propose = seen[0]
+    assert propose.index("[try] 成交量平滑后更稳") < propose.index("[avoid] 成交笔数没有截面信号")
 
 
-async def test_batch_rechecks_later_survivors_against_earlier_ones(store, planted_panels, monkeypatch):
-    """同批里规范形相同的只留一条（G8 拒）；结构不同的照样过，G9 备注里写明排在谁后面增量多少，留给人判"""
-    def no_gain(combo, name, expr, params):
+async def test_rewrite_that_clears_the_gates_goes_to_observation(store, ctx_of):
+    """第一版 $trades 门没过，看了数字改成成交量均线，过门过评审"""
+    def gen(prompt: str) -> str:
+        if "这一轮的候选与结局" in prompt:
+            return "没什么可说的"
+        if "JSON 数组" in prompt:
+            return json.dumps([{"name": "late", "hypothesis": "成交活跃的币之后更强"}], ensure_ascii=False)
+        if "同一假设，换一种写法" in prompt:
+            return '{"expr": "Mean($volume, 8)", "direction": 1, "note": "改用成交量"}'
+        return '{"expr": "$trades", "direction": 1, "note": "成交笔数"}'
+
+    events = await run_round(ctx_of(store, gen=gen), "r6", 1)
+    c = (await store.candidates("r6"))[0]
+    assert c["status"] == "observing" and c["expr"] == "Mean($volume, 8)" and c["attempts"] == 2
+    assert [e["data"]["status"] for e in events if e["event"] == "candidate"][:3] == ["proposed", "evaluating", "rewrite"]
+    assert await store.trials() == 2
+    # 复盘没给出合法 JSON：不存，记一条日志
+    assert await store.lessons() == []
+    assert any(e["event"] == "log" and "复盘没给出合法的经验" in e["data"]["text"] for e in events)
+
+
+async def test_batch_keeps_one_of_survivors_that_are_the_same_signal(store, ctx_of):
+    """planted 与 clone 规范形相同，twin 换了结构但截面上几乎一样：同批只留增量最大的那条，别的按 G8 或 G6 拒，不算 holdout"""
+    await run_round(ctx_of(store), "r5", 4)
+    rows = {c["name"]: c for c in await store.candidates("r5")}
+    same = [rows[n] for n in ("planted", "twin", "clone")]
+    kept = [c for c in same if c["status"] == "observing"]
+    dropped = [c for c in same if c["status"] == "rejected_gates"]
+    assert len(kept) == 1 and len(dropped) == 2 and "holdout" in kept[0]["eval"]
+    assert all(c["reason"].startswith(("G6", "G8")) and "holdout" not in c["eval"] for c in dropped)
+    by_g6 = [c for c in dropped if c["reason"].startswith("G6")]
+    assert by_g6 and all(not c["gates"][6]["passed"] and f"与同批 {kept[0]['name']} 的截面" in c["gates"][6]["note"]
+                         for c in by_g6)
+    assert rows["noise"]["status"] == "rejected_gates"
+
+
+async def test_batch_notes_later_survivors_gain_after_earlier_ones(store, ctx_of, monkeypatch):
+    """截面相关没到阈值的照样留（这里把相关压成 0.1）：同批规范形相同的只留一条（G8 拒），
+    排在后面的 G9 备注里写明排在谁后面增量多少，留给人判"""
+    def no_gain(combo, name, f, params):
         return {"horizons": {b: {"base": 0.5, "with": 0.49, "gain": -0.01} for b in (24, 48, 96)},
-                "months": 2, "monthsBetter": 0}
+                "months": 2, "monthsBetter": 0, "sharpe": {"base": 2.0, "with": 1.9, "gain": -0.1}}
 
     monkeypatch.setattr(graph_module, "gain", no_gain)
-    await store.create_run("r5", 4, "", "zh")
-    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
-        graph = build_graph(saver, context(store, planted_panels))
-        cfg = {"configurable": {"thread_id": "r5"}}
-        events = await run_until_stop(graph, {"run_id": "r5", "lang": "zh", "k": 4, "note": ""}, cfg)
-    interrupts = [c for m, c in events if m == "updates" and "__interrupt__" in c]
-    survivors = interrupts[0]["__interrupt__"][0].value["candidates"]
+    monkeypatch.setattr(graph_module, "cross_corr", lambda rows, f, others, params: [(n, 0.1) for n in others.names])
+    await run_round(ctx_of(store), "r5", 4)
     rows = {c["name"]: c for c in await store.candidates("r5")}
     # planted 与 clone 都是 Mean($volume, w)：排后面的那条按 G8 拒，不算 holdout
     dropped = [c for c in (rows["planted"], rows["clone"]) if c["status"] == "rejected_gates"]
     assert len(dropped) == 1 and dropped[0]["reason"].startswith("G8") and "holdout" not in dropped[0]["eval"]
     assert not dropped[0]["gates"][8]["passed"]
-    assert {s["name"] for s in survivors} == {"twin", ("planted", "clone")[dropped[0]["name"] == "planted"]}
+    survivors = [c for c in rows.values() if c["status"] == "observing"]
+    assert {c["name"] for c in survivors} == {"twin", ("planted", "clone")[dropped[0]["name"] == "planted"]}
     # 排在后面的那条 G9 没被翻成不过，备注里带着相对前一条的增量
-    noted = [s for s in survivors if "排在同批" in s["gates"][9]["note"]]
-    assert len(noted) == 1 and "-0.0100" in noted[0]["gates"][9]["note"] and all(g["passed"] for g in noted[0]["gates"])
-    assert all("holdout" in rows[s["name"]]["eval"] for s in survivors)
+    noted = [c for c in survivors if "排在同批" in c["gates"][9]["note"]]
+    assert len(noted) == 1 and all(g["passed"] for g in noted[0]["gates"])
+    assert "净 Sharpe 增量 -0.10、IC 增量 -0.0100" in noted[0]["gates"][9]["note"]
+    assert all("holdout" in c["eval"] for c in survivors)
     assert rows["noise"]["status"] == "rejected_gates"
 
 
-async def test_no_hypotheses_goes_straight_to_done(store, planted_panels):
-    await store.create_run("r3", 1, "", "zh")
-    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
-        graph = build_graph(saver, context(store, planted_panels, gen=lambda p: "[]"))
-        cfg = {"configurable": {"thread_id": "r3"}}
-        events = await run_until_stop(graph, {"run_id": "r3", "lang": "zh", "k": 1, "note": ""}, cfg)
-    assert not any(m == "updates" and "__interrupt__" in c for m, c in events)
+async def test_no_hypotheses_goes_straight_to_done(store, ctx_of):
+    events = await run_round(ctx_of(store, gen=lambda p: "[]"), "r3", 1)
+    # 没有候选就不复盘
+    assert [e["data"]["stage"] for e in events if e["event"] == "status"] == ["proposing", "summarizing", "committing"]
     assert (await store.run("r3"))["status"] == "done" and await store.trials() == 0
 
 
-async def test_unparseable_expression_three_times_is_failed(store, planted_panels):
+async def test_direction_is_required_and_checked_by_g10(store, ctx_of):
+    """没给方向带着毛病再要；声明越大越弱、植入信号却是越大越强，G10 拒，换窗口重写两版还是拒"""
+    def gen(prompt: str) -> str:
+        if "这一轮的候选与结局" in prompt:
+            return "[]"
+        if "JSON 数组" in prompt:
+            return '[{"name": "nodir", "hypothesis": "成交量高的币之后更弱"}]'
+        if "上一版表达式：Mean($volume, 4)（" in prompt:
+            return '{"expr": "Mean($volume, 8)", "direction": -1}'
+        if "上一版表达式：Mean($volume, 8)（" in prompt:
+            return '{"expr": "Mean($volume, 16)", "direction": -1}'
+        if "direction 只能是 1 或 -1" in prompt:
+            return '{"expr": "Mean($volume, 4)", "direction": -1}'
+        return '{"expr": "Mean($volume, 4)"}'
+
+    await run_round(ctx_of(store, gen=gen), "r7", 1)
+    c = (await store.candidates("r7"))[0]
+    assert c["status"] == "rejected_gates" and c["direction"] == -1 and c["attempts"] == 4
+    assert c["expr"] == "Mean($volume, 16)" and c["reason"].startswith("G10") and not c["gates"][10]["passed"]
+    assert await store.trials() == 3
+
+
+async def test_rewrite_that_repeats_an_earlier_version_is_not_evaluated_again(store, ctx_of):
+    """门没过让它重写，它又交回同一条：不再评估、不计试验，带着"和第 1 版一模一样"再要；三次都一样就停在第 1 版的结局上"""
+    seen: list[str] = []
+
+    def gen(prompt: str) -> str:
+        if "这一轮的候选与结局" in prompt:
+            return "[]"
+        if "JSON 数组" in prompt:
+            return '[{"name": "stuck", "hypothesis": "成交笔数多的币之后更强"}]'
+        return '{"expr": "$trades", "direction": 1}'
+
+    await run_round(ctx_of(store, gen=recording(gen, seen)), "r8", 1)
+    c = (await store.candidates("r8"))[0]
+    assert c["status"] == "rejected_gates" and c["expr"] == "$trades" and c["attempts"] == 4
+    assert "；重写连试三次都没写出新的表达式：$trades 和这条假设的第 1 版一模一样" in c["reason"]
+    assert c["reason"].startswith("G") and await store.trials() == 1
+    assert sum("和这条假设的第 1 版一模一样" in p for p in seen if "写成一条表达式" in p) == 2
+
+
+async def test_unparseable_expression_three_times_is_failed(store, ctx_of):
     def stubborn(prompt: str) -> str:
         if "JSON 数组" in prompt:
             return '[{"name": "bad", "hypothesis": "写不出来"}]'
         return '{"expr": "Mean(close, 5)"}'
 
-    await store.create_run("r4", 1, "", "zh")
-    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
-        graph = build_graph(saver, context(store, planted_panels, gen=stubborn))
-        cfg = {"configurable": {"thread_id": "r4"}}
-        await run_until_stop(graph, {"run_id": "r4", "lang": "zh", "k": 1, "note": ""}, cfg)
+    await run_round(ctx_of(store, gen=stubborn), "r4", 1)
     rows = await store.candidates("r4")
     assert rows[0]["status"] == "failed" and rows[0]["attempts"] == 3
     assert (await store.run("r4"))["status"] == "done"

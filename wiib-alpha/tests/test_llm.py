@@ -3,8 +3,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
-from wiib_alpha.config import ModelSpec, config
-from wiib_alpha.llm import LlmError, build_chat_model, same_model
+from wiib_alpha.config import ModelSpec
+from wiib_alpha.llm import LlmError, build_chat_model
 
 
 def spec(protocol, base_url="https://up.test", model="m-1", effort="", api_key="sk-plain") -> ModelSpec:
@@ -55,34 +55,9 @@ def test_effort_outside_package_table_ignored():
 
 
 def test_missing_model_or_key_and_unknown_protocol():
-    with pytest.raises(LlmError, match="ALPHA_GEN_MODEL"):
+    with pytest.raises(LlmError, match="gen 角色"):
         build_chat_model(spec("openai", model=""), "gen")
-    with pytest.raises(LlmError, match="ALPHA_REVIEW_MODEL"):
+    with pytest.raises(LlmError, match="review 角色"):
         build_chat_model(spec("openai", api_key=" "), "review")
     with pytest.raises(LlmError, match="不支持"):
         build_chat_model(spec("azure"), "gen")
-
-
-def test_same_model_ignores_case_and_trailing_slash():
-    assert same_model(spec("OpenAI", base_url="https://up.test/"), spec("openai", base_url="https://up.test"))
-    assert same_model(spec("openai", base_url="https://up.test/v1"), spec("openai", base_url="https://up.test"))
-    assert same_model(spec(""), spec("openai"))
-    assert same_model(spec("openai"), spec("responses"))
-    assert same_model(spec("openai", model="M-1"), spec("openai"))
-    assert not same_model(spec("openai"), spec("openai", model="m-2"))
-    assert not same_model(spec("openai"), spec("anthropic"))
-
-
-def test_config_reads_both_roles(monkeypatch):
-    monkeypatch.setenv("ALPHA_GEN_PROTOCOL", "anthropic")
-    monkeypatch.setenv("ALPHA_GEN_MODEL", "claude")
-    monkeypatch.setenv("ALPHA_GEN_API_KEY", "k1")
-    monkeypatch.setenv("ALPHA_REVIEW_MODEL", "gpt")
-    monkeypatch.setenv("ALPHA_REVIEW_API_KEY", "k2")
-    monkeypatch.setenv("ALPHA_REVIEW_EFFORT", "high")
-    config.cache_clear()
-    c = config()
-    assert c.gen.protocol == "anthropic" and c.gen.model == "claude" and c.gen.api_key == "k1"
-    assert c.review.protocol == "openai" and c.review.effort == "high"
-    assert "k1" not in repr(c) and "k2" not in repr(c)
-    config.cache_clear()

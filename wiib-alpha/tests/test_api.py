@@ -1,19 +1,26 @@
 import asyncio
 import json
+import sqlite3
+import threading
 
 import httpx
 import pytest
-from fakes import gen_reply, model, review_reply
+from conftest import POOL_SYMBOLS, REFERENCES, planted_universe, write_store
+from fakes import LESSONS, gen_reply, model, review_reply
 
 from wiib_alpha import main as m
 from wiib_alpha import reference
 from wiib_alpha.auth import Authenticator
 from wiib_alpha.config import config
-from wiib_alpha.data.panel import PanelStore
+from wiib_alpha.data.pool import on_grid
+from wiib_alpha.data.refresh import RefreshResult
 from wiib_alpha.dsl import parse
 from wiib_alpha.eval.params import EvalParams, Thresholds
+from wiib_alpha.store import SCHEMA
 
 ADMIN = {"satoken": "admin"}
+# fixture 会把 main.build_models 换成假的，想测真的从这里拿
+REAL_BUILD_MODELS = m.build_models
 
 
 def sim(request: httpx.Request) -> httpx.Response:
@@ -27,22 +34,27 @@ def sim(request: httpx.Request) -> httpx.Response:
 
 @pytest.fixture
 def prepared(tmp_path, monkeypatch, planted_panels):
-    """面板落成 parquet、环境变量指到 tmp、参照集缩成一条、模型换成假的；返回还没进 lifespan 的 app"""
-    store = PanelStore(tmp_path)
-    for s, p in planted_panels.items():
-        p.to_parquet(store.panels / f"{s}.parquet")
+    """池子面板、status 与参照网格落到 tmp，池子表先写进 sqlite；环境变量指到 tmp、参照集缩成一条、模型换成假的；
+    返回还没进 lifespan 的 app"""
+    write_store(tmp_path, planted_panels)
+    universe = planted_universe(planted_panels)
+    conn = sqlite3.connect(tmp_path / "alpha.sqlite")
+    for statement in SCHEMA:
+        conn.execute(statement)
+    conn.executemany("INSERT INTO universe(month, symbol, rank, avg_quote_volume) VALUES (?, ?, ?, ?)",
+                     list(universe.itertuples(index=False)))
+    conn.commit()
+    conn.close()
     monkeypatch.setenv("ALPHA_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALPHA_DB_PATH", str(tmp_path / "alpha.sqlite"))
     monkeypatch.setenv("ALPHA_SYMBOLS", "AAA,BBB,CCC")
     config.cache_clear()
-    # 参照集只留一条与埋进去的信号无关的；用价格类的会和 planted 真的相关（G6 会正确地拒掉它）
-    monkeypatch.setattr(reference, "parsed", lambda: {"noise4": parse("Mean($trades, 4)", ["trades"])})
+    monkeypatch.setattr(reference, "parsed", lambda: {k: parse(v, ["trades"]) for k, v in REFERENCES.items()})
     monkeypatch.setattr(m, "build_models", lambda cfg: (model(gen_reply), model(review_reply)))
-    monkeypatch.setattr(m, "_refresh_panels", lambda cfg: None)
+    monkeypatch.setattr(m, "_refresh_panels", lambda cfg, job: RefreshResult(universe, {}))
     app = m.app
-    app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, surrogates=20,
-                                  holdout_days=10)
-    app.state.thresholds = Thresholds(min_samples=100, min_symbols_same_sign=3)
+    app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
+    app.state.thresholds = Thresholds(min_samples=30)
     app.state.authenticator = Authenticator("http://sim", httpx.AsyncClient(transport=httpx.MockTransport(sim)))
     yield app
     config.cache_clear()
@@ -83,43 +95,75 @@ async def wait_until(check, seconds: float = 20.0):
     raise AssertionError("等超时了")
 
 
-# ========== 完整一轮 ==========
+async def campaign_of(client: httpx.AsyncClient, campaign_id: str) -> dict:
+    return data(await client.get(f"/api/alpha/campaigns/{campaign_id}", headers=ADMIN))
 
 
-async def test_full_round_over_http(client, planted_panels):
+async def wait_campaign(client: httpx.AsyncClient, campaign_id: str, status: str) -> dict:
+    """等 campaign 停下来；一轮的事件流结束时驱动器可能还没记完进度"""
+    async def stopped():
+        return (await campaign_of(client, campaign_id))["campaign"]["status"] == status
+
+    await wait_until(stopped)
+    return await campaign_of(client, campaign_id)
+
+
+# ========== 一个 campaign 跑一轮，观察区入库 ==========
+
+
+async def test_one_round_campaign_then_approve_from_observation(client, planted_panels):
     assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None}
-    run_id = data(await client.post("/api/alpha/runs", json={"k": 2}, headers=ADMIN))["id"]
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 2}, headers=ADMIN))
+    campaign_id, run_id = started["id"], started["runId"]
 
     evts = await events(client, run_id)
     trail = [(e["event"], e["data"].get("name") or e["data"].get("stage") or e["data"].get("text"),
               e["data"].get("status"), e["data"].get("reason") or e["data"].get("message")) for e in evts]
     assert evts[0]["event"] == "status", trail
-    assert evts[-1] == {"id": evts[-2]["id"], "event": "end",
-                        "data": {"status": "awaiting", "lastId": evts[-2]["id"]}}, trail
-    awaiting = [e for e in evts if e["event"] == "awaiting"]
-    assert len(awaiting) == 1 and [c["name"] for c in awaiting[0]["data"]["candidates"]] == ["planted"]
+    assert [e["event"] for e in evts][-2:] == ["done", "end"] and evts[-2]["data"] == {"observing": 1}, trail
+    assert evts[-1]["data"] == {"status": "done", "lastId": evts[-2]["id"]}
+    assert [e["data"] for e in evts if e["event"] == "lessons"] == [{"items": LESSONS}]
     ids = [e["id"] for e in evts if e["event"] != "end"]
     assert ids == sorted(ids) and len(set(ids)) == len(ids)
 
     state = data(await client.get(f"/api/alpha/runs/{run_id}", headers=ADMIN))
-    # planted 评估了两版（$volume 被打回、Mean($volume, 4)），noise 一版
-    assert state["run"]["status"] == "awaiting" and state["trials"] == 3
+    # planted 评估了两版（$volume 被打回、Mean($volume, 4)），noise 门没过重写两版共三版
+    assert state["run"]["status"] == "done" and state["run"]["campaign_id"] == campaign_id and state["trials"] == 5
     by_name = {c["name"]: c for c in state["candidates"]}
-    assert by_name["planted"]["status"] == "passed" and by_name["planted"]["brief"]["gates"][2]["passed"]
+    assert by_name["planted"]["status"] == "observing" and by_name["planted"]["brief"]["gates"][2]["passed"]
     assert by_name["planted"]["brief"]["holdout"]["horizons"]["12h"]["samples"] > 0
+    assert by_name["planted"]["brief"]["horizons"]["12h"]["breakEvenBps"] > 12
     assert by_name["noise"]["status"] == "rejected_gates" and "holdout" not in by_name["noise"]["brief"]
     assert "eval" not in by_name["planted"]
 
-    planted_id = by_name["planted"]["id"]
-    assert data(await client.post(f"/api/alpha/runs/{run_id}/decide", json={"decisions": {planted_id: True}},
-                                  headers=ADMIN)) == {"resumed": True}
-    tail = await events(client, run_id, after=evts[-1]["data"]["lastId"])
-    assert [e["event"] for e in tail][-2:] == ["done", "end"] and tail[-1]["data"]["status"] == "done"
-    assert tail[-1]["data"]["lastId"] == tail[-2]["id"]
-    assert all(e["id"] > evts[-2]["id"] for e in tail[:-1])
+    # 轮数到了：campaign 自己收尾，不再起下一轮
+    detail = await wait_campaign(client, campaign_id, "done")
+    camp = detail["campaign"]
+    assert (camp["done_rounds"], camp["survivors"], camp["stop_reason"]) == (1, 1, "跑满 1 轮")
+    assert [(r["id"], r["counts"]) for r in detail["runs"]] == [(run_id, {"observing": 1, "rejected_gates": 1})]
+    assert [x["text"] for x in detail["lessons"]] == [x["text"] for x in reversed(LESSONS)]
+    listed = data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"]
+    assert [(c["id"], c["status"]) for c in listed] == [(campaign_id, "done")]
+    runs = data(await client.get("/api/alpha/runs", headers=ADMIN))
+    assert runs["runs"][0]["counts"] == {"observing": 1, "rejected_gates": 1} and runs["trials"] == 5
 
-    resp = await client.post(f"/api/alpha/runs/{run_id}/decide", json={"decisions": {}}, headers=ADMIN)
-    assert resp.status_code == 409 and resp.json()["code"] == 409
+    # 观察区：只有过门的那条，不自动入库
+    items = data(await client.get("/api/alpha/observation", headers=ADMIN))["items"]
+    assert [(c["name"], c["run_id"]) for c in items] == [("planted", run_id)]
+    assert items[0]["created_at"] == state["run"]["created_at"] and items[0]["brief"]["holdout"]["since"] > 0
+    assert data(await client.get("/api/alpha/library", headers=ADMIN))["factors"] == []
+    overview = data(await client.get("/api/alpha/overview"))
+    assert overview["observing"] == 1 and overview["factors"] == 0
+
+    planted_id = items[0]["id"]
+    assert data(await client.post(f"/api/alpha/candidates/{planted_id}/approve", headers=ADMIN)) == {
+        "id": planted_id, "name": "planted"}
+    # 入过库的不在观察区了：再点入库、丢弃都是 409
+    for action in ("approve", "decline"):
+        resp = await client.post(f"/api/alpha/candidates/{planted_id}/{action}", headers=ADMIN)
+        assert resp.status_code == 409 and resp.json()["code"] == 409
+    assert (await client.post("/api/alpha/candidates/nope/approve", headers=ADMIN)).status_code == 404
+    assert data(await client.get("/api/alpha/observation", headers=ADMIN))["items"] == []
 
     lib = data(await client.get("/api/alpha/library", headers=ADMIN))
     factors = lib["factors"]
@@ -129,8 +173,9 @@ async def test_full_round_over_http(client, planted_panels):
     combo = lib["combo"]
     assert [w["name"] for w in combo["weights"]] == ["planted"] and combo["weights"][0]["weight"] > 0
     assert combo["brief"]["horizons"]["12h"]["meanIc"] > 0.3 and combo["brief"]["holdout"]["horizons"]["12h"]["samples"] > 0
-    assert set(combo["latest"]) == {"AAA", "BBB", "CCC"} and "surrogate" not in combo["brief"]
-    assert combo["asOf"] == int(planted_panels["AAA"].index[-1])
+    # 最后一个 6h 网格时刻每个在池币的组合信号
+    index = planted_panels["AAA"].index.to_numpy()
+    assert set(combo["latest"]) == set(POOL_SYMBOLS) and combo["asOf"] == int(index[on_grid(index, 24)].max())
     full = data(await client.get(f"/api/alpha/library/{factors[0]['id']}", headers=ADMIN))
     assert "eval" in full and full["gates"][0]["id"] == "G0"
 
@@ -138,9 +183,12 @@ async def test_full_round_over_http(client, planted_panels):
     assert recheck["horizons"]["48"]["samples"] == 0
     assert data(await client.get(f"/api/alpha/library/{factors[0]['id']}", headers=ADMIN))["recheck"]["since"] == full["approved_at"]
 
-    runs = data(await client.get("/api/alpha/runs", headers=ADMIN))
-    assert runs["runs"][0]["id"] == run_id and runs["runs"][0]["status"] == "done" and runs["trials"] == 3
     assert (await client.get("/api/alpha/runs/nope", headers=ADMIN)).status_code == 404
+    # 公开概览只有数字：这一轮一条入库一条被门拒
+    overview = data(await client.get("/api/alpha/overview"))
+    assert overview["trials"] == 5 and overview["factors"] == 1 and overview["observing"] == 0
+    assert overview["runs"][0]["id"] == run_id and overview["runs"][0]["counts"] == {"approved": 1, "rejected_gates": 1}
+    assert "hypothesis" not in overview["runs"][0]
 
     # 入库之后它就进了冗余对比集：再评估同一条表达式，G6 认出是库里的那条
     out = data(await client.post("/api/alpha/eval", json={"expr": "Mean($volume, 4)"}, headers=ADMIN))
@@ -148,30 +196,186 @@ async def test_full_round_over_http(client, planted_panels):
     assert not out["passed"]
 
 
-async def test_failed_round_marks_pending_candidates(client):
+async def test_decline_and_duplicate_names(client):
+    """丢弃的不入库；同名的入库时加序号"""
+    store = m.app.state.store
+    for run_id, cid in (("r1", "r1-1"), ("r2", "r2-1"), ("r3", "r3-1")):
+        await store.create_run(run_id, 1, "", "zh", None)
+        await store.upsert_candidate({"id": cid, "run_id": run_id, "seq": 1, "name": "carry", "hypothesis": "h",
+                                      "expr": "$volume", "canonical": "$volume", "status": "observing",
+                                      "eval": {"columns": ["volume"], "horizons": {}}, "gates": [{"id": "G0"}]})
+    assert data(await client.post("/api/alpha/candidates/r1-1/decline", headers=ADMIN)) == {"id": "r1-1"}
+    assert (await store.candidate("r1-1"))["status"] == "declined"
+    assert data(await client.post("/api/alpha/candidates/r2-1/approve", headers=ADMIN))["name"] == "carry"
+    assert data(await client.post("/api/alpha/candidates/r3-1/approve", headers=ADMIN))["name"] == "carry_2"
+    factors = {f["id"]: f for f in await store.factors()}
+    assert set(factors) == {"r2-1", "r3-1"} and factors["r3-1"]["run_id"] == "r3" and factors["r3-1"]["columns"] == ["volume"]
+
+
+async def test_two_failed_rounds_in_a_row_fail_the_campaign(client):
     def boom(prompt: str) -> str:
         if "写成一条表达式" in prompt:
             raise RuntimeError("上游挂了")
         return gen_reply(prompt)
 
     m.app.state.models = (model(boom), model(review_reply))
-    run_id = data(await client.post("/api/alpha/runs", json={"k": 2}, headers=ADMIN))["id"]
-    evts = await events(client, run_id)
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 5, "k": 2}, headers=ADMIN))
+    evts = await events(client, started["runId"])
     assert evts[-1]["data"]["status"] == "failed" and any(e["event"] == "error" for e in evts)
     # 停在 proposed 的两条都标成 failed，而且推了事件，开着的页面能看到
     failed = [e["data"]["name"] for e in evts if e["event"] == "candidate" and e["data"]["status"] == "failed"]
     assert sorted(failed) == ["noise", "planted"]
-    state = data(await client.get(f"/api/alpha/runs/{run_id}", headers=ADMIN))
+    state = data(await client.get(f"/api/alpha/runs/{started['runId']}", headers=ADMIN))
     assert state["run"]["status"] == "failed"
     assert all(c["status"] == "failed" and c["reason"] == "这一轮没跑完" for c in state["candidates"])
+    # 第一轮出错照样起第二轮，第二轮也错就整个停
+    detail = await wait_campaign(client, started["id"], "failed")
+    assert detail["campaign"]["done_rounds"] == 2 and detail["campaign"]["stop_reason"] == "连续两轮出错"
+    assert "上游挂了" in detail["campaign"]["error"] and [r["status"] for r in detail["runs"]] == ["failed", "failed"]
 
 
-async def test_only_one_round_runs_at_a_time(client):
-    run_id = data(await client.post("/api/alpha/runs", json={"k": 2}, headers=ADMIN))["id"]
-    resp = await client.post("/api/alpha/runs", json={"k": 1}, headers=ADMIN)
+async def test_campaign_is_closed_when_starting_the_next_round_fails(client, monkeypatch):
+    """驱动器自己出错：campaign 标成失败，不挂在 running 上挡住新的"""
+    async def boom(app, campaign_id, run_id):
+        raise RuntimeError("库写不进去")
+
+    monkeypatch.setattr(m, "_next_round", boom)
+    m.app.state.models = (model(lambda p: "[]"), model(review_reply))
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 3, "k": 1}, headers=ADMIN))
+    detail = await wait_campaign(client, started["id"], "failed")
+    assert detail["campaign"]["stop_reason"] == "起下一轮时出错" and "库写不进去" in detail["campaign"]["error"]
+    assert data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 1}, headers=ADMIN))["id"]
+
+
+async def test_campaign_rolls_into_the_next_round_until_the_count(client):
+    # 出不了假设的模型：每轮立刻结束
+    m.app.state.models = (model(lambda p: "[]"), model(review_reply))
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 3, "k": 1, "note": "费率"},
+                                     headers=ADMIN))
+    detail = await wait_campaign(client, started["id"], "done")
+    assert detail["campaign"]["done_rounds"] == 3 and detail["campaign"]["survivors"] == 0
+    runs = detail["runs"]
+    assert len(runs) == 3 and runs[-1]["id"] == started["runId"]
+    assert all(r["status"] == "done" and r["k"] == 1 and r["note"] == "费率" and r["campaign_id"] == started["id"]
+               for r in runs)
+
+
+async def test_next_round_treats_observation_as_known(client):
+    """上一轮进了观察区的，下一轮再交一遍同一条：规范形重合按 G8 拒，截面上一模一样按 G6 拒"""
+    def same(prompt: str) -> str:
+        if "这一轮的候选与结局" in prompt:
+            return "[]"
+        if "JSON 数组" in prompt:
+            return '[{"name": "dup", "hypothesis": "成交量藏着信号"}]'
+        return '{"expr": "Mean($volume, 4)", "direction": 1, "note": "均线"}'
+
+    m.app.state.models = (model(same), model(review_reply))
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 2, "k": 1}, headers=ADMIN))
+    detail = await wait_campaign(client, started["id"], "done")
+    first, second = reversed(detail["runs"])
+    assert first["counts"] == {"observing": 1} and second["counts"] == {"rejected_gates": 1}
+    rejected = data(await client.get(f"/api/alpha/runs/{second['id']}", headers=ADMIN))["candidates"][0]
+    assert not rejected["gates"][8]["passed"] and "G8" in rejected["reason"]
+    assert not rejected["gates"][6]["passed"] and "obs:dup" in rejected["gates"][6]["note"]
+
+
+async def test_observation_reeval(client):
+    """观察区复评：老候选先问模型补方向；逐条按当前门判，过门的互相查重；结果另存，原来的状态、eval 不动，不计试验数"""
+    store = m.app.state.store
+    assert (await client.post("/api/alpha/observation/reeval", headers=ADMIN)).status_code == 409
+    await store.create_run("old", 1, "", "zh", None)
+    for seq, (name, expr, direction) in enumerate((("vol_ma", "Mean($volume, 4)", None), ("vol_ema", "EMA($volume, 8)", 1),
+                                                    ("trades", "$trades", 1)), 1):
+        await store.upsert_candidate({"id": f"old-{seq}", "run_id": "old", "seq": seq, "name": name, "hypothesis": "h",
+                                      "expr": expr, "canonical": parse(expr, ["volume", "trades"]).canonical(),
+                                      "status": "observing", "direction": direction})
+    assert data(await client.post("/api/alpha/observation/reeval", headers=ADMIN)) == {"started": True, "total": 3}
+
+    async def finished():
+        return not data(await client.get("/api/alpha/observation", headers=ADMIN))["reeval"]["running"]
+
+    await wait_until(finished, 60)
+    out = data(await client.get("/api/alpha/observation", headers=ADMIN))
+    assert out["reeval"]["done"] == 3 and out["reeval"]["error"] is None
+    items = {c["name"]: c for c in out["items"]}
+    assert all(c["status"] == "observing" and "brief" not in c for c in items.values())
+    re = {name: c["reeval"] for name, c in items.items()}
+    # 老候选没声明方向：问了模型补上；别的用自己声明的
+    assert (re["vol_ma"]["asked"], re["vol_ma"]["direction"]) == (True, 1) and re["vol_ema"]["asked"] is False
+    assert [g["id"] for g in re["vol_ma"]["gates"]] == [f"G{i}" for i in range(11)]
+    # 两条成交量均线截面上几乎一样：只留一条，另一条按同批 G6 拒；成交笔数是噪音，单条就过不了
+    kept = [n for n in ("vol_ma", "vol_ema") if re[n]["passed"]]
+    assert len(kept) == 1
+    other = re[{"vol_ma": "vol_ema", "vol_ema": "vol_ma"}[kept[0]]]
+    assert other["reason"].startswith(f"G6 与同批 {kept[0]} 的截面") and not other["gates"][6]["passed"]
+    assert re["trades"]["passed"] is False
+    # 两两相关给人看：(名字, |ρ|) 的列表；数字都是当前评估器的，带资金费一栏
+    peers = dict(re["vol_ma"]["peers"])
+    assert peers["vol_ema"] > 0.9 and peers["trades"] < 0.3
+    assert sorted(n for n, _ in re["trades"]["peers"]) == ["vol_ema", "vol_ma"]
+    assert re["vol_ma"]["brief"]["horizons"]["12h"]["fundingBps"] == 0 and re["vol_ma"]["brief"]["holdout"]["since"] > 0
+    assert await store.trials() == 0 and (await store.candidate("old-1"))["direction"] is None
+    # 复评过的入库，库里存的是复评那份
+    kept_id = next(c["id"] for c in out["items"] if c["name"] == kept[0])
+    assert data(await client.post(f"/api/alpha/candidates/{kept_id}/approve", headers=ADMIN))["name"] == kept[0]
+    factor = await store.factor(kept_id)
+    assert len(factor["gates"]) == 11 and factor["eval"]["horizons"]["48"]["leg"]["fundingBps"] == 0
+
+
+async def test_stop_after_this_round_and_only_one_campaign(client):
+    gate = threading.Event()
+
+    def slow(prompt: str) -> str:
+        gate.wait(10)
+        return "[]"
+
+    m.app.state.models = (model(slow), model(review_reply))
+    started = data(await client.post("/api/alpha/campaigns", json={"rounds": 5}, headers=ADMIN))
+    # 同时只有一个 campaign；跑着的时候不刷新数据、不跑参照集
+    assert (await client.post("/api/alpha/campaigns", json={}, headers=ADMIN)).status_code == 409
+    assert (await client.post("/api/alpha/data/refresh", headers=ADMIN)).status_code == 409
+    assert (await client.post("/api/alpha/reference/run", json={}, headers=ADMIN)).status_code == 409
+    assert data(await client.post(f"/api/alpha/campaigns/{started['id']}/stop", headers=ADMIN)) == {"stopping": True}
+    assert (await campaign_of(client, started["id"]))["campaign"]["status"] == "stopping"
+    resp = await client.post(f"/api/alpha/campaigns/{started['id']}/stop", headers=ADMIN)
     assert resp.status_code == 409
-    await events(client, run_id)  # 等这一轮停在审批
-    assert data(await client.post("/api/alpha/runs", json={"k": 1}, headers=ADMIN))["id"] != run_id
+    gate.set()
+    # 这一轮跑完就停
+    detail = await wait_campaign(client, started["id"], "stopped")
+    assert detail["campaign"]["done_rounds"] == 1 and detail["campaign"]["stop_reason"] == "手动停止"
+    assert len(detail["runs"]) == 1
+    assert (await client.post("/api/alpha/campaigns/nope/stop", headers=ADMIN)).status_code == 404
+    assert (await client.get("/api/alpha/campaigns/nope", headers=ADMIN)).status_code == 404
+    # 停了就能开新的
+    assert data(await client.post("/api/alpha/campaigns", json={"rounds": 1}, headers=ADMIN))["id"] != started["id"]
+
+
+async def test_refresh_and_reference_block_campaigns_and_each_other(client):
+    jobs = m.app.state.runs.jobs
+    # 刷新中开不了 campaign：刷完会换数据和切点
+    jobs["refresh"]["running"] = True
+    resp = await client.post("/api/alpha/campaigns", json={"rounds": 1}, headers=ADMIN)
+    assert resp.status_code == 409 and "刷新" in resp.json()["msg"]
+    jobs["refresh"]["running"] = False
+    # 参照集在跑：campaign 开不了（抢内存），刷新也不开（它可能在读上一版面板）
+    jobs["reference"]["running"] = True
+    for path in ("/api/alpha/campaigns", "/api/alpha/data/refresh"):
+        resp = await client.post(path, json={"rounds": 1}, headers=ADMIN)
+        assert resp.status_code == 409 and "参照集" in resp.json()["msg"]
+    jobs["reference"]["running"] = False
+    assert data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"] == []
+
+
+def test_stop_reasons():
+    campaign = {"rounds": 10, "max_survivors": 3, "deadline_ms": None, "status": "running"}
+    ok, bad = {"status": "done"}, {"status": "failed"}
+    assert m._stop_reason(campaign, [ok, bad], 2, 0) is None
+    assert m._stop_reason(campaign, [bad, bad], 2, 0) == ("failed", "连续两轮出错")
+    assert m._stop_reason(campaign, [bad, ok], 10, 0) == ("done", "跑满 10 轮")
+    assert m._stop_reason(campaign, [ok], 1, 3) == ("done", "幸存者到了 3 条")
+    assert m._stop_reason({**campaign, "deadline_ms": 1}, [ok], 1, 0) == ("done", "到时间了")
+    assert m._stop_reason({**campaign, "status": "stopping"}, [ok], 1, 0) == ("stopped", "手动停止")
+    assert m._stop_reason({**campaign, "max_survivors": None, "deadline_ms": 2 ** 50}, [ok], 1, 5) is None
 
 
 # ========== 其它接口 ==========
@@ -179,28 +383,83 @@ async def test_only_one_round_runs_at_a_time(client):
 
 async def test_eval_endpoint(client):
     out = data(await client.post("/api/alpha/eval", json={"expr": "$volume"}, headers=ADMIN))
-    assert out["passed"] is True and len(out["gates"]) == 10 and out["canonical"] == "$volume"
+    assert out["passed"] is True and len(out["gates"]) == 11 and out["canonical"] == "$volume"
+    # 测试的参照网格里没有老效应：回归掉 0 条，去老效应后剩的就是它自己的 IC
+    assert out["brief"]["neutral"]["against"] == 0 and out["brief"]["neutral"]["retained"] == pytest.approx(1.0)
+    # 库是空的：组合净 Sharpe 从 0 往上算
+    assert out["brief"]["gainSharpe"]["base"] == 0 and out["brief"]["gainSharpe"]["gain"] > 0
+    # 手填的没有假设，方向不判
+    assert out["gates"][10]["id"] == "G10" and out["gates"][10]["passed"] and out["gates"][10]["note"] == "没有声明方向，不判"
     assert out["brief"]["redundancy"]["with"] == "noise4" and out["brief"]["redundancy"]["maxAbs"] < 0.2
     assert out["gates"][9]["id"] == "G9" and out["brief"]["gain"]["12h"] > 0.3
     # 手填的也带 holdout：门看搜索段，holdout 另算
     assert out["brief"]["holdout"]["horizons"]["12h"]["meanIc"] > 0 and out["eval"]["holdout"]["since"] == out["brief"]["holdout"]["since"]
     resp = await client.post("/api/alpha/eval", json={"expr": "Mean(close, 5)"}, headers=ADMIN)
     assert resp.status_code == 400 and "列要写成" in resp.json()["msg"]
-    assert (await client.post("/api/alpha/runs", json={"k": 99}, headers=ADMIN)).status_code == 422
+    for body in ({"k": 99}, {"rounds": 51}, {"rounds": 0}, {"deadlineMinutes": 0}):
+        assert (await client.post("/api/alpha/campaigns", json=body, headers=ADMIN)).status_code == 422
 
 
 async def test_auth_rules(client):
+    # 公开的三个：数据状态、参照集、概览数字
+    assert data(await client.get("/api/alpha/data/status"))["loaded"]
+    assert data(await client.get("/api/alpha/reference", headers={"satoken": "user"}))["items"] == []
+    assert data(await client.get("/api/alpha/overview")) == {"runs": [], "trials": 0, "factors": 0, "observing": 0}
+    # 成果的内容不公开：没 token 是 401（HTTP 200 + code 401），不是管理员是 403
     resp = await client.get("/api/alpha/library")
     assert resp.status_code == 200 and resp.json()["code"] == 401
-    resp = await client.get("/api/alpha/library", headers={"satoken": "user"})
+    resp = await client.get("/api/alpha/runs", headers={"satoken": "user"})
     assert resp.status_code == 403 and resp.json()["code"] == 403
+    # 动的接口同样
+    assert (await client.post("/api/alpha/data/refresh")).json()["code"] == 401
+    assert (await client.post("/api/alpha/data/refresh", headers={"satoken": "user"})).status_code == 403
+    # /me 给页面判断手里的 token 是不是管理员
+    me = data(await client.get("/api/alpha/me", headers=ADMIN))
+    assert me["admin"] is True and me["lang"] in ("zh", "en")
+    assert (await client.get("/api/alpha/me", headers={"satoken": "user"})).status_code == 403
+    assert (await client.get("/api/alpha/me")).json()["code"] == 401
+
+
+async def test_model_config(client, monkeypatch):
+    app = m.app
+    assert data(await client.get("/api/alpha/models", headers=ADMIN)) == {"gen": None, "review": None}
+    assert (await client.get("/api/alpha/models", headers={"satoken": "user"})).status_code == 403
+    body = {"protocol": "Anthropic", "baseUrl": "https://up.test/", "model": "claude", "effort": "high", "apiKey": ""}
+    # 第一次要带 key；角色、协议都要认得
+    assert (await client.put("/api/alpha/models/gen", json=body, headers=ADMIN)).json()["code"] == 400
+    assert (await client.put("/api/alpha/models/judge", json=body, headers=ADMIN)).status_code == 404
+    assert (await client.put("/api/alpha/models/gen", json={**body, "protocol": "azure", "apiKey": "k"}, headers=ADMIN)).status_code == 400
+    app.state.models = ("old", "pair")
+    view = data(await client.put("/api/alpha/models/gen", json={**body, "apiKey": "sk-abcd1234"}, headers=ADMIN))
+    # key 只回尾 4 位；协议归小写；存过就把建好的模型丢掉
+    assert view["apiKeyTail"] == "1234" and view["protocol"] == "anthropic" and view["model"] == "claude"
+    assert "sk-abcd1234" not in json.dumps(view) and app.state.models is None
+    # 再存留空 key 就沿用
+    view = data(await client.put("/api/alpha/models/gen", json={**body, "model": "claude-2"}, headers=ADMIN))
+    assert view["apiKeyTail"] == "1234" and view["model"] == "claude-2"
+    assert (await app.state.store.models())["gen"]["api_key"] == "sk-abcd1234"
+    # 只配了一个角色开不了 campaign（fixture 把 build_models 换成了假的，这里换回真的）
+    monkeypatch.setattr(m, "build_models", REAL_BUILD_MODELS)
+    resp = await client.post("/api/alpha/campaigns", json={"k": 1}, headers=ADMIN)
+    assert resp.status_code == 400 and "两个角色" in resp.json()["msg"]
+    assert data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"] == []
+    # 测试连通：按传来的配置建模型发一句话
+    monkeypatch.setattr(m, "build_chat_model", lambda spec, role: model(lambda p: f"{role}:{spec.model}:ok"))
+    got = data(await client.post("/api/alpha/models/gen/test", json={**body, "model": "probe"}, headers=ADMIN))
+    assert got["reply"] == "gen:probe:ok" and got["ms"] >= 0
 
 
 async def test_data_status_and_refresh(client):
     status = data(await client.get("/api/alpha/data/status", headers=ADMIN))
     assert status["loaded"] and set(status["symbols"]) == {"AAA", "BBB", "CCC"} and status["facts"]["rows"] == 6000
     # 6000 根从 2025-01-01 起共 62.5 天，锁最近 10 天
-    assert status["facts"]["holdoutFrom"] == "2025-02-22"
+    assert status["facts"]["holdoutFrom"] == "2025-02-22" and status["facts"]["costTiers"] == [5.0, 8.0, 12.0]
+    pool = status["pool"]
+    assert pool["symbols"] == 24 and pool["months"] == {"2025-01": 24, "2025-02": 24, "2025-03": 24}
+    assert set(pool["status"]) == set(POOL_SYMBOLS)
+    # 装进评估器的骨架：24 个币 × 250 个 6h 网格点；参照网格是现成的
+    assert pool["loaded"] == {"symbols": 24, "months": 3, "gridPoints": 250, "rows": 6000}
+    assert pool["grid"]["ready"] is True and pool["grid"]["running"] is False
     before = status["loadedAt"]
     assert data(await client.post("/api/alpha/data/refresh", headers=ADMIN)) == {"started": True}
 
@@ -224,13 +483,37 @@ async def test_reference_run(client):
     assert out["items"][0]["brief"]["gates"][0]["id"] == "G0"
 
 
-async def test_restart_marks_running_runs_failed(prepared):
+async def test_missing_reference_grid_is_built_in_the_background(prepared, tmp_path):
+    (tmp_path / "panel" / "reference_grid.parquet").unlink()
     async with m.lifespan(prepared):
-        await prepared.state.store.create_run("zz", 1, "", "zh")
-        await prepared.state.store.upsert_candidate({"id": "zz-1", "run_id": "zz", "seq": 1, "name": "x",
-                                                     "hypothesis": "h", "status": "evaluating"})
+        assert prepared.state.data.reference_grid is None
+
+        async def ready():
+            return prepared.state.data.reference_grid is not None and not prepared.state.runs.jobs["grid"]["running"]
+
+        await wait_until(ready)
+        job = prepared.state.runs.jobs["grid"]
+        assert job["done"] == job["total"] == 24 and job["error"] is None
+        assert prepared.state.data.reference_grid.names == ("noise4",)
+    assert (tmp_path / "panel" / "reference_grid.parquet").exists()
+
+
+async def test_restart_marks_running_runs_failed_and_stops_the_campaign(prepared):
     async with m.lifespan(prepared):
-        run = await prepared.state.store.run("zz")
+        store = prepared.state.store
+        await store.create_campaign("cc", 10, 1, "", "zh", None, None)
+        await store.create_run("zz", 1, "", "zh", "cc")
+        await store.upsert_candidate({"id": "zz-1", "run_id": "zz", "seq": 1, "name": "x", "hypothesis": "h",
+                                      "status": "rewrite"})
+    async with m.lifespan(prepared):
+        store = prepared.state.store
+        run = await store.run("zz")
         assert run["status"] == "failed" and "重启" in run["error"]
-        cand = (await prepared.state.store.candidates("zz"))[0]
+        cand = (await store.candidates("zz"))[0]
         assert cand["status"] == "failed" and "重启" in cand["reason"]
+        campaign = await store.campaign("cc")
+        assert campaign["status"] == "stopped" and campaign["stop_reason"] == "服务重启"
+        # 重启不碰参照网格：还是现成的，不在后台重算
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=prepared), base_url="http://t") as c:
+            grid = data(await c.get("/api/alpha/data/status"))["pool"]["grid"]
+        assert grid["ready"] is True and grid["running"] is False

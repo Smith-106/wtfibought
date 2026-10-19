@@ -20,9 +20,14 @@ def model(reply) -> ScriptedModel:
     return ScriptedModel(messages=iter(()), reply=reply)
 
 
+LESSONS = [{"kind": "avoid", "text": "成交笔数没有截面信号"}, {"kind": "try", "text": "成交量平滑后更稳"}]
+
+
 def gen_reply(prompt: str) -> str:
-    """planted：先少写窗口、再写 $volume 被评审打回、最后 Mean($volume, 4)；noise：$trades；
-    twin：planted 换个结构（EMA），clone：planted 换个窗口（规范形相同）；k ≥ 3 才轮到后两条"""
+    """planted：先少写窗口、再写 $volume 被评审打回、最后 Mean($volume, 4)；noise：$trades，门没过重写成成交笔数的和，都是噪音；
+    twin：planted 换个结构（EMA），clone：planted 换个窗口（规范形相同）；k ≥ 3 才轮到后两条；复盘回两条经验"""
+    if "这一轮的候选与结局" in prompt:
+        return json.dumps(LESSONS, ensure_ascii=False)
     if "JSON 数组" in prompt:
         return "好的：\n```json\n" + json.dumps([
             {"name": "planted", "family": "量能", "hypothesis": "成交量列藏着信号"},
@@ -32,16 +37,23 @@ def gen_reply(prompt: str) -> str:
         ], ensure_ascii=False) + "\n```"
     if "写成一条表达式" in prompt:
         if "[noise]" in prompt:
-            return '{"expr": "$trades", "note": "直接用"}'
+            if "上一版表达式：$trades（" in prompt:
+                return '{"expr": "Sum($trades, 4)", "direction": 1, "note": "加总一下"}'
+            if "上一版表达式：Sum($trades, 4)（" in prompt:
+                return '{"expr": "Sum($trades, 16)", "direction": 1, "note": "窗口拉长"}'
+            return '{"expr": "$trades", "direction": 1, "note": "直接用"}'
         if "[twin]" in prompt:
-            return '{"expr": "EMA($volume, 8)", "note": "指数平滑"}'
+            return '{"expr": "EMA($volume, 8)", "direction": 1, "note": "指数平滑"}'
         if "[clone]" in prompt:
-            return '{"expr": "Mean($volume, 16)", "note": "换个窗口"}'
+            return '{"expr": "Mean($volume, 16)", "direction": 1, "note": "换个窗口"}'
         if "用 4 根均值" in prompt:
-            return '{"expr": "Mean($volume, 4)", "note": "平滑后的成交量"}'
+            return '{"expr": "Mean($volume, 4)", "direction": 1, "note": "平滑后的成交量"}'
         if "表达式不合法" in prompt:
-            return '{"expr": "$volume", "note": "直接用成交量"}'
-        return '{"expr": "Mean($volume)", "note": "少写了窗口"}'
+            return '{"expr": "$volume", "direction": 1, "note": "直接用成交量"}'
+        return '{"expr": "Mean($volume)", "direction": 1, "note": "少写了窗口"}'
+    # 复评老候选补方向
+    if "这个表达式的值越大" in prompt:
+        return '{"direction": 1}'
     return "？"
 
 

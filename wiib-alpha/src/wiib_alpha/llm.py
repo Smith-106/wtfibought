@@ -1,4 +1,4 @@
-"""按环境变量的角色配置建 chat model。
+"""按角色的模型配置建 chat model。
 
 baseUrl 约定与 wiib-gen / Java 侧一致：用户填的不带版本后缀，交给 SDK 的补 /v1，自己拼路径的把后缀剥掉。
 """
@@ -29,7 +29,7 @@ class LlmError(RuntimeError):
 
 def build_chat_model(spec: ModelSpec, role: str) -> BaseChatModel:
     if not spec.model.strip() or not spec.api_key.strip():
-        raise LlmError(f"{role} 角色的模型或 API key 没配（ALPHA_{role.upper()}_MODEL / _API_KEY）")
+        raise LlmError(f"{role} 角色的模型名或 API key 是空的")
     protocol = spec.protocol.strip().lower() or "openai"
     base_url = spec.base_url.strip()
     effort = _effort(spec.effort)
@@ -60,19 +60,6 @@ def build_chat_model(spec: ModelSpec, role: str) -> BaseChatModel:
         )
 
     raise LlmError(f"{role} 角色的协议 {protocol} 不支持")
-
-
-def same_model(a: ModelSpec, b: ModelSpec) -> bool:
-    """协议、地址、模型名都一样就是同一个模型"""
-    return _identity(a) == _identity(b)
-
-
-def _identity(spec: ModelSpec) -> tuple[str, str, str]:
-    """地址带不带版本后缀算同一个，openai 与 responses 算同一个协议，模型名不分大小写"""
-    protocol = spec.protocol.strip().lower() or "openai"
-    if protocol == "responses":
-        protocol = "openai"
-    return (protocol, _strip(_strip(spec.base_url, "/v1"), "/v1beta"), spec.model.strip().lower())
 
 
 def _effort(value: str) -> str | None:

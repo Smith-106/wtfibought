@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "因子挖掘 agent：LLM 提假设写 DSL，代码硬门判真假"
 requires-python = ">=3.13"
 dependencies = [
+    "aiosqlite>=0.22.1",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "langchain-anthropic>=1.7.2",
@@ -11,7 +12,6 @@ dependencies = [
     "langchain-google-genai>=4.4.0",
     "langchain-openai>=1.6.2",
     "langgraph>=1.2.11",
-    "langgraph-checkpoint-sqlite>=3.1.1",
     "numpy>=2.3",
     "pandas>=2.3",
     "psycopg[binary]>=3.3.6",
