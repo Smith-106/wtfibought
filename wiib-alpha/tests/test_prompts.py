@@ -22,6 +22,7 @@ def test_system_prompt_lists_every_column_and_operator():
     for name in ops.OPERATORS:
         assert f"- {name}：" in text
     assert "2026-04-27" in text and "中文" in text
+    assert "强平三列只有产品币有数" in text and "截面因子用不了" in text and "单独排序没有意义" in text
     assert "2026-06-22 起是锁定的 holdout" in text and "单边 5 / 8 / 12 bps" in text
     assert "前 80 个币" in text and "共 481 个" in text and "BTCUSDT, ETHUSDT" in text
     # 已知效应带公式列出来；去老效应是标签不是门
@@ -38,6 +39,8 @@ def test_propose_and_implement_messages():
                                    "只看资金费率", "zh")
     assert "mom：$ret" in text and "[rejected_gates] old" in text and "只看资金费率" in text and "提出 3 条" in text
     assert "- [try] 新的\n- [avoid] 旧的" in text
+    # 可选方向里是截面上做得了的：没有强平（只有产品币有数）和时段（同一时刻所有币一样）
+    assert "溢价 / 基差" in text and "强平" not in text and "时段" not in text
     assert "经验（最新在前）：\n（还没有）" in prompts.propose_message(1, [], [], [], "", "zh")
     cand = {"name": "carry", "hypothesis": "费率高做空"}
     plain = prompts.implement_message(cand, None)
@@ -56,7 +59,8 @@ def test_propose_and_implement_messages():
 def evaluated(gates: list[dict]) -> dict:
     """落过库的样子：档的键是字符串，NaN 成了 None"""
     return {"expr": "Mean($ret, 4)", "direction": -1, "gates": gates, "eval": {
-        "horizons": {"48": {"ic": {"mean": 0.0123, "icir": 0.25, "monotonic": {"rho": -0.5, "spread": 0.00031}},
+        "horizons": {"48": {"ic": {"mean": 0.0123, "icir": 0.25,
+                                   "monotonic": {"rho": 0.5, "spread": 0.00031, "spreadT": 2.5, "steps": [2.4, 0.3]}},
                             "leg": {"turnover": 0.214, "fundingBps": -1.26, "breakEvenBps": 3.24}}},
         "redundancy": {"maxAbs": 0.42, "with": "MA48", "ready": True},
         "neutral": {"mean": 0.0041, "icir": 0.5, "months": 36, "segments": [], "against": 10}}}
@@ -79,7 +83,8 @@ def test_gate_feedback_lists_failed_gates_and_the_numbers():
     assert text.startswith("上一版表达式：Mean($ret, 4)（声明的方向 -1，因子值越大越弱）\n"
                            "没过的门：\n- G2 IC：ICIR 太低\n- G5 可交易：净收益为负\n")
     assert "G1" not in text and "主档（12 小时）" in text
-    for part in ("IC 均值 0.0123", "ICIR 0.25", "ρ -0.50", "每期 3.1 bps", "换手 0.21", "每期资金费 -1.3 bps",
+    for part in ("IC 均值 0.0123", "ICIR 0.25", "截尾后顶组减底组每期 3.1 bps、t 2.5",
+                 "三组形状：只有弱的一头有效（中、强两组分不开）", "换手 0.21", "每期资金费 -1.3 bps",
                  "盈亏平衡单边成本 3.2 bps", "与 MA48 的截面 |ρ| 0.42", "这些数字说明了什么由你判断",
                  "回归掉 10 条老效应后 IC 0.0041（剩原来的 0.33），t 3.0"):
         assert part in text, part
@@ -115,6 +120,8 @@ def test_eval_brief_rounds_and_maps_nan():
     assert brief["horizons"]["12h"]["meanIc"] == 0.1235 and brief["horizons"]["12h"]["icir"] is None
     assert brief["horizons"]["12h"]["segments"] == [0.1, None]
     assert brief["horizons"]["12h"]["monotonic"] == 0.9 and brief["horizons"]["12h"]["spread"] == 0.0123
+    # 之前落库的老结果没有顶减底的 t 和形状
+    assert brief["horizons"]["12h"]["spreadT"] is None and brief["horizons"]["12h"]["shape"] is None
     assert brief["horizons"]["12h"]["breakEvenBps"] == 7.1235 and brief["horizons"]["12h"]["turnover"] is None
     assert brief["redundancy"] == {"maxAbs": 0.2, "with": "MA48", "ready": True}
     assert brief["gates"] == [{"id": "G0", "passed": True, "note": "ok"}]

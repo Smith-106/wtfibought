@@ -32,7 +32,7 @@
   },
   "overview": {
     "trials": "Trials so far",
-    "trialsHint": "{{fp}} expected false positives at the 0.05 bar",
+    "trialsHint": "Each evaluated expression version counts once, rewritten ones included",
     "factors": "Factors in library",
     "observing": "In observation",
     "candidates": "Candidates by status",
@@ -259,7 +259,16 @@
     "icir": "ICIR",
     "months": "Months",
     "monotonic": "Group monotonicity",
-    "spread": "Top minus bottom",
+    "spread": "Top minus bottom (trimmed)",
+    "shape": "Three-group shape",
+    "shapes": {
+      "monotone": "Monotone",
+      "weakEnd": "Weak end only",
+      "strongEnd": "Strong end only",
+      "flat": "Only the ends separate",
+      "midHigh": "Middle beats strong end",
+      "midLow": "Middle below weak end"
+    },
     "sameSign": "Same-sign symbols",
     "segments": "Four-segment IC",
     "net": "Net return",
@@ -281,6 +290,7 @@
     "complexity": "Complexity",
     "complexityValue": "{{nodes}} nodes, {{windows}} windows, {{constants}} constants, {{cross}} cross-sectional",
     "holdout": "Holdout (from {{from}})",
+    "unseen": "Never seen by it (from its discovery round's cut {{from}})",
     "samples": "Valid moments",
     "timeseries": "Product time-series report",
     "timeseriesBySymbol": "Primary IC by symbol"

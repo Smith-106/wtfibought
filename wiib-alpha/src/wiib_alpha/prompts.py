@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from . import ops, reference
 from .data.panel import FEATURE_COLUMNS
 from .dsl import MAX_WINDOW
+from .eval.cs_ic import SHAPES, shape
 from .eval.gates import fmt
 
 _LANG_NAME = {"zh": "中文", "en": "英文"}
@@ -41,18 +42,19 @@ COLUMN_DOCS = {
     "ret": "本根 bar 的对数收益 log(close/上一根 close)",
     "funding_rate": "最近一次已结算的资金费率，8 小时结算一次，期间不变",
     "btc_close": "同一时刻 BTC 收盘价，BTC 自己的面板上是空的", "btc_ret": "同一时刻 BTC 的对数收益，BTC 自己的面板上是空的",
-    "liq_long": "本根 bar 内多头被强平的名义额（USDT）", "liq_short": "本根 bar 内空头被强平的名义额（USDT）",
-    "liq_count": "本根 bar 内强平笔数",
+    "liq_long": "本根 bar 内多头被强平的名义额（USDT），只有产品币有数",
+    "liq_short": "本根 bar 内空头被强平的名义额（USDT），只有产品币有数", "liq_count": "本根 bar 内强平笔数，只有产品币有数",
     "premium": "永续价相对指数价的溢价率，本根 bar 收盘值，正数是永续更贵；资金费率就是由它结算出来的",
     "oi": "全市场持仓量（币），约 5 分钟一条取收盘前最近值", "oi_value": "全市场持仓名义（USDT）",
     "ls_top_acct": "大户多空账户数之比", "ls_top_pos": "大户多空持仓量之比", "ls_acct": "全体账户多空数之比",
     "taker_ls_vol": "taker 买量与卖量之比",
-    "hour": "bar 开始时刻的 UTC 小时 0~23",
+    "hour": "bar 开始时刻的 UTC 小时 0~23；同一时刻所有币都一样，只能和别的列交互着用",
 }
 
 WINDOW_TABLE = "4=1h、16=4h、48=12h、96=24h、192=48h、672=7d"
 
-FAMILIES = ["动量", "反转", "突破", "波动", "量能", "流动性", "资金费率 carry", "强平失衡", "taker 买卖失衡", "时段效应"]
+FAMILIES = ["动量", "反转", "突破", "波动", "量能", "流动性", "资金费率 carry", "溢价 / 基差", "持仓变化", "多空比",
+            "taker 买卖失衡"]
 
 
 # ========== 生成角色 ==========
@@ -63,7 +65,9 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
     operators = "\n".join(f"- {name}：{OPERATOR_DOCS.get(name, '')}" for name in ops.OPERATORS)
     known = "\n".join(f"- {name}：{text}（{what}）"
                       for name, (text, what) in {**reference.BASELINES, **reference.KNOWN_EFFECTS}.items())
-    liq = f"强平三列从 {facts['liqFrom']} 起才有数" if facts.get("liqFrom") else "强平三列暂时没有数据"
+    # 强平桶只给产品币装配（refresh 里 s in product），池里别的币全是空的
+    liq = (f"强平三列只有产品币有数、从 {facts['liqFrom']} 起，池里别的币全是空的，截面因子用不了" if facts.get("liqFrom")
+           else "强平三列暂时没有数据")
     tiers = " / ".join(f"{c:g}" for c in facts["costTiers"])
     return f"""你在给一套加密永续合约的因子挖掘系统提假设、写因子表达式。
 
@@ -81,7 +85,7 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 截面算子（CsRank / CsDemean / CsZ）在同一时刻跨池内币算，不看别的时刻；每条表达式最多 2 个。评估本来就按截面排序，最外层套 CsRank 不改变 IC；它们的用处是把各币量纲不同的量先拉到可比的尺度再做运算或滚动，比如先截面标准化再和别的量相减。
 
 评估是代码硬门，不是人看：
-- G0 前视自检；G1 样本量；G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组后各组收益严格按组序排、和 IC 同向；G3 四段至少三段同号，且最近一段必须同号；G4 三档同号；G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每 12 小时调一次，按币的流动性分档扣单边 {tiers} bps 成本，持有期间按真实结算记录付或收资金费：多头付正费率、空头收）扣完能赚，且截面排列检验显著；G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6、截面算子 ≤ 2（解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进库里因子的组合之后，组合多空腿扣成本和资金费的净 Sharpe 要提升、主档样本外 IC 不能降；G10 主档截面 IC 的符号要和你声明的方向一样。另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
+- G0 前视自检；G1 样本量；G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组、每期收益两头各截掉 5% 后，顶组减底组每期之差和 IC 同向、t ≥ 2（三组的形状只报不判，只有一头有效也行）；G3 四段至少三段同号，且最近一段必须同号；G4 三档同号；G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每 12 小时调一次，按币的流动性分档扣单边 {tiers} bps 成本，持有期间按真实结算记录付或收资金费：多头付正费率、空头收）扣完能赚，且截面排列检验显著；G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6、截面算子 ≤ 2（解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进库里因子的组合之后，组合多空腿扣成本和资金费的净 Sharpe 要提升、主档样本外 IC 不能降；G10 主档截面 IC 的符号要和你声明的方向一样。另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
 - 写表达式时同时声明方向：按假设，因子值越大未来 12 小时相对越强填 1，越弱填 -1。方向由假设决定；把表达式取负、同时把方向翻过来，G10 的结果不变。IC 和假设反号，说明数据不支持这条假设。
 - 已知效应（名字：公式（是什么））；"去老效应"回归掉的是其中 10 条老效应，G6 除了这些还比 Alpha158 的一百多条量价因子：
 {known}
@@ -89,7 +93,7 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 - 之前几轮复盘写下的经验（lessons）会放在出题提示词里。
 - 截面上比的是币与币：价格、成交量、持仓量的绝对水平在币之间不可比，直接排序排出来的是"哪个币大"。用收益、比值、z-score、秩这类各币可比的量。
 - 换手越高成本越高：12 小时持有期上，变化很快的短窗信号要扣更多成本。
-- 资金费率 8 小时才变一次，对它做短窗差分几乎全是 0。强平列历史短，只用它的因子多半过不了样本量门。
+- 资金费率 8 小时才变一次，对它做短窗差分几乎全是 0。强平列只有产品币有数，截面上用不了；$hour 同一时刻所有币都一样，单独排序没有意义。
 - 参数越少越好，先有一句能说清的经济理由，再写公式。
 
 假设与说明用{_LANG_NAME[lang]}写，因子名用短英文 slug。"""
@@ -163,10 +167,11 @@ def revise_feedback(cand: Mapping[str, Any], review: Mapping[str, Any]) -> str:
 
 
 def key_numbers(ev: Mapping[str, Any], primary: int) -> str:
-    """主档 IC、ICIR、单调性、顶减底、换手、资金费、盈亏平衡成本、冗余、去老效应后的 IC，一行；落过库的键是字符串，先归一"""
+    """主档 IC、ICIR、顶减底、三组形状、换手、资金费、盈亏平衡成本、冗余、去老效应后的 IC，一行；落过库的键是字符串，先归一"""
     h = {int(k): v for k, v in ev["horizons"].items()}[primary]
     ic, leg, red, pure = h["ic"], h["leg"], ev["redundancy"], neutral_brief(ev, primary)
-    spread = ic["monotonic"]["spread"]
+    mono = ic["monotonic"]
+    spread = mono["spread"]
     if not red["ready"]:
         redundancy = "参照网格还没算好"
     elif red["with"]:
@@ -175,8 +180,8 @@ def key_numbers(ev: Mapping[str, Any], primary: int) -> str:
         redundancy = "没有参照因子"
     return "、".join([
         f"月度截面 IC 均值 {fmt(ic['mean'])}", f"ICIR {fmt(ic['icir'], 2)}",
-        f"三组单调性 ρ {fmt(ic['monotonic']['rho'], 2)}",
-        f"顶组减底组每期 {fmt(None if spread is None else spread * 1e4, 1)} bps",
+        f"截尾后顶组减底组每期 {fmt(None if spread is None else spread * 1e4, 1)} bps、t {fmt(mono['spreadT'], 1)}",
+        f"三组形状：{SHAPES.get(shape(mono, ic['mean']), '算不出')}",
         f"每期换手 {fmt(leg.get('turnover'), 2)}（两条腿全换是 1）",
         f"多空腿每期资金费 {fmt(leg.get('fundingBps'), 1)} bps（正是收、负是付，已算进收益）",
         f"盈亏平衡单边成本 {fmt(leg.get('breakEvenBps'), 1)} bps", f"冗余：{redundancy}",
@@ -209,7 +214,7 @@ _OUTCOMES = {"passed": "过门、过评审、过同批 BH，进观察区等人�
 
 
 def system_reflect(lang: str) -> str:
-    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、分组单调性、四段、三档、扣成本和资金费的多空腿、冗余、复杂度、对库的增量、IC 方向与假设一致），另报回归掉已知效应后还剩多少 IC，门没过的同一假设最多重写两版，过门的再由评审看一遍。
+    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、截尾后顶组减底组、四段、三档、扣成本和资金费的多空腿、冗余、复杂度、对库的增量、IC 方向与假设一致），另报回归掉已知效应后还剩多少 IC，门没过的同一假设最多重写两版，过门的再由评审看一遍。
 你看这一轮全部候选的假设、最终表达式、结局和数字，写下几条经验。它们会原样放进之后几轮的出题提示词里，给出题的人看。
 数字全部来自 holdout 之前的搜索段。经验用{_LANG_NAME[lang]}写，一条一句话，说具体的。"""
 
@@ -311,19 +316,23 @@ def eval_brief(ev: Mapping[str, Any], gates: Sequence[Mapping[str, Any]], primar
             out["gainSharpe"] = {k: _r(v) for k, v in ev["gain"]["sharpe"].items()}
     if ev.get("holdout"):
         out["holdout"] = holdout_brief(ev["holdout"])
+    # 复评时发现它的那一轮切点比现在早才有：从那个切点起它都没见过
+    if ev.get("unseen"):
+        out["unseen"] = holdout_brief(ev["unseen"])
     if ev.get("timeseries"):
         out["timeseries"] = timeseries_brief(ev["timeseries"], primary)
     return out
 
 
 def horizons_brief(horizons: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
-    """三档的截面 IC、单调性与多空腿，单因子和组合共用"""
+    """三档的截面 IC、单调性与多空腿，单因子和组合共用；顶减底的 t 和三组形状是后来加的，之前落库的结果里没有"""
     out = {}
     for bars, h in horizons.items():
-        ic, leg = h["ic"], h["leg"]
+        ic, leg, mono = h["ic"], h["leg"], h["ic"]["monotonic"]
         out[_hours(bars)] = {
             "meanIc": _r(ic["mean"]), "icir": _r(ic["icir"]), "months": ic["months"],
-            "monotonic": _r(ic["monotonic"]["rho"]), "spread": _r(ic["monotonic"]["spread"]),
+            "monotonic": _r(mono["rho"]), "spread": _r(mono["spread"]), "spreadT": _r(mono.get("spreadT")),
+            "shape": shape(mono, ic["mean"]),
             "segments": [_r(v) for v in ic["segments"]],
             "netReturn": _r(leg.get("netReturn")), "permPct": _r(leg.get("permPct")),
             "hitRate": _r(leg.get("hitRate")), "exposure": _r(leg.get("exposure")), "turnover": _r(leg.get("turnover")),

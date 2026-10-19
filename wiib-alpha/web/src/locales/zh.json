@@ -32,7 +32,7 @@
   },
   "overview": {
     "trials": "累计试验",
-    "trialsHint": "按 0.05 门槛预期假阳 {{fp}} 条",
+    "trialsHint": "每评估一版表达式算一次，重写掉的旧版也算",
     "factors": "库里因子",
     "observing": "观察区",
     "candidates": "各状态候选数",
@@ -259,7 +259,16 @@
     "icir": "ICIR",
     "months": "月数",
     "monotonic": "分组单调性",
-    "spread": "顶减底",
+    "spread": "顶减底（截尾）",
+    "shape": "三组形状",
+    "shapes": {
+      "monotone": "按序排开",
+      "weakEnd": "只有弱的一头",
+      "strongEnd": "只有强的一头",
+      "flat": "只有两头拉得开",
+      "midHigh": "中间强过强头",
+      "midLow": "中间弱过弱头"
+    },
     "sameSign": "同号币数",
     "segments": "四段 IC",
     "net": "净收益",
@@ -281,6 +290,7 @@
     "complexity": "复杂度",
     "complexityValue": "节点 {{nodes}}，窗口 {{windows}}，常量 {{constants}}，截面算子 {{cross}}",
     "holdout": "Holdout（{{from}} 起）",
+    "unseen": "它没见过的（发现它那一轮的切点 {{from}} 起）",
     "samples": "有效时刻",
     "timeseries": "产品币时序报告",
     "timeseriesBySymbol": "主档每币 IC"

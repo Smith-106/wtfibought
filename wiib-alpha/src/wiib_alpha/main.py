@@ -269,7 +269,8 @@ def _stop_reason(campaign: dict[str, Any], runs: list[dict[str, Any]], done_roun
 
 async def _start_round(app: FastAPI, campaign: dict[str, Any]) -> str:
     run_id = uuid.uuid4().hex[:12]
-    await app.state.store.create_run(run_id, campaign["k"], campaign["note"], campaign["lang"], campaign["id"])
+    await app.state.store.create_run(run_id, campaign["k"], campaign["note"], campaign["lang"], campaign["id"],
+                                     _data(app).cut_ms)
     payload = {"run_id": run_id, "campaign_id": campaign["id"], "lang": campaign["lang"], "k": campaign["k"],
                "note": campaign["note"]}
     app.state.runs.tasks[run_id] = asyncio.create_task(_drive(app, run_id, payload))
@@ -462,7 +463,7 @@ async def data_refresh(request: Request):
     # campaign 各轮共用装载时的数据和 holdout 切点，跑着的时候不换
     if await app.state.store.active_campaign() is not None:
         raise HTTPException(409, "有 campaign 在跑，停了再刷新")
-    # 后台任务可能还在读上一版面板，刷新开头要把上一版删掉；刷新开始之后再起的读的是当前版，不受影响
+    # 后台任务可能还在读上一版面板，刷新开头要把上一版删掉
     for name, label in (("grid", "参照网格还在补算"), ("reeval", "观察区还在复评"), ("reference", "参照集还在跑")):
         if app.state.runs.jobs[name].get("running"):
             raise HTTPException(409, f"{label}，等它算完再刷新")
@@ -491,6 +492,12 @@ async def data_refresh(request: Request):
     return _ok({"started": True})
 
 
+def _not_refreshing(app: FastAPI) -> None:
+    """刷新一完成就换数据和 holdout 切点：campaign 和会存结果的评估在刷新期间不起，不然存下的是旧数据算的"""
+    if app.state.runs.jobs["refresh"].get("running"):
+        raise HTTPException(409, "正在刷新数据，等它刷完")
+
+
 def _refresh_panels(cfg: Config, progress: dict[str, Any]) -> RefreshResult:
     binance = Binance(cfg.binance_vision_url, fapi_url=cfg.binance_fapi_url, list_url=cfg.binance_vision_list_url,
                       concurrency=cfg.fetch_concurrency)
@@ -504,14 +511,15 @@ async def create_campaign(body: CreateCampaign, request: Request, who: Auth = De
     """建 campaign 并起第一轮"""
     app = request.app
     store: Store = app.state.store
-    _data(app)
+    data = _data(app)
     # 同时只有一个 campaign、一轮：一轮已经是 K 条候选并发评估，再叠一轮内存和模型额度都扛不住
     if await store.active_campaign() is not None or app.state.runs.tasks:
         raise HTTPException(409, "有 campaign 还在跑，等它结束")
+    _not_refreshing(app)
+    # 参照网格没算好 G6 一律不过，白烧重写次数和试验数
+    if data.reference_grid is None:
+        raise HTTPException(409, "参照网格还没算好，等它算完")
     jobs = app.state.runs.jobs
-    # 刷新一完成就换数据和 holdout 切点，campaign 后面几轮会跟前面不一样
-    if jobs["refresh"].get("running"):
-        raise HTTPException(409, "正在刷新数据，等它刷完")
     if jobs["reeval"].get("running"):
         raise HTTPException(409, "观察区还在复评，等它算完")
     # 参照集和 campaign 一起跑会抢内存和 CPU，超了容器上限会被杀掉
@@ -604,6 +612,7 @@ async def observation_reeval(request: Request, who: Auth = Depends(auth)):
         raise HTTPException(409, "已经在复评了")
     if await app.state.store.active_campaign() is not None or app.state.runs.tasks:
         raise HTTPException(409, "有 campaign 在跑，等它结束再复评")
+    _not_refreshing(app)
     if data.reference_grid is None:
         raise HTTPException(409, "参照网格还没算好，等它算完再复评")
     rows = await app.state.store.observing()
@@ -643,6 +652,10 @@ async def _reeval(app: FastAPI, data: Data, rows: list[dict[str, Any]], job: dic
                                      data.products, True)
         gates = judge(ev, thresholds, params.primary, lib.known, direction)
         full[c["id"]] = (await asyncio.to_thread(data.pool.values, expr)).f
+        # 发现它的那一轮切点比现在早：从那个切点到现在都是它没见过的，比当前 holdout 长
+        seen = c["run_cut_ms"]
+        if seen is not None and seen < data.cut_ms:
+            ev["unseen"] = await asyncio.to_thread(recheck, data.pool.rows, full[c["id"]], seen, params)
         failed = [g for g in gates if not g["passed"]]
         items.append({"id": c["id"], "name": c["name"], "canonical": c["canonical"], "direction": direction,
                       "asked": asked, "eval": clean(ev), "gates": clean(gates),
@@ -802,8 +815,9 @@ async def library_recheck(factor_id: str, request: Request):
     if f is None:
         raise HTTPException(404, "没有这个因子")
     data = _data(app)
+    _not_refreshing(app)
     values = await asyncio.to_thread(data.pool.values, parse(f["expr"], FEATURE_COLUMNS))
-    result = recheck(data.pool.rows, values.f, int(f["approved_at"]), app.state.params)
+    result = await asyncio.to_thread(recheck, data.pool.rows, values.f, int(f["approved_at"]), app.state.params)
     await app.state.store.set_recheck(factor_id, result)
     return _ok(result)
 
@@ -896,6 +910,7 @@ async def reference_run(body: ReferenceRun, request: Request):
         raise HTTPException(409, "参照集已经在跑了")
     if await app.state.store.active_campaign() is not None or app.state.runs.tasks:
         raise HTTPException(409, "有 campaign 在跑，等它结束再跑参照集")
+    _not_refreshing(app)
     exprs = reference.parsed()
     if body.windows:
         keep = {str(w) for w in body.windows}

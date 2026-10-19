@@ -115,6 +115,8 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None}
     started = data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 2}, headers=ADMIN))
     campaign_id, run_id = started["id"], started["runId"]
+    # 每一轮记下当时数据的 holdout 切点：之后复评按它算"它没见过的那段"
+    assert (await m.app.state.store.run(run_id))["cut_ms"] == m.app.state.data.cut_ms
 
     evts = await events(client, run_id)
     trail = [(e["event"], e["data"].get("name") or e["data"].get("stage") or e["data"].get("text"),
@@ -283,7 +285,9 @@ async def test_observation_reeval(client):
     """观察区复评：老候选先问模型补方向；逐条按当前门判，过门的互相查重；结果另存，原来的状态、eval 不动，不计试验数"""
     store = m.app.state.store
     assert (await client.post("/api/alpha/observation/reeval", headers=ADMIN)).status_code == 409
-    await store.create_run("old", 1, "", "zh", None)
+    # 发现它们的那一轮切点比现在早 5 天
+    early = m.app.state.data.cut_ms - 5 * 86_400_000
+    await store.create_run("old", 1, "", "zh", None, early)
     for seq, (name, expr, direction) in enumerate((("vol_ma", "Mean($volume, 4)", None), ("vol_ema", "EMA($volume, 8)", 1),
                                                     ("trades", "$trades", 1)), 1):
         await store.upsert_candidate({"id": f"old-{seq}", "run_id": "old", "seq": seq, "name": name, "hypothesis": "h",
@@ -314,6 +318,10 @@ async def test_observation_reeval(client):
     assert peers["vol_ema"] > 0.9 and peers["trades"] < 0.3
     assert sorted(n for n, _ in re["trades"]["peers"]) == ["vol_ema", "vol_ma"]
     assert re["vol_ma"]["brief"]["horizons"]["12h"]["fundingBps"] == 0 and re["vol_ma"]["brief"]["holdout"]["since"] > 0
+    # holdout 从现在的切点起；它没见过的那段从发现它那一轮的切点起，更长
+    held, unseen = re["vol_ma"]["brief"]["holdout"], re["vol_ma"]["brief"]["unseen"]
+    assert held["since"] == m.app.state.data.cut_ms and unseen["since"] == early
+    assert unseen["horizons"]["12h"]["samples"] > held["horizons"]["12h"]["samples"]
     assert await store.trials() == 0 and (await store.candidate("old-1"))["direction"] is None
     # 复评过的入库，库里存的是复评那份
     kept_id = next(c["id"] for c in out["items"] if c["name"] == kept[0])
@@ -352,10 +360,11 @@ async def test_stop_after_this_round_and_only_one_campaign(client):
 
 async def test_refresh_and_reference_block_campaigns_and_each_other(client):
     jobs = m.app.state.runs.jobs
-    # 刷新中开不了 campaign：刷完会换数据和切点
+    # 刷新中开不了 campaign，也不起会存结果的复评、参照集：刷完会换数据和切点
     jobs["refresh"]["running"] = True
-    resp = await client.post("/api/alpha/campaigns", json={"rounds": 1}, headers=ADMIN)
-    assert resp.status_code == 409 and "刷新" in resp.json()["msg"]
+    for path in ("/api/alpha/campaigns", "/api/alpha/observation/reeval", "/api/alpha/reference/run"):
+        resp = await client.post(path, json={"rounds": 1}, headers=ADMIN)
+        assert resp.status_code == 409 and "刷新" in resp.json()["msg"], path
     jobs["refresh"]["running"] = False
     # 参照集在跑：campaign 开不了（抢内存），刷新也不开（它可能在读上一版面板）
     jobs["reference"]["running"] = True
@@ -363,6 +372,10 @@ async def test_refresh_and_reference_block_campaigns_and_each_other(client):
         resp = await client.post(path, json={"rounds": 1}, headers=ADMIN)
         assert resp.status_code == 409 and "参照集" in resp.json()["msg"]
     jobs["reference"]["running"] = False
+    # 参照网格没算好：G6 一律不过，campaign 不开
+    m.app.state.data.reference_grid = None
+    resp = await client.post("/api/alpha/campaigns", json={"rounds": 1}, headers=ADMIN)
+    assert resp.status_code == 409 and "参照网格" in resp.json()["msg"]
     assert data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"] == []
 
 

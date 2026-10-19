@@ -140,12 +140,18 @@ function Segments({ h }: { h: HorizonBrief }) {
   );
 }
 
+/** 三组形状只做标签，按 IC 方向从弱的一头看到强的一头；老结果没有 */
+function Shape({ h }: { h: HorizonBrief }) {
+  const { t } = useTranslation();
+  return <>{h.shape ? t(`brief.shapes.${h.shape}`) : num(null)}</>;
+}
+
 const ROWS: { key: string; get: (h: HorizonBrief) => ReactNode }[] = [
   { key: 'meanIc', get: h => num(h.meanIc) },
   { key: 'icir', get: h => num(h.icir, 2) },
   { key: 'months', get: h => h.months },
-  { key: 'monotonic', get: h => num(h.monotonic, 2) },
-  { key: 'spread', get: h => signedPct(h.spread, 2) },
+  { key: 'spread', get: h => (h.spreadT == null ? signedPct(h.spread, 2) : `${signedPct(h.spread, 2)} · t ${h.spreadT.toFixed(1)}`) },
+  { key: 'shape', get: h => <Shape h={h} /> },
   { key: 'segments', get: h => <Segments h={h} /> },
   { key: 'net', get: h => signedPct(h.netReturn) },
   { key: 'perm', get: h => num(h.permPct, 3) },
@@ -179,7 +185,8 @@ function HorizonHead({ label }: { label: ReactNode }) {
 
 const primaryCell = (h: string) => cx('r num', h === PRIMARY && 'bg-primary/5');
 
-export function HoldoutTable({ holdout }: { holdout: HoldoutBrief }) {
+/** 切点之后的 IC；titleKey 换标题：holdout 是当前切点起，unseen 是发现它那一轮的切点起 */
+export function HoldoutTable({ holdout, titleKey = 'brief.holdout' }: { holdout: HoldoutBrief; titleKey?: string }) {
   const { t } = useTranslation();
   const rows: { key: string; get: (h: HoldoutBrief['horizons'][string]) => ReactNode }[] = [
     { key: 'meanIc', get: h => num(h.meanIc) },
@@ -191,7 +198,7 @@ export function HoldoutTable({ holdout }: { holdout: HoldoutBrief }) {
   ];
   return (
     <table className="tbl">
-      <HorizonHead label={t('brief.holdout', { from: utcDay(holdout.since) })} />
+      <HorizonHead label={t(titleKey, { from: utcDay(holdout.since) })} />
       <tbody>
         {rows.map(r => (
           <tr key={r.key}>
@@ -235,12 +242,12 @@ function TimeseriesTable({ ts }: { ts: TimeseriesBrief }) {
 }
 
 type BriefLike = Pick<EvalBrief, 'horizons'>
-  & Partial<Pick<EvalBrief, 'gain' | 'gainSharpe' | 'holdout' | 'timeseries' | 'redundancy' | 'complexity' | 'neutral'>>;
+  & Partial<Pick<EvalBrief, 'gain' | 'gainSharpe' | 'holdout' | 'unseen' | 'timeseries' | 'redundancy' | 'complexity' | 'neutral'>>;
 
-/** 三档截面数字表；单因子再带组合增量一行、冗余/复杂度两项；算过 holdout、时序报告的再各来一张 */
+/** 三档截面数字表；单因子再带组合增量一行、冗余/复杂度两项；算过 holdout、没见过的那段、时序报告的再各来一张 */
 export function BriefTable({ brief }: { brief: BriefLike }) {
   const { t } = useTranslation();
-  const { gain, gainSharpe, holdout, timeseries, redundancy, complexity, neutral } = brief;
+  const { gain, gainSharpe, holdout, unseen, timeseries, redundancy, complexity, neutral } = brief;
   return (
     <div className="space-y-2.5 min-w-0">
       <div className="overflow-x-auto">
@@ -295,6 +302,7 @@ export function BriefTable({ brief }: { brief: BriefLike }) {
         </dl>
       )}
       {holdout && <div className="overflow-x-auto"><HoldoutTable holdout={holdout} /></div>}
+      {unseen && <div className="overflow-x-auto"><HoldoutTable holdout={unseen} titleKey="brief.unseen" /></div>}
       {timeseries && <div className="overflow-x-auto"><TimeseriesTable ts={timeseries} /></div>}
     </div>
   );

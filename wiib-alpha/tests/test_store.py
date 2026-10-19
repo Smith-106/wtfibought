@@ -55,14 +55,15 @@ async def test_fail_pending_marks_only_unfinished(store):
 
 
 async def test_observation_and_claim_candidate(store):
-    await store.create_run("r1", 2, "", "zh", "c1")
+    await store.create_run("r1", 2, "", "zh", "c1", 1_000)
     await store.create_run("r2", 2, "", "zh", "c1")
     for run_id, seq, status in (("r1", 1, "observing"), ("r1", 2, "rejected_gates"), ("r2", 1, "observing")):
         await store.upsert_candidate({"id": f"{run_id}-{seq}", "run_id": run_id, "seq": seq, "name": "x",
                                       "hypothesis": "h", "status": status})
     rows = await store.observing()
-    # 只要 observing 的，带它那一轮的开始时间
+    # 只要 observing 的，带它那一轮的开始时间和切点；没记切点的老轮是 None
     assert {r["id"] for r in rows} == {"r1-1", "r2-1"} and all(r["run_created_at"] > 0 for r in rows)
+    assert {r["id"]: r["run_cut_ms"] for r in rows} == {"r1-1": 1_000, "r2-1": None}
     # 入库、丢弃同时点：只有一个抢得到
     assert await store.claim_candidate("r1-1", "observing", "approved") is True
     assert await store.claim_candidate("r1-1", "observing", "declined") is False
@@ -108,8 +109,8 @@ async def test_open_adds_campaign_id_to_an_old_run_table(tmp_path):
     for _ in range(2):  # 第二次 open 不再加
         s = await Store.open(str(path))
         columns = [r["name"] for r in await s.db.execute_fetchall("PRAGMA table_info(run)")]
-        assert columns.count("campaign_id") == 1
-        assert (await s.run("old"))["campaign_id"] is None
+        assert columns.count("campaign_id") == 1 and columns.count("cut_ms") == 1
+        assert (await s.run("old"))["campaign_id"] is None and (await s.run("old"))["cut_ms"] is None
         await s.close()
     s = await Store.open(str(path))
     await s.create_run("new", 1, "", "zh", "c1")

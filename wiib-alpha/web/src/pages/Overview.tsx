@@ -12,7 +12,7 @@ export function OverviewStats({ trials, factors, observing }: { trials: number; 
   const { t } = useTranslation();
   return (
     <div className="flex flex-wrap gap-x-12 gap-y-3 border border-line bg-panel px-4 py-3">
-      <Stat label={t('overview.trials')} hint={t('overview.trialsHint', { fp: (trials * 0.05).toFixed(1) })}>{trials}</Stat>
+      <Stat label={t('overview.trials')} hint={t('overview.trialsHint')}>{trials}</Stat>
       <Stat label={t('overview.observing')}>{observing}</Stat>
       <Stat label={t('overview.factors')}>{factors}</Stat>
     </div>

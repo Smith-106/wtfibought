@@ -256,8 +256,7 @@ def build_graph(ctx: Context):
                 "text": f"{c['name']}：holdout 主档截面 IC {fmt(main['mean'])}，单调性 {fmt(main['monotonic'])}，"
                         f"{main['samples']} 个时刻"})
         await emit(ctx.store, run_id, "log", {
-            "text": f"本轮评估 {len(evaluated)} 条，过门 {len(kept)} 条；累计试验 {total} 次，"
-                    f"按 0.05 门槛累计预期假阳 {total * 0.05:.1f} 条"})
+            "text": f"本轮评估 {len(evaluated)} 条，过门 {len(kept)} 条；累计试验 {total} 次"})
         return {"candidates": candidates}
 
     async def reflect(state: RunState) -> dict[str, Any]:

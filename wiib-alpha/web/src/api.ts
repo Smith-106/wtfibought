@@ -196,8 +196,12 @@ export interface HorizonBrief {
   months: number;
   /** 分组单调性：三组平均收益与组序的 Spearman ρ */
   monotonic: number | null;
-  /** 顶组减底组的平均算术收益 */
+  /** 顶组减底组的平均收益：每期两头各截掉 5% 再减当期均值（之前落库的老结果是原始算术收益） */
   spread: number | null;
+  /** 顶组减底组每期之差的 t，G2 要它和 IC 同向且 ≥ 2；老结果是 null */
+  spreadT: number | null;
+  /** 三组的形状，按 IC 方向从弱的一头看到强的一头；只做标签，老结果是 null */
+  shape: 'monotone' | 'weakEnd' | 'strongEnd' | 'flat' | 'midHigh' | 'midLow' | null;
   segments: (number | null)[];
   netReturn: number | null;
   /** 排列检验只做主档，别的档是 null */
@@ -248,6 +252,8 @@ export interface EvalBrief {
   /** 主档组合多空腿扣成本和资金费的年化净 Sharpe：加进组合前、后、增量；之前入库的老结果没有 */
   gainSharpe?: { base: number | null; with: number | null; gain: number | null };
   holdout?: HoldoutBrief;
+  /** 复评时才有：发现它的那一轮切点比现在的 holdout 切点早，从那个切点起它都没见过 */
+  unseen?: HoldoutBrief;
   timeseries?: TimeseriesBrief;
 }
 

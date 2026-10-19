@@ -23,9 +23,10 @@ SCHEMA = [
         k INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, max_survivors INTEGER,
         deadline_ms INTEGER, done_rounds INTEGER NOT NULL DEFAULT 0, survivors INTEGER NOT NULL DEFAULT 0,
         stop_reason TEXT, error TEXT)""",
+    # cut_ms：这一轮用的数据的 holdout 切点，之后的数据这一轮的候选都没见过；加这列之前跑的轮是 NULL
     """CREATE TABLE IF NOT EXISTS run(
         id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, k INTEGER NOT NULL,
-        note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, error TEXT, campaign_id TEXT)""",
+        note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, error TEXT, campaign_id TEXT, cut_ms INTEGER)""",
     # direction：实现时按假设声明的方向，1 越大越强、-1 越弱；reeval_json：观察区用当前评估器复评的结果，原来的 eval 不动
     """CREATE TABLE IF NOT EXISTS candidate(
         id TEXT PRIMARY KEY, run_id TEXT NOT NULL, seq INTEGER NOT NULL, name TEXT NOT NULL,
@@ -64,7 +65,8 @@ SCHEMA = [
 _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "review", "data_json": "data",
                  "columns_json": "columns", "recheck_json": "recheck", "reeval_json": "reeval"}
 # 建表之后才加的列：老库启动时补上
-_ADDED_COLUMNS = {"run": {"campaign_id": "TEXT"}, "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"}}
+_ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
+                  "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"}}
 
 
 def clean(obj: Any) -> Any:
@@ -145,10 +147,12 @@ class Store:
 
     # ========== 运行 ==========
 
-    async def create_run(self, run_id: str, k: int, note: str, lang: str, campaign_id: str | None) -> None:
+    async def create_run(self, run_id: str, k: int, note: str, lang: str, campaign_id: str | None,
+                         cut_ms: int | None = None) -> None:
         await self.db.execute(
-            "INSERT INTO run(id, created_at, status, k, note, lang, campaign_id) VALUES (?, ?, 'running', ?, ?, ?, ?)",
-            (run_id, now_ms(), k, note, lang, campaign_id))
+            "INSERT INTO run(id, created_at, status, k, note, lang, campaign_id, cut_ms) "
+            "VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
+            (run_id, now_ms(), k, note, lang, campaign_id, cut_ms))
         await self.db.commit()
 
     async def set_run_status(self, run_id: str, status: str, error: str | None = None) -> None:
@@ -198,9 +202,10 @@ class Store:
         return await self._one("SELECT * FROM candidate WHERE id = ?", (candidate_id,))
 
     async def observing(self) -> list[dict[str, Any]]:
-        """观察区：全部 observing 的候选，带它那一轮的开始时间，新的在前"""
+        """观察区：全部 observing 的候选，带它那一轮的开始时间和切点，新的在前"""
         return await self._all(
-            """SELECT c.*, r.created_at AS run_created_at FROM candidate c JOIN run r ON r.id = c.run_id
+            """SELECT c.*, r.created_at AS run_created_at, r.cut_ms AS run_cut_ms
+               FROM candidate c JOIN run r ON r.id = c.run_id
                WHERE c.status = 'observing' ORDER BY r.created_at DESC, c.seq""", ())
 
     async def claim_candidate(self, candidate_id: str, expect: str, new: str) -> bool:
