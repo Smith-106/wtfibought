@@ -1,43 +1,66 @@
-"""一币一张表：K 线 + 资金费率 + BTC 基准 + 强平桶 + 标准答案。
+"""一币一张表：K 线 + 资金费率 + BTC 基准 + 强平桶 + 基差 + metrics + 标准答案 + 池子掩码。
 
 index 是 bar 收盘时刻（ms），全部特征列在那一刻都已知；标准答案 fwd_ret_* 看未来，DSL 不许引用。
-raw/ 放拉下来的原始数据，panel/ 放装配好的表，都是 parquet。
+in_pool 是评估用的掩码，不是 DSL 列。raw/ 按数据集分目录放原始数据，都是 parquet。
+装配好的面板一次刷新一版目录（panel-时间戳/，最早那版就叫 panel/），panel.current 记着当前是哪版：
+刷新写新的一版，全部写完才换过去；装载好的数据只读自己那版，刷新写到一半、失败了都碰不到它。
 """
 
 from __future__ import annotations
 
-import logging
-import time
+import json
+import os
+import re
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
-from . import liquidation
-from .binance import BAR_MS, Binance
-
-logger = logging.getLogger(__name__)
+from .binance import BAR_MS, METRICS_COLUMNS
 
 BENCHMARK = "BTCUSDT"
 DAY_MS = 86_400_000
 # 标准答案三档：h 小时 → 根 15m bar
 HORIZON_BARS = {6: 24, 12: 48, 24: 96}
 LIQ_COLUMNS = ["liq_long", "liq_short", "liq_count"]
+METRIC_FEATURES = METRICS_COLUMNS[1:]
 # 费率 8 小时结算一次，一个半周期没新结算就当断了
 FUNDING_STALE_MS = 12 * 3_600_000
+# 下架进结算期的币归档还在出零成交的平 K 线（TROY 停牌后一年半天天有），连续一整天零成交的段整段扔
+DEAD_BARS = 96
+# metrics 约 5 分钟一条，一小时没新的当断了
+METRICS_STALE_MS = 3_600_000
+POOL_COLUMN = "in_pool"
 # DSL 里能用 $ 引用的列
 FEATURE_COLUMNS = ["open", "high", "low", "close", "volume", "quote_volume", "trades",
                    "taker_buy_base", "taker_buy_quote", "ret", "funding_rate", "btc_close", "btc_ret",
-                   *LIQ_COLUMNS, "hour"]
+                   *LIQ_COLUMNS, "premium", *METRIC_FEATURES, "hour"]
 TARGET_COLUMNS = [f"fwd_ret_{bars}" for bars in HORIZON_BARS.values()]
+# describe 里报覆盖率的列：价格类永远是满的，只看会缺的
+COVERAGE_COLUMNS = ["funding_rate", "premium", "oi", "ls_acct", "liq_count"]
+# raw/ 下的数据集与各自的时间列
+RAW_DATASETS = {"klines_1d": "open_time", "klines_15m": "close_time", "funding": "funding_time",
+                "premium_15m": "close_time", "metrics": "time"}
+# 参照因子在主档网格上的截面秩，刷新收尾时算
+REFERENCE_GRID = "reference_grid.parquet"
+# 记当前面板版本目录名的文件；没有它就是最早那版 panel/
+CURRENT = "panel.current"
+FIRST_VERSION = "panel"
+# 版本目录的名字：只认自己建的，别的目录（手动备份之类）不删
+_VERSION = re.compile(r"panel(-\d{8}T\d{12})?")
 
 
 def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFrame | None,
              liq: pd.DataFrame | None = None, liq_start: int | None = None,
-             outage: frozenset[int] = frozenset()) -> pd.DataFrame:
-    """btc_klines 是基准，BTC 自己传 None 两列留空；liq 是这个币的桶；liq_start 是全部币里最早的一桶，之前没数据不是没强平；outage 是断档的桶 key"""
+             outage: frozenset[int] = frozenset(), premium: pd.DataFrame | None = None,
+             metrics: pd.DataFrame | None = None, pool_months: frozenset[str] = frozenset()) -> pd.DataFrame:
+    """btc_klines 是基准，BTC 自己传 None 两列留空；liq 是这个币的桶；liq_start 是全部币里最早的一桶，之前没数据不是没强平；
+    outage 是断档的桶 key；pool_months 是这个币在池里的月份（YYYY-MM）"""
     df = klines.drop_duplicates("close_time").set_index("close_time").sort_index()
+    df = df[~_dead(df["trades"].to_numpy())]
     df["ret"] = np.log(df["close"] / df["close"].shift(1))
     # 收盘时刻最近一次已结算的费率；离上次结算太久还没新的是数据断了（月度文件只到上个整月），记 NaN 不硬填
     df["funding_rate"] = _asof(df.index, funding, "funding_time", "funding_rate")
@@ -46,17 +69,42 @@ def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFra
     # BTC 按收盘时刻对齐：取 ≤ 该时刻最近的一根，与 Java benchmarkReturns 同口径
     df["btc_close"] = _asof(df.index, btc_klines, "close_time", "close")
     df["btc_ret"] = np.log(df["btc_close"] / df["btc_close"].shift(1))
+    # 上一根不是正好 15 分钟前（停牌、下架再上）的地方，跨缺口的涨跌幅不算
+    df.loc[np.concatenate(([True], ~_spaced(df.index, 1)[:-1])), ["ret", "btc_ret"]] = np.nan
     _liq_columns(df, liq, liq_start, outage)
+    # 基差 K 线与 K 线同一套收盘时刻，精确对
+    df["premium"] = _exact(df.index, premium, "close_time", "premium")
+    _metrics_columns(df, metrics)
     # bar 开始时刻的 UTC 小时：00:45~01:00 那根算 0 点的（closeTime 是边界减 1ms，加回去再退一根）
     df["hour"] = ((df.index.to_numpy() + 1 - BAR_MS) // 3_600_000) % 24
+    df[POOL_COLUMN] = np.isin(_months(df.index), list(pool_months)).astype("float64")
     add_targets(df)
     return df
 
 
 def add_targets(df: pd.DataFrame) -> None:
-    """标准答案三档：t 之后 h 根的对数涨跌幅，末尾不够 h 根的是 NaN"""
+    """标准答案三档：t 之后 h 根的对数涨跌幅，末尾不够 h 根或中间跨了缺口的是 NaN"""
     for bars in HORIZON_BARS.values():
-        df[f"fwd_ret_{bars}"] = np.log(df["close"].shift(-bars) / df["close"])
+        df[f"fwd_ret_{bars}"] = np.log(df["close"].shift(-bars) / df["close"]).where(_spaced(df.index, bars))
+
+
+def _dead(trades: np.ndarray) -> np.ndarray:
+    """落在连续 ≥ DEAD_BARS 根零成交段里的根"""
+    zero = np.concatenate(([0], (trades == 0).astype(np.int8), [0]))
+    edges = np.diff(zero)
+    out = np.zeros(len(trades), dtype=bool)
+    for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+        if end - start >= DEAD_BARS:
+            out[start:end] = True
+    return out
+
+
+def _spaced(index: pd.Index, bars: int) -> np.ndarray:
+    """第 i 根和它后面第 bars 根是不是正好隔 bars 个 15m；末尾不够 bars 根的 False"""
+    t = index.to_numpy(dtype="int64")
+    out = np.zeros(len(t), dtype=bool)
+    out[: len(t) - bars] = (t[bars:] - t[:-bars]) == bars * BAR_MS
+    return out
 
 
 def _asof(index: pd.Index, source: pd.DataFrame | None, time_col: str, value_col: str) -> np.ndarray:
@@ -67,6 +115,26 @@ def _asof(index: pd.Index, source: pd.DataFrame | None, time_col: str, value_col
                         "v": source[value_col].to_numpy(dtype="float64")}).sort_values("t")
     left = pd.DataFrame({"t": index.to_numpy(dtype="int64")})
     return pd.merge_asof(left, src, on="t", direction="backward")["v"].to_numpy(dtype="float64")
+
+
+def _exact(index: pd.Index, source: pd.DataFrame | None, time_col: str, value_col: str) -> np.ndarray:
+    """按时刻精确对上，没有就是 NaN"""
+    if source is None or source.empty:
+        return np.full(len(index), np.nan)
+    series = source.drop_duplicates(time_col).set_index(time_col)[value_col].astype("float64")
+    return series.reindex(index.to_numpy(dtype="int64")).to_numpy(dtype="float64")
+
+
+def _metrics_columns(df: pd.DataFrame, metrics: pd.DataFrame | None) -> None:
+    """收盘时刻之前最近一条；一小时没新的记 NaN"""
+    if metrics is None or metrics.empty:
+        for c in METRIC_FEATURES:
+            df[c] = np.nan
+        return
+    seen = _asof(df.index, metrics, "time", "time")
+    stale = df.index.to_numpy(dtype="int64") - seen > METRICS_STALE_MS
+    for c in METRIC_FEATURES:
+        df[c] = np.where(stale, np.nan, _asof(df.index, metrics, "time", c))
 
 
 def _liq_columns(df: pd.DataFrame, liq: pd.DataFrame | None, liq_start: int | None,
@@ -86,6 +154,11 @@ def _liq_columns(df: pd.DataFrame, liq: pd.DataFrame | None, liq_start: int | No
         df[c] = values
 
 
+def _months(index: pd.Index) -> np.ndarray:
+    """每根 bar 收盘时刻所在的 UTC 月份 YYYY-MM"""
+    return index.to_numpy(dtype="int64").astype("datetime64[ms]").astype("datetime64[M]").astype(str)
+
+
 def holdout_cut(panels: dict[str, pd.DataFrame], holdout_days: int) -> int:
     """全部币最后一根的收盘时刻往前数 holdout_days 天；之后的是 holdout"""
     return max(int(p.index.max()) for p in panels.values()) - holdout_days * DAY_MS
@@ -98,69 +171,54 @@ def truncate(panel: pd.DataFrame, cut_ms: int) -> pd.DataFrame:
     return df
 
 
-def aligned(panels: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    """只留全部币都有的时刻：替身要同一套顺序套到每个币上，组合要同一个窗口切全部币"""
-    common = None
-    for p in panels.values():
-        common = p.index if common is None else common.intersection(p.index)
-    common = common.sort_values()
-    return {s: p.loc[common] for s, p in panels.items()}
-
-
 def describe(panel: pd.DataFrame) -> dict[str, Any]:
     liq_known = panel.index[panel["liq_count"].notna()]
     times = panel.index.to_numpy(dtype="int64")
-    return {
+    out = {
         "rows": int(len(panel)),
         "from": int(panel.index.min()) if len(panel) else None,
         "to": int(panel.index.max()) if len(panel) else None,
         "liqFrom": int(liq_known.min()) if len(liq_known) else None,
         # 相邻两根不是正好 15m 的地方：交易所维护缺 bar 时切窗按行号会漂，先把数字亮出来
         "gaps": int((np.diff(times) != BAR_MS).sum()) if len(times) > 1 else 0,
+        "coverage": {c: round(float(panel[c].notna().mean()), 4) for c in COVERAGE_COLUMNS if c in panel},
     }
+    if POOL_COLUMN in panel:
+        out["poolMonths"] = int(len(set(_months(panel.index[panel[POOL_COLUMN] == 1.0]))))
+    return out
 
 
 class PanelStore:
-    def __init__(self, data_dir: str | Path):
-        self.raw = Path(data_dir) / "raw"
-        self.panels = Path(data_dir) / "panel"
-        self.raw.mkdir(parents=True, exist_ok=True)
+    def __init__(self, data_dir: str | Path, version: str | None = None):
+        """version 不给就是当前那版；raw/ 各版共用"""
+        self.root = Path(data_dir)
+        self.raw = self.root / "raw"
+        current = self.root / CURRENT
+        if version is None:
+            version = current.read_text(encoding="utf-8").strip() if current.exists() else FIRST_VERSION
+        self.panels = self.root / version
+        for dataset in RAW_DATASETS:
+            (self.raw / dataset).mkdir(parents=True, exist_ok=True)
         self.panels.mkdir(parents=True, exist_ok=True)
 
-    def refresh(self, binance: Binance, symbols: tuple[str, ...], history_days: int,
-                conninfo: dict[str, Any] | None = None, tz: str = "UTC",
-                now_ms: int | None = None) -> dict[str, dict[str, Any]]:
-        """增量拉 K 线与费率，重读强平桶，装配全部币；返回每币的 describe"""
-        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-        earliest = now_ms - history_days * DAY_MS
-        klines: dict[str, pd.DataFrame] = {}
-        funding: dict[str, pd.DataFrame] = {}
-        for s in dict.fromkeys((*symbols, BENCHMARK)):
-            klines[s] = self._grow(f"klines_{s}", "close_time", lambda a, b, s=s: binance.klines(s, a, b), earliest, now_ms)
-            if s in symbols:
-                funding[s] = self._grow(f"funding_{s}", "funding_time", lambda a, b, s=s: binance.funding(s, a, b),
-                                        earliest, now_ms)
-        liq = liquidation.load(conninfo, symbols, tz) if conninfo else None
-        liq_start = None if liq is None or liq.empty else int(liq["close_time"].min())
-        outage = liquidation.outage_buckets(liq) if liq is not None else frozenset()
-        status = {}
-        for s in symbols:
-            sym_liq = None if liq is None else liq[liq["symbol"] == s]
-            # BTC 自己没有基准，btc 两列留空
-            panel = assemble(klines[s], funding[s], None if s == BENCHMARK else klines[BENCHMARK], sym_liq, liq_start,
-                             outage)
-            panel.to_parquet(self.panels / f"{s}.parquet")
-            status[s] = describe(panel)
-            logger.info("panel %s：%s", s, status[s])
-        return status
+    def next_version(self) -> "PanelStore":
+        """刷新要写的新一版；当前这版以外的（上一版、刷新失败留下的半版）先删掉"""
+        for d in self.root.iterdir():
+            if d.is_dir() and _VERSION.fullmatch(d.name) and d != self.panels:
+                shutil.rmtree(d)
+        return PanelStore(self.root, f"{FIRST_VERSION}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}")
 
-    def _grow(self, name: str, time_col: str, fetch: Callable[[int, int], pd.DataFrame],
-              earliest: int, now_ms: int) -> pd.DataFrame:
-        """有缓存就从最后一条之后接着拉，没有就从 earliest 拉；想拉更深的历史删掉 raw 重来"""
-        path = self.raw / f"{name}.parquet"
-        old = pd.read_parquet(path) if path.exists() else None
+    def publish(self) -> None:
+        """这一版写完了，换成当前版；之后新装载的数据都读它"""
+        _replace_text(self.root / CURRENT, self.panels.name)
+
+    def grow(self, dataset: str, symbol: str, fetch: Callable[[str, int, int], pd.DataFrame],
+             earliest: int, now_ms: int) -> pd.DataFrame:
+        """有缓存就从最后一条之后接着拉，没有就从 earliest 拉；想拉更早的删掉这个文件重来"""
+        time_col = RAW_DATASETS[dataset]
+        old = self.load_raw(dataset, symbol)
         start = earliest if old is None or old.empty else int(old[time_col].max()) + 1
-        new = fetch(start, now_ms)
+        new = fetch(symbol, start, now_ms)
         if old is None:
             df = new
         elif new.empty:
@@ -168,11 +226,54 @@ class PanelStore:
         else:
             df = pd.concat([old, new], ignore_index=True)
         df = df.drop_duplicates(time_col).sort_values(time_col).reset_index(drop=True)
-        df.to_parquet(path)
+        self.save_raw(dataset, symbol, df)
         return df
 
-    def load(self, symbol: str) -> pd.DataFrame:
-        return pd.read_parquet(self.panels / f"{symbol}.parquet")
+    def load_raw(self, dataset: str, symbol: str) -> pd.DataFrame | None:
+        """原始数据，按时间排好；没拉过是 None"""
+        path = self.raw / dataset / f"{symbol}.parquet"
+        return pd.read_parquet(path) if path.exists() else None
 
-    def status(self) -> dict[str, dict[str, Any]]:
-        return {p.stem: describe(pd.read_parquet(p)) for p in sorted(self.panels.glob("*.parquet"))}
+    def save_raw(self, dataset: str, symbol: str, df: pd.DataFrame) -> None:
+        _write(df, self.raw / dataset / f"{symbol}.parquet")
+
+    def save_panel(self, symbol: str, panel: pd.DataFrame) -> None:
+        _write(panel, self.panels / f"{symbol}.parquet")
+
+    def load(self, symbol: str, columns: list[str] | None = None) -> pd.DataFrame:
+        """columns 给了只读这几列，index 照样带着"""
+        return pd.read_parquet(self.panels / f"{symbol}.parquet", columns=columns)
+
+    def has(self, symbol: str) -> bool:
+        return (self.panels / f"{symbol}.parquet").exists()
+
+    def write_status(self, status: dict[str, dict[str, Any]]) -> None:
+        """每币的 describe 落成 json，页面读这个不读 parquet"""
+        _replace_text(self.panels / "status.json", json.dumps(status, ensure_ascii=False))
+
+    def read_status(self) -> dict[str, dict[str, Any]]:
+        path = self.panels / "status.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def save_reference_grid(self, grid: pd.DataFrame) -> None:
+        _write(grid, self.panels / REFERENCE_GRID)
+
+    def load_reference_grid(self) -> pd.DataFrame | None:
+        """参照网格比 status.json 旧（之后又刷新过面板）就当没有"""
+        path, status = self.panels / REFERENCE_GRID, self.panels / "status.json"
+        if not path.exists() or (status.exists() and path.stat().st_mtime < status.stat().st_mtime):
+            return None
+        return pd.read_parquet(path)
+
+
+def _write(df: pd.DataFrame, path: Path) -> None:
+    """先写临时文件再改名，中途死掉不留半个 parquet"""
+    tmp = path.with_name(path.name + ".tmp")
+    df.to_parquet(tmp)
+    os.replace(tmp, path)
+
+
+def _replace_text(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)

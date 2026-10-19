@@ -1,33 +1,52 @@
+import os
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from wiib_alpha.data import panel
-from wiib_alpha.data.binance import BAR_MS, KLINE_COLUMNS
+from wiib_alpha.data.binance import BAR_MS, KLINE_COLUMNS, METRICS_COLUMNS
 
 DAY = panel.DAY_MS
 N = 3 * 96  # 三天
+# 2026-01-30 00:00 UTC：三天跨 1 月和 2 月
+BASE = 1_769_731_200_000
 
 
-def klines(n: int, base: float) -> pd.DataFrame:
-    rows = [[k * BAR_MS, base, base + 1, base - 1, base + k, 10.0, (k + 1) * BAR_MS - 1, 1000.0, 7, 4.0, 400.0]
-            for k in range(n)]
+def klines(n: int, base_price: float) -> pd.DataFrame:
+    rows = [[BASE + k * BAR_MS, base_price, base_price + 1, base_price - 1, base_price + k, 10.0, close_time(k),
+             1000.0, 7, 4.0, 400.0] for k in range(n)]
     return pd.DataFrame(rows, columns=KLINE_COLUMNS)
 
 
 def close_time(k: int) -> int:
-    return (k + 1) * BAR_MS - 1
+    return BASE + (k + 1) * BAR_MS - 1
 
 
-def build(with_liq: bool = True) -> pd.DataFrame:
+def premium_frame() -> pd.DataFrame:
+    """每根一条，第 7 根缺"""
+    ks = [k for k in range(N) if k != 7]
+    return pd.DataFrame({"close_time": [close_time(k) for k in ks], "premium": [0.0001 * k for k in ks]})
+
+
+def metrics_frame(until: int) -> pd.DataFrame:
+    """每小时一条，落在整点 bar 收盘前 1 分钟，故意倒序；oi = 第几根"""
+    ks = list(range(0, until, 4))[::-1]
+    return pd.DataFrame({"time": [close_time(k) - 60_000 for k in ks], "oi": [float(k) for k in ks],
+                         "oi_value": [k * 10.0 for k in ks],
+                         **{c: 1.0 for c in METRICS_COLUMNS[3:]}})
+
+
+def build(with_liq: bool = True, **extra) -> pd.DataFrame:
     alt, btc = klines(N, 100.0), klines(N, 1000.0)
     funding = pd.DataFrame({"funding_time": [close_time(2), close_time(50)], "funding_rate": [0.0001, -0.0002]})
     if not with_liq:
-        return panel.assemble(alt, funding, btc)
+        return panel.assemble(alt, funding, btc, **extra)
     # 第 0 天有强平、第 1 天整天的桶都判成断档、第 2 天又有
     liq = pd.DataFrame({"symbol": ["X"] * 3, "close_time": [close_time(3), close_time(5), close_time(2 * 96 + 1)],
                         "liq_long": [5.0, 0.0, 1.0], "liq_short": [0.0, 2.0, 0.0], "liq_count": [1, 1, 1]})
     outage = frozenset(close_time(k) for k in range(96, 192))
-    return panel.assemble(alt, funding, btc, liq, liq_start=close_time(3), outage=outage)
+    return panel.assemble(alt, funding, btc, liq, liq_start=close_time(3), outage=outage, **extra)
 
 
 def test_index_and_returns():
@@ -76,10 +95,62 @@ def test_no_liq_source_is_all_nan():
     assert df[panel.LIQ_COLUMNS].isna().all().all()
 
 
+def test_premium_exact_by_close_time():
+    df = build(with_liq=False, premium=premium_frame())
+    assert df["premium"].iloc[3] == pytest.approx(0.0003) and np.isnan(df["premium"].iloc[7])
+
+
+def test_metrics_asof_and_stale_after_an_hour():
+    df = build(with_liq=False, metrics=metrics_frame(until=48))
+    # 整点那条落在收盘前一分钟：这根和后面三根都拿它
+    assert df["oi"].iloc[0] == 0.0 and df["oi"].iloc[3] == 0.0 and df["oi"].iloc[4] == 4.0
+    assert df["oi_value"].iloc[47] == 440.0
+    # 最后一条在第 44 根，第 47 根离它 46 分钟还算新，第 48 根 61 分钟就断了
+    assert df["ls_acct"].iloc[47] == 1.0 and np.isnan(df["oi"].iloc[48]) and np.isnan(df["ls_acct"].iloc[48])
+
+
+def test_no_premium_or_metrics_is_all_nan():
+    df = build(with_liq=False)
+    assert df["premium"].isna().all() and df[panel.METRIC_FEATURES].isna().all().all()
+
+
+def test_in_pool_by_month_of_close_time():
+    df = build(with_liq=False, pool_months=frozenset({"2026-02"}))
+    # 1 月 30、31 日两天 192 根不在池，2 月 1 日那天在
+    assert (df[panel.POOL_COLUMN].iloc[:192] == 0.0).all() and (df[panel.POOL_COLUMN].iloc[192:] == 1.0).all()
+    assert panel.describe(df)["poolMonths"] == 1
+    assert panel.POOL_COLUMN not in panel.FEATURE_COLUMNS
+
+
+def test_describe_coverage():
+    df = build(premium=premium_frame(), metrics=metrics_frame(until=48))
+    cov = panel.describe(df)["coverage"]
+    assert cov["premium"] == pytest.approx((N - 1) / N, abs=1e-4) and 0 < cov["oi"] < 1 and 0 < cov["liq_count"] < 1
+    assert cov["funding_rate"] < 1
+
+
 def test_describe_counts_index_gaps():
     df = build(with_liq=False)
     holed = df.drop(df.index[[10, 11, 50]])
     assert panel.describe(holed)["gaps"] == 2
+
+
+def test_dead_stretch_dropped_and_gap_returns_nan():
+    alt, btc = klines(N, 100.0), klines(N, 1000.0)
+    alt.loc[10:14, "trades"] = 0      # 5 根零成交，不到一天，留着
+    alt.loc[100:219, "trades"] = 0    # 120 根零成交，整段扔
+    funding = pd.DataFrame({"funding_time": [close_time(2)], "funding_rate": [0.0001]})
+    df = panel.assemble(alt, funding, btc)
+    assert len(df) == N - 120 and close_time(10) in df.index and close_time(100) not in df.index
+    # 缺口后第一根的涨跌幅跨了缺口，不算；再往后照常
+    after = df.index.get_loc(close_time(220))
+    assert np.isnan(df["ret"].iloc[after]) and np.isnan(df["btc_ret"].iloc[after])
+    assert df["ret"].iloc[after + 1] == np.log(321.0 / 320.0)
+    # 缺口前 24 根之内的 6 小时标准答案跨了缺口，不算；再往前的照常
+    before = df.index.get_loc(close_time(99))
+    assert df["fwd_ret_24"].iloc[before - 23:before + 1].isna().all()
+    assert df["fwd_ret_24"].iloc[before - 24] == np.log(199.0 / 175.0)
+    assert panel.describe(df)["gaps"] == 1
 
 
 def test_holdout_cut_and_truncate():
@@ -100,42 +171,44 @@ def test_feature_columns_exist_and_targets_excluded():
     assert not set(panel.TARGET_COLUMNS) & set(panel.FEATURE_COLUMNS)
 
 
-class StubBinance:
-    def klines(self, symbol, start, end):
-        return klines(N, 100.0)
-
-    def funding(self, symbol, start, end):
-        return pd.DataFrame({"funding_time": [0], "funding_rate": [0.0001]})
-
-
-def test_benchmark_panel_has_no_btc_columns(tmp_path):
+def test_store_grows_incrementally_and_leaves_no_tmp(tmp_path):
     store = panel.PanelStore(tmp_path)
-    store.refresh(StubBinance(), ("BTCUSDT", "ETHUSDT"), history_days=3, now_ms=N * BAR_MS)
-    assert store.load("BTCUSDT")[["btc_close", "btc_ret"]].isna().all().all()
-    assert store.load("ETHUSDT")["btc_close"].notna().sum() == N
-
-
-def test_store_grows_incrementally(tmp_path):
     calls = []
 
-    class FakeBinance:
-        def klines(self, symbol, start, end):
-            calls.append((symbol, start))
-            k0 = start // BAR_MS
-            return klines(N, 100.0).iloc[k0:] if k0 < N else klines(0, 100.0)
+    def fetch(symbol, start, end):
+        calls.append(start)
+        k0 = max(0, (start - BASE) // BAR_MS)
+        return klines(N, 100.0).iloc[k0:]
 
-        def funding(self, symbol, start, end):
-            return pd.DataFrame({"funding_time": [0], "funding_rate": [0.0001]}) if start == 0 else \
-                pd.DataFrame({"funding_time": pd.Series(dtype="int64"), "funding_rate": pd.Series(dtype="float64")})
+    now = close_time(N - 1) + 1
+    first = store.grow("klines_15m", "X", fetch, BASE, now)
+    again = store.grow("klines_15m", "X", fetch, BASE, now)
+    # 第二次从最后一根之后接着拉，对面没新的就原样保留
+    assert calls == [BASE, now] and len(first) == N and len(again) == N
+    assert (tmp_path / "raw" / "klines_15m" / "X.parquet").exists()
+    assert not list((tmp_path / "raw" / "klines_15m").glob("*.tmp"))
 
+
+def test_panel_and_status_roundtrip(tmp_path):
     store = panel.PanelStore(tmp_path)
-    now = N * BAR_MS
-    status = store.refresh(FakeBinance(), ("ETHUSDT",), history_days=3, now_ms=now)
-    assert status["ETHUSDT"]["rows"] == N and status["ETHUSDT"]["liqFrom"] is None
-    assert calls == [("ETHUSDT", 0), ("BTCUSDT", 0)]
+    assert store.read_status() == {} and not store.has("X")
+    store.save_panel("X", build(with_liq=False))
+    store.write_status({"X": {"rows": N}})
+    assert store.has("X") and len(store.load("X")) == N and store.read_status() == {"X": {"rows": N}}
+    # 按列读：index 照样带着
+    part = store.load("X", ["close", panel.POOL_COLUMN])
+    assert list(part.columns) == ["close", panel.POOL_COLUMN] and part.index.name == "close_time" and len(part) == N
 
-    store.refresh(FakeBinance(), ("ETHUSDT",), history_days=3, now_ms=now)
-    # 第二次从最后一根之后接着拉
-    assert calls[2] == ("ETHUSDT", close_time(N - 1) + 1)
-    assert len(store.load("ETHUSDT")) == N
-    assert store.status()["ETHUSDT"]["to"] == close_time(N - 1)
+
+def test_reference_grid_older_than_status_is_stale(tmp_path):
+    store = panel.PanelStore(tmp_path)
+    assert store.load_reference_grid() is None
+    grid = pd.DataFrame({"t": [1, 2], "symbol": ["X", "X"], "MA4": np.array([0.5, 1.0], dtype="float32")})
+    store.write_status({"X": {"rows": N}})
+    store.save_reference_grid(grid)
+    pd.testing.assert_frame_equal(store.load_reference_grid(), grid)
+    # 之后又刷新过面板：网格作废，等重算
+    status = store.panels / "status.json"
+    later = (store.panels / panel.REFERENCE_GRID).stat().st_mtime + 5
+    os.utime(status, (later, later))
+    assert store.load_reference_grid() is None

@@ -1,18 +1,25 @@
-"""Binance 公开数据仓 data.binance.vision：USDⓈ-M 合约 15m K 线与资金费率，按月下 zip，不要 key、无频控、无地域限制。
+"""Binance 公开数据仓 data.binance.vision：USDⓈ-M 合约的 K 线、资金费率、基差 K 线与 metrics，按文件下 zip，不要 key、无频控。
 
-K 线 CSV 与 REST 同 12 列：open_time,open,high,low,close,volume,close_time,quote_volume,count,
-taker_buy_volume,taker_buy_quote_volume,ignore。费率 CSV 三列：calc_time,funding_interval_hours,last_funding_rate。
-月度文件要到下月初才出：当月与上月 404 就改走日度文件；费率没有日度文件，这两个月改走 fapi 的 /fapi/v1/fundingRate
-（公开接口，不要 key）。更早的 404 是那时还没上市。
-老文件没有头行、2025 年后的时间戳可能是微秒，解析时一并归一。
+每个数据集先列目录再下载，不靠 404 探路：月度 zip 从起始月列起，日度 zip 从最后一个月度文件的下个月初列起，自然盖住当月。
+月度文件偶尔缺整天（2022-02-26~28、2022-04-01~02 几十个币都缺）而同一天的日度文件在，拼完数每天的根数，不满的日子拿日度文件补。
+目录列举走 S3 的 ListObjects，data.binance.vision 的网页就是这么拿的；下架币的历史文件一直在。
+K 线与基差 K 线 CSV 同 12 列：open_time,open,high,low,close,volume,close_time,quote_volume,count,
+taker_buy_volume,taker_buy_quote_volume,ignore，基差的 close 就是溢价率。费率三列 calc_time,funding_interval_hours,last_funding_rate。
+metrics 八列，create_time 是 UTC 字符串，文件内可能无序。老文件没有头行、2025 年后的时间戳可能是微秒，解析时一并归一。
+费率没有日度文件，月度文件之后的尾巴走 fapi 的 /fapi/v1/fundingRate（公开接口，不要 key），只给还在交易的币补：
+有些币还在交易但费率月度文件早就不出了（TROY、ALPACA 停在 2025-06），尾巴可能长达一年多，分页翻完。
+基差与 metrics 也有币中途断档（FTT 基差 2023-07 停、RAY metrics 2024-07 停），REST 补不了历史，断了就是 NaN。
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import threading
 import time
+import xml.etree.ElementTree as ET
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,16 +31,29 @@ logger = logging.getLogger(__name__)
 
 INTERVAL = "15m"
 BAR_MS = 15 * 60_000
+DAY_MS = 86_400_000
+# 两种 K 线一根多长，数一天该有几根用
+_BAR_MS = {"15m": BAR_MS, "1d": DAY_MS}
+_PAGE = 1000
+DEFAULT_LIST_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+_UM = "data/futures/um"
+_S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _RETRIES = 3
+# fapi 费率接口每个 IP 5 分钟 500 次，服务器上 Java 服务也在用：两次之间至少隔这么多秒（5 分钟最多 250 次），几个币一起拉也一样
+REST_GAP_S = 1.2
 
 KLINE_COLUMNS = ["open_time", "open", "high", "low", "close", "volume", "close_time",
                  "quote_volume", "trades", "taker_buy_base", "taker_buy_quote"]
 _INT_COLUMNS = ["open_time", "close_time", "trades"]
 _FLOAT_COLUMNS = ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base", "taker_buy_quote"]
 FUNDING_COLUMNS = ["funding_time", "funding_rate"]
+PREMIUM_COLUMNS = ["close_time", "premium"]
+# metrics：持仓量（币）、持仓名义（USDT）、大户多空账户数比、大户多空持仓比、全体账户多空比、taker 买卖量比
+METRICS_COLUMNS = ["time", "oi", "oi_value", "ls_top_acct", "ls_top_pos", "ls_acct", "taker_ls_vol"]
 # CSV 按位置对到我们的列名，K 线最后一列 ignore 不要
 _KLINE_CSV = [*KLINE_COLUMNS, "ignore"]
 _FUNDING_CSV = ["funding_time", "interval_hours", "funding_rate"]
+_METRICS_CSV = ["create_time", "symbol", *METRICS_COLUMNS[1:]]
 # 超过 15 位就是微秒
 _MICRO_THRESHOLD = 100_000_000_000_000
 
@@ -51,41 +71,68 @@ def empty_funding() -> pd.DataFrame:
     return pd.DataFrame({"funding_time": pd.Series(dtype="int64"), "funding_rate": pd.Series(dtype="float64")})
 
 
+def empty_premium() -> pd.DataFrame:
+    return pd.DataFrame({"close_time": pd.Series(dtype="int64"), "premium": pd.Series(dtype="float64")})
+
+
+def empty_metrics() -> pd.DataFrame:
+    return pd.DataFrame({c: pd.Series(dtype="int64" if c == "time" else "float64") for c in METRICS_COLUMNS})
+
+
 class Binance:
-    def __init__(self, base_url: str, client: httpx.Client | None = None, fapi_url: str = "https://fapi.binance.com"):
+    def __init__(self, base_url: str, client: httpx.Client | None = None, fapi_url: str = "https://fapi.binance.com",
+                 list_url: str = DEFAULT_LIST_URL, concurrency: int = 6):
         self._base = base_url.rstrip("/")
         self._fapi = fapi_url.rstrip("/")
+        self._list_url = list_url.rstrip("/")
         self._client = client if client is not None else httpx.Client(timeout=60.0)
+        self._concurrency = max(1, concurrency)
+        # fapi 一次只发一个，上一个结束的时刻
+        self._rest_lock = threading.Lock()
+        self._rest_at = float("-inf")
 
-    def klines(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-        """[start_ms, end_ms) 内已收盘的 15m bar，按 open_time 升序"""
-        frames: list[pd.DataFrame] = []
-        for month in _months(start_ms, end_ms):
-            csv = self._zip(f"/data/futures/um/monthly/klines/{symbol}/{INTERVAL}/{symbol}-{INTERVAL}-{month:%Y-%m}.zip")
-            if csv is not None:
-                frames.append(_parse(csv, _KLINE_CSV, ["open_time", "close_time"]))
-            elif _recent(month, end_ms):
-                for day in _days(month, start_ms, end_ms):
-                    csv = self._zip(f"/data/futures/um/daily/klines/{symbol}/{INTERVAL}/{symbol}-{INTERVAL}-{day:%Y-%m-%d}.zip")
-                    if csv is not None:
-                        frames.append(_parse(csv, _KLINE_CSV, ["open_time", "close_time"]))
-        if not frames:
-            return empty_klines()
-        df = pd.concat(frames, ignore_index=True)[KLINE_COLUMNS]
-        df[_INT_COLUMNS] = df[_INT_COLUMNS].astype("int64")
-        df[_FLOAT_COLUMNS] = df[_FLOAT_COLUMNS].astype("float64")
-        df = df[(df["open_time"] >= start_ms) & (df["close_time"] < end_ms)]
-        return df.drop_duplicates("open_time").sort_values("open_time").reset_index(drop=True)
+    # ========== 目录 ==========
 
-    def funding(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-        """[start_ms, end_ms) 内已结算的资金费率；月度文件还没出的月份走 REST，fapi 地址留空就不补"""
-        frames: list[pd.DataFrame] = []
-        for month in _months(start_ms, end_ms):
-            csv = self._zip(f"/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month:%Y-%m}.zip")
-            if csv is not None:
-                frames.append(_parse(csv, _FUNDING_CSV, ["funding_time"]))
-            elif self._fapi and _recent(month, end_ms):
-                frames.append(self._funding_rest(symbol, max(_ms(month), start_ms), min(_ms(_next_month(month)), end_ms)))
+    def symbols(self) -> list[str]:
+        """归档里出现过的全部符号，含已下架"""
+        prefix = f"{_UM}/monthly/klines/"
+        _, dirs = self._list(prefix)
+        return sorted(d[len(prefix):].rstrip("/") for d in dirs)
+
+    def exchange_info(self) -> dict[str, dict[str, Any]]:
+        """fapi 的合约表，只有在交易的；fapi 地址留空给空表"""
+        if not self._fapi:
+            return {}
+        return {row["symbol"]: row for row in self._rest("/fapi/v1/exchangeInfo", {}).get("symbols", [])}
+
+    # ========== 数据集 ==========
+
+    def klines(self, symbol: str, start_ms: int, end_ms: int, interval: str = INTERVAL) -> pd.DataFrame:
+        """[start_ms, end_ms) 内已收盘的 bar，按 open_time 升序"""
+        df = self._bars("klines", symbol, interval, start_ms, end_ms)
+        return empty_klines() if df is None else df
+
+    def premium(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """基差 K 线的收盘溢价率，按 close_time"""
+        df = self._bars("premiumIndexKlines", symbol, INTERVAL, start_ms, end_ms)
+        if df is None:
+            return empty_premium()
+        return df[["close_time", "close"]].rename(columns={"close": "premium"}).reset_index(drop=True)
+
+    def funding(self, symbol: str, start_ms: int, end_ms: int, live: bool = False) -> pd.DataFrame:
+        """[start_ms, end_ms) 内已结算的资金费率。
+
+        月度文件之后的尾巴只给还在交易的币（live，exchangeInfo 里有）走 fapi 补到 end_ms，不管尾巴多长；
+        下架币归档停在哪就到哪，fapi 对它回 400 不去问；fapi 地址留空也不补。
+        """
+        prefix = f"{_UM}/monthly/fundingRate/{symbol}/"
+        keys = self._zips(prefix, f"{symbol}-fundingRate-{_month_name(start_ms)}")
+        frames = [_parse(csv, _FUNDING_CSV, ["funding_time"]) for csv in self._download(keys)]
+        tail_from = start_ms
+        if keys:
+            tail_from = max(start_ms, ms(next_month(_month(_stamp(keys[-1], 2)))))
+        if self._fapi and live and tail_from < end_ms:
+            frames.append(self._funding_rest(symbol, tail_from, end_ms))
         if not frames:
             return empty_funding()
         df = pd.concat(frames, ignore_index=True)[FUNDING_COLUMNS]
@@ -93,14 +140,90 @@ class Binance:
         df = df[(df["funding_time"] >= start_ms) & (df["funding_time"] < end_ms)]
         return df.drop_duplicates("funding_time").sort_values("funding_time").reset_index(drop=True)
 
+    def metrics(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """[start_ms, end_ms) 内的 metrics，只有日度文件，按 time 升序"""
+        prefix = f"{_UM}/daily/metrics/{symbol}/"
+        keys = self._zips(prefix, f"{symbol}-metrics-{_day_name(start_ms)}")
+        frames = [_parse_metrics(csv) for csv in self._download(keys)]
+        if not frames:
+            return empty_metrics()
+        df = pd.concat(frames, ignore_index=True)
+        df = df[(df["time"] >= start_ms) & (df["time"] < end_ms)]
+        return df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
+
+    def _bars(self, kind: str, symbol: str, interval: str, start_ms: int, end_ms: int) -> pd.DataFrame | None:
+        """K 线形状的数据集：月度 zip 从起始月起，日度 zip 从最后一个月度文件的下个月初起；一个文件都没有给 None。
+
+        月度文件覆盖的日子里根数不满一天的，再下那天的日度文件补上；日度也没有的就缺着。
+        """
+        stem = f"{symbol}-{interval}-"
+        keys = self._zips(f"{_UM}/monthly/{kind}/{symbol}/{interval}/", stem + _month_name(start_ms))
+        day_from = utc(start_ms)
+        if keys:
+            day_from = max(day_from, next_month(_month(_stamp(keys[-1], 2))))
+        daily_prefix = f"{_UM}/daily/{kind}/{symbol}/{interval}/"
+        keys += self._zips(daily_prefix, stem + day_from.strftime("%Y-%m-%d"))
+        frames = [_parse(csv, _KLINE_CSV, ["open_time", "close_time"]) for csv in self._download(keys)]
+        if not frames:
+            return None
+        holes = _short_days(pd.concat(frames)["open_time"], DAY_MS // _BAR_MS[interval], ms(day_from))
+        if holes:
+            patch = self._download([f"{daily_prefix}{stem}{d}.zip" for d in holes])
+            frames += [_parse(csv, _KLINE_CSV, ["open_time", "close_time"]) for csv in patch]
+        df = pd.concat(frames, ignore_index=True)[KLINE_COLUMNS]
+        df[_INT_COLUMNS] = df[_INT_COLUMNS].astype("int64")
+        df[_FLOAT_COLUMNS] = df[_FLOAT_COLUMNS].astype("float64")
+        df = df[(df["open_time"] >= start_ms) & (df["close_time"] < end_ms)]
+        return df.drop_duplicates("open_time").sort_values("open_time").reset_index(drop=True)
+
     def _funding_rest(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-        """一页最多 1000 条；一个月最多 186 条（4 小时结算的币），一页够"""
-        rows = self._rest("/fapi/v1/fundingRate",
-                          {"symbol": symbol, "startTime": start_ms, "endTime": end_ms - 1, "limit": 1000})
-        if not rows:
+        """一页最多 1000 条，按时间往后翻到 end_ms；1 小时结算的币一年要翻九页"""
+        times: list[int] = []
+        rates: list[float] = []
+        while start_ms < end_ms:
+            rows = self._rest("/fapi/v1/fundingRate",
+                              {"symbol": symbol, "startTime": start_ms, "endTime": end_ms - 1, "limit": _PAGE})
+            times += [int(r["fundingTime"]) for r in rows]
+            rates += [float(r["fundingRate"]) for r in rows]
+            if len(rows) < _PAGE:
+                break
+            start_ms = times[-1] + 1
+        if not times:
             return empty_funding()
-        return pd.DataFrame({"funding_time": [int(r["fundingTime"]) for r in rows],
-                             "funding_rate": [float(r["fundingRate"]) for r in rows]})
+        return pd.DataFrame({"funding_time": times, "funding_rate": rates})
+
+    # ========== 传输 ==========
+
+    def _zips(self, prefix: str, after: str) -> list[str]:
+        """prefix 下名字排在 after 之后的 zip，不要 CHECKSUM；S3 的 marker 是"从这个名字之后开始"，after 不带 .zip 所以自己也算在内"""
+        keys, _ = self._list(prefix, prefix + after)
+        return [k for k in keys if k.endswith(".zip")]
+
+    def _list(self, prefix: str, marker: str | None = None) -> tuple[list[str], list[str]]:
+        """ListObjects 分页列完：返回 (文件 key, 子目录前缀)"""
+        keys: list[str] = []
+        dirs: list[str] = []
+        while True:
+            params: dict[str, Any] = {"delimiter": "/", "prefix": prefix, "max-keys": 1000}
+            if marker:
+                params["marker"] = marker
+            resp = self._get(self._list_url, params)
+            if resp is None:
+                raise BinanceError(f"列目录 {prefix} 返回 404")
+            root = ET.fromstring(resp.content)
+            keys += [str(k.text) for k in root.iterfind(f"{_S3}Contents/{_S3}Key")]
+            dirs += [str(p.text) for p in root.iterfind(f"{_S3}CommonPrefixes/{_S3}Prefix")]
+            if root.findtext(f"{_S3}IsTruncated") != "true":
+                return keys, dirs
+            marker = root.findtext(f"{_S3}NextMarker") or (keys + dirs)[-1]
+
+    def _download(self, keys: list[str]) -> list[bytes]:
+        """按 key 顺序并发下载解压；列过目录的文件不该 404，真遇到就跳过"""
+        if not keys:
+            return []
+        with ThreadPoolExecutor(max_workers=min(self._concurrency, len(keys))) as pool:
+            got = list(pool.map(lambda k: self._zip("/" + k), keys))
+        return [g for g in got if g is not None]
 
     def _zip(self, path: str) -> bytes | None:
         """下载 zip 解出里面唯一的 CSV；404 是没这个文件"""
@@ -110,8 +233,11 @@ class Binance:
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             return zf.read(zf.namelist()[0])
 
-    def _rest(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        resp = self._get(self._fapi + path, params)
+    def _rest(self, path: str, params: dict[str, Any]) -> Any:
+        with self._rest_lock:
+            time.sleep(max(0.0, self._rest_at + REST_GAP_S - time.monotonic()))
+            resp = self._get(self._fapi + path, params)
+            self._rest_at = time.monotonic()
         if resp is None:
             raise BinanceError(f"fapi {path} 返回 404")
         return resp.json()
@@ -138,6 +264,9 @@ class Binance:
         raise BinanceError(f"{url} 连试 {_RETRIES} 次都失败")
 
 
+# ========== 解析 ==========
+
+
 def _parse(csv: bytes, names: list[str], time_cols: list[str]) -> pd.DataFrame:
     df = pd.read_csv(io.BytesIO(csv), header=None, names=names, dtype=str)
     # 头行第一格是列名不是数字
@@ -148,41 +277,51 @@ def _parse(csv: bytes, names: list[str], time_cols: list[str]) -> pd.DataFrame:
     return df
 
 
-def _utc(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+def _short_days(open_time: pd.Series, per_day: int, before_ms: int) -> list[str]:
+    """before_ms 之前、根数不满 per_day 的日子（YYYY-MM-DD）；头尾两天不算，上市下架就在那天"""
+    counts = (open_time // DAY_MS).value_counts()
+    first, last = int(counts.index.min()) + 1, min(int(counts.index.max()), before_ms // DAY_MS)
+    return [_day_name(d * DAY_MS) for d in range(first, last) if counts.get(d, 0) < per_day]
 
 
-def _ms(moment: datetime) -> int:
+def _parse_metrics(csv: bytes) -> pd.DataFrame:
+    df = pd.read_csv(io.BytesIO(csv), header=None, names=_METRICS_CSV, dtype=str)
+    df = df[df["create_time"] != "create_time"]
+    stamp = pd.to_datetime(df["create_time"], utc=True, format="%Y-%m-%d %H:%M:%S")
+    out = pd.DataFrame({"time": ((stamp - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(milliseconds=1))
+                        .to_numpy(dtype="int64")})
+    for c in METRICS_COLUMNS[1:]:
+        out[c] = pd.to_numeric(df[c], errors="coerce").to_numpy(dtype="float64")
+    return out
+
+
+# ========== 时间 ==========
+
+
+def utc(ms_: int) -> datetime:
+    return datetime.fromtimestamp(ms_ / 1000, tz=timezone.utc)
+
+
+def ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
-def _next_month(month: datetime) -> datetime:
+def next_month(month: datetime) -> datetime:
     return (month.replace(day=28) + timedelta(days=4)).replace(day=1)
 
 
-def _months(start_ms: int, end_ms: int) -> list[datetime]:
-    """[start, end) 覆盖到的月份，UTC 月初"""
-    cur = _utc(start_ms).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    end = _utc(end_ms)
-    out = []
-    while cur < end:
-        out.append(cur)
-        cur = _next_month(cur)
-    return out
+def _month(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m").replace(tzinfo=timezone.utc)
 
 
-def _recent(month: datetime, end_ms: int) -> bool:
-    """当月或上月：月度文件可能还没出"""
-    end = _utc(end_ms)
-    return (end.year - month.year) * 12 + end.month - month.month <= 1
+def _month_name(ms_: int) -> str:
+    return utc(ms_).strftime("%Y-%m")
 
 
-def _days(month: datetime, start_ms: int, end_ms: int) -> list[datetime]:
-    """这个月里落在 [start, end) 的日子，UTC 零点"""
-    cur = max(month, _utc(start_ms).replace(hour=0, minute=0, second=0, microsecond=0))
-    end = min(_next_month(month), _utc(end_ms))
-    out = []
-    while cur < end:
-        out.append(cur)
-        cur += timedelta(days=1)
-    return out
+def _day_name(ms_: int) -> str:
+    return utc(ms_).strftime("%Y-%m-%d")
+
+
+def _stamp(key: str, parts: int) -> str:
+    """文件名末尾的日期：月度取 YYYY-MM 两段，日度取三段"""
+    return "-".join(key.rsplit("/", 1)[-1][:-4].split("-")[-parts:])
