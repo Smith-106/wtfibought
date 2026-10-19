@@ -6,7 +6,6 @@ import type { LedgerEntry, LedgerBizTypeOption, PublicTrade, UserProfile, Positi
 import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose } from '../types';
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
 import type { GenEvent, GenThreadState } from '../types';
-import type { AlphaCombo, AlphaDataStatus, AlphaEvalResult, AlphaEvent, AlphaFactor, AlphaReference, AlphaRun, AlphaRunState } from '../types';
 import type { User, PageResult, RankingItem, CommentItem, NotificationItem, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderExperience, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, WorkbenchPrefs, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
@@ -787,32 +786,5 @@ export const promptGenApi = {
   /** 回退到第 N 版，返回形状同 state；第 N 版之后的版本作废 */
   rollback: (threadId: string, version: number) =>
     api.post<unknown, GenThreadState>(`/gen/threads/${threadId}/rollback`, { version }),
-};
-
-// ========== 因子挖掘（py 服务 wiib-alpha，前缀 /api/alpha，仅管理员） ==========
-export const alphaApi = {
-  dataStatus: () => api.get<unknown, AlphaDataStatus>('/alpha/data/status'),
-  /** 后台增量拉 K 线与费率、重读强平桶，完了重新装载；进度看 dataStatus().refresh */
-  dataRefresh: () => api.post<unknown, { started: boolean }>('/alpha/data/refresh'),
-  /** 开一轮：图在后台跑，事件用 events 订阅 */
-  createRun: (body: { k: number; note: string }) => api.post<unknown, { id: string }>('/alpha/runs', body),
-  runs: () => api.get<unknown, { runs: AlphaRun[]; trials: number }>('/alpha/runs'),
-  run: (id: string) => api.get<unknown, AlphaRunState>(`/alpha/runs/${id}`),
-  /** 订阅一轮的事件：先回放库里 id > after 的，再收在线的；这一轮不在 running 时以 end 结束 */
-  events: (id: string, after: number, onEvent: (e: AlphaEvent) => void, signal?: AbortSignal) =>
-    getSse<AlphaEvent>(`/api/alpha/runs/${id}/events?after=${after}`, onEvent, signal),
-  /** 审批：过了门的候选逐个入库或否决，图从 interrupt 处继续 */
-  decide: (id: string, decisions: Record<string, boolean>) =>
-    api.post<unknown, { resumed: boolean }>(`/alpha/runs/${id}/decide`, { decisions }),
-  /** 因子列表加库的组合报告；库空时 combo 是 null */
-  library: () => api.get<unknown, { factors: AlphaFactor[]; combo: AlphaCombo | null }>('/alpha/library'),
-  factor: (id: string) => api.get<unknown, AlphaFactor>(`/alpha/library/${id}`),
-  /** 只用入库之后的数据重算 IC */
-  recheck: (id: string) => api.post<unknown, AlphaFactor['recheck']>(`/alpha/library/${id}/recheck`),
-  /** 手填一条表达式直接评估，不进循环不计试验数 */
-  evalExpr: (expr: string) => api.post<unknown, AlphaEvalResult>('/alpha/eval', { expr }),
-  reference: () => api.get<unknown, AlphaReference>('/alpha/reference'),
-  referenceRun: (windows?: number[]) =>
-    api.post<unknown, { started: boolean; total: number }>('/alpha/reference/run', { windows: windows ?? null }),
 };
 

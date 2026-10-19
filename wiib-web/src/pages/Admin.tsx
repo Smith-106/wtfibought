@@ -312,8 +312,8 @@ export function Admin() {
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
       <div className="flex items-center gap-3">
         <h1 className="text-2xl font-bold">{t('admin.title')}</h1>
-        {/* 因子挖掘只有管理员用，入口就放这儿 */}
-        <Link to="/alpha" className="ml-auto text-xs font-bold text-primary hover:underline">{t('admin.alphaLink')}</Link>
+        {/* 因子挖掘只有管理员用，入口就放这儿；页面是 wiib-alpha 自己托管的，整页跳过去 */}
+        <a href="/alpha/" className="ml-auto text-xs font-bold text-primary hover:underline">{t('admin.alphaLink')}</a>
       </div>
 
       {/* feed 数据流健康：独立于任务状态加载，管理员进页即见 */}
