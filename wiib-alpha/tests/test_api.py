@@ -340,12 +340,12 @@ async def test_observation_reeval(client):
 
 async def test_library_reeval(client):
     """库里因子复评：G9 的基线是拿掉它的库 + carry，G6 的库对比集是别的因子，G8 的已知结构去掉它自己，
-    G10 用它当初声明的方向；结果另存在 reeval，入库时那份和状态都不动"""
+    G10 用它当初声明的方向（没声明过的问模型补）；结果另存在 reeval，入库时那份和状态都不动"""
     store = m.app.state.store
     assert (await client.post("/api/alpha/library/reeval", headers=ADMIN)).status_code == 409
     early = m.app.state.data.cut_ms - 5 * 86_400_000
     await store.create_run("old", 1, "", "zh", None, early)
-    for fid, name, expr, direction in (("f-vol", "vol4", "Mean($volume, 4)", 1), ("f-trades", "trades", "$trades", -1)):
+    for fid, name, expr, direction in (("f-vol", "vol4", "Mean($volume, 4)", 1), ("f-trades", "trades", "$trades", None)):
         e = parse(expr, ["volume", "trades"])
         await store.upsert_candidate({"id": fid, "run_id": "old", "seq": 1, "name": name, "hypothesis": "h", "expr": expr,
                                       "canonical": e.canonical(), "status": "approved", "direction": direction})
@@ -369,8 +369,9 @@ async def test_library_reeval(client):
     assert [g["id"] for g in vol["gates"]] == [f"G{i}" for i in range(11)]
     # G6 的库对比集是别的因子，不含它自己
     assert "lib:vol4" not in (vol["gates"][6]["note"] or "")
-    # 成交笔数是噪音：单条过不了
-    assert by["trades"]["reeval"]["passed"] is False and by["trades"]["reeval"]["direction"] == -1
+    # 成交笔数是噪音：单条过不了；它当初没声明方向，问了模型补上
+    assert by["trades"]["reeval"]["passed"] is False
+    assert (by["trades"]["reeval"]["asked"], by["trades"]["reeval"]["direction"]) == (True, 1)
     # holdout 从现在的切点起；它没见过的那段从发现它那一轮的切点起
     assert vol["brief"]["holdout"]["since"] == m.app.state.data.cut_ms and vol["brief"]["unseen"]["since"] == early
     # 入库时那份不动，详情里两份都在

@@ -50,9 +50,9 @@ def run(monkeypatch, capsys, module, *argv) -> tuple[int, str]:
 
 @pytest.fixture
 def overlap(tmp_path, monkeypatch):
-    """归档到 10-03；交易员 10-23 补了最近 22 天的 live：和归档重叠两天（重叠得少，核对跑得快）"""
+    """归档到 10-03；交易员 10-30 补了最近 29 天的 live：和归档重叠两天（重叠得少，核对跑得快）"""
     store = PanelStore(tmp_path)
-    fake = FakeFapi([*SYMBOLS, "BTCUSDT"], DAY0 + 22 * DAY_MS + 20 * 60_000)
+    fake = FakeFapi([*SYMBOLS, "BTCUSDT"], DAY0 + 29 * DAY_MS + 20 * 60_000)
     fake.write_raw(store, DAY0 - 12 * DAY_MS, DAY0 + 2 * DAY_MS)
     live.update(store, fake.binance(), [*SYMBOLS, "BTCUSDT"], fake.now, {})
     write_db(tmp_path / "alpha.sqlite", [("2026-10", s, i + 1, 1e9) for i, s in enumerate(SYMBOLS)],
@@ -102,7 +102,7 @@ def test_live_warms_up_the_latest_pool_that_is_trading(tmp_path, monkeypatch, ca
     # 只补最新一个月里在交易的币和 BTC
     assert code == 0 and "live 补好了：2 个币" in out, out
     assert {p["symbol"] for _, p in fake.log if "symbol" in p} == {"C01", "BTCUSDT"}
-    assert store.load_live("metrics", "C01")["time"].min() == fake.now - 22 * DAY_MS
+    assert store.load_live("metrics", "C01")["time"].min() == fake.now - 29 * DAY_MS
 
 
 def test_scheme_prints_search_and_holdout(tmp_path, monkeypatch, capsys, planted_store, planted_panels):

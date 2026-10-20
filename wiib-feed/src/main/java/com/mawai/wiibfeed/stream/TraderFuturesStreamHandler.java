@@ -34,10 +34,10 @@ public class TraderFuturesStreamHandler implements StreamHandler {
 
     /** 当前按它订的集合，排好序；两条连接拼地址都用它 */
     private volatile List<String> symbols = List.of();
-    private WsConnection conn;
+    private volatile WsConnection conn;
     /** 副连接（miniTicker），bind 时由副 handler 交进来 */
     @Setter
-    private WsConnection miniTickConn;
+    private volatile WsConnection miniTickConn;
 
     @Override public String name() { return "TraderFutures"; }
     @Override public long maxIdleSeconds() { return 90; }
@@ -99,14 +99,18 @@ public class TraderFuturesStreamHandler implements StreamHandler {
         }
     }
 
-    /** 集合变了就换地址重连；空了 reconnectNow 会按空地址闲置 */
+    /**
+     * 集合变了就换地址重连；空了 reconnectNow 会按空地址闲置。
+     * 比的是连接实际用的地址：建连途中集合变了，这一轮 reconnectNow 被在途的连接短路、换不上，下一轮再比就换上了
+     */
     void refresh() {
         List<String> latest = readSymbols();
-        if (latest.equals(symbols)) return;
-        log.info("交易员集合 {} → {} 个，换地址重连", symbols.size(), latest.size());
-        symbols = latest;
-        conn.reconnectNow();
-        miniTickConn.reconnectNow();
+        if (!latest.equals(symbols)) {
+            log.info("交易员集合 {} → {} 个，换地址重连", symbols.size(), latest.size());
+            symbols = latest;
+        }
+        if (!buildUrl().equals(conn.url())) conn.reconnectNow();
+        if (!miniTickUrl().equals(miniTickConn.url())) miniTickConn.reconnectNow();
     }
 
     private List<String> readSymbols() {

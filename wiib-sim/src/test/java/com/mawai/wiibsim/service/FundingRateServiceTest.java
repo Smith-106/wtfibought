@@ -28,9 +28,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * 资金费按各币自己的结算时刻收：feed 写的下次结算时刻 T 往后挪了，就是记下的那一期结算了，
+ * 资金费按各币自己的结算时刻收：到点了、feed 写的下次结算时刻 T 也往后挪了，就是记下的那一期结算了，
  * 费率用 Binance 结算记录里对上那个时刻的那条，只收结算时刻之前开的仓；每个时刻只收一次（Redis 记着看到的 T），
- * 记录没出来下一分钟再试，sim 停机跨过一次结算起来后补上。
+ * 记录没出来下一分钟再试，sim 停机跨过结算起来后补上；没到点 T 就变了是改了结算间隔，只换记下的时刻。
  * <p>
  * 时间轴从 T0 = 2026-10-20 00:00 UTC 起；结算记录的 fundingTime 比整点多 3ms，费率 = 第几小时 × 0.00001。
  */
@@ -84,7 +84,7 @@ class FundingRateServiceTest {
             publish("AUSDT", k);
             if (k % 4 == 0) publish("BUSDT", k);
             if (k % 8 == 0) publish("CUSDT", k);
-            service.settleDue();
+            round(T0 + k * H + 30_000);
         }
 
         assertThat(charges).containsExactlyInAnyOrder(
@@ -99,15 +99,15 @@ class FundingRateServiceTest {
         positions.add(position(1, "AUSDT", T0));
         publish("AUSDT", 1);
         next.put("AUSDT", T0 + H);
-        service.settleDue();
-        // feed 的 T 还没挪：不收
-        service.settleDue();
+        round(T0 + 30_000);
+        // 到点了 feed 的 T 还没挪：不收
+        round(T0 + H + 30_000);
         assertThat(charges).isEmpty();
 
         next.put("AUSDT", T0 + 2 * H);
-        service.settleDue();
+        round(T0 + H + 60_000);
         service = newService();
-        service.settleDue();
+        round(T0 + H + 90_000);
 
         assertThat(charges).containsExactly(expected("AUSDT", 1));
         verify(client, times(1)).getFundingRateHistory(eq("AUSDT"), anyInt());
@@ -122,10 +122,10 @@ class FundingRateServiceTest {
         publish("BUSDT", 1);
         next.put("AUSDT", t);
         next.put("BUSDT", t);
-        service.settleDue();
+        round(T0 + 30_000);
         next.put("AUSDT", t + H);
         next.put("BUSDT", t + H);
-        service.settleDue();
+        round(t + 30_000);
 
         verify(settlement).chargeFundingFee(eq("AUSDT"), eq(t), any(), eq(List.of(before)));
         verify(settlement, never()).chargeFundingFee(eq("BUSDT"), anyLong(), any(), anyList());
@@ -138,18 +138,18 @@ class FundingRateServiceTest {
         positions.add(position(1, "AUSDT", T0));
         publish("AUSDT", 0);
         next.put("AUSDT", t);
-        service.settleDue();
+        round(T0 + 30_000);
         next.put("AUSDT", t + H);
 
         historyDown = true;
-        service.settleDue();
+        round(t + 30_000);
         historyDown = false;
         // 只有上一期 0h 的记录，不能拿它顶
-        service.settleDue();
+        round(t + 90_000);
         assertThat(charges).isEmpty();
 
         publish("AUSDT", 1);
-        service.settleDue();
+        round(t + 150_000);
         assertThat(charges).containsExactly(expected("AUSDT", 1));
     }
 
@@ -157,13 +157,13 @@ class FundingRateServiceTest {
     void 停机跨过结算_起来后补上最早那一期() {
         positions.add(position(1, "AUSDT", T0));
         next.put("AUSDT", T0 + H);
-        service.settleDue();
+        round(T0 + 30_000);
         // 停机到 02:30：1h、2h 两期都过了，feed 的 T 已经是 3h。补 1h 那期，2h 那期不补
         publish("AUSDT", 1);
         publish("AUSDT", 2);
         next.put("AUSDT", T0 + 3 * H);
         service = newService();
-        service.settleDue();
+        round(T0 + 2 * H + 30 * 60_000);
 
         assertThat(charges).containsExactly(expected("AUSDT", 1));
         assertThat(redis).containsEntry("futures:funding:next:AUSDT", String.valueOf(T0 + 3 * H));
@@ -173,14 +173,49 @@ class FundingRateServiceTest {
     void 记录已经滚出最近几条_这一期不收() {
         positions.add(position(1, "AUSDT", T0));
         next.put("AUSDT", T0 + H);
-        service.settleDue();
+        round(T0 + 30_000);
         // 最近 10 条记录都在 1h 之后：1h 那条取不到了
         for (int k = 2; k <= 11; k++) publish("AUSDT", k);
         next.put("AUSDT", T0 + 12 * H);
-        service.settleDue();
+        round(T0 + 11 * H + 30_000);
 
         assertThat(charges).isEmpty();
         assertThat(redis).containsEntry("futures:funding:next:AUSDT", String.valueOf(T0 + 12 * H));
+    }
+
+    @Test
+    void 结算间隔调短_没到点T往前挪不算结算_按新时刻收() {
+        positions.add(position(1, "AUSDT", T0 - 60_000));
+        next.put("AUSDT", T0 + 8 * H);
+        round(T0 + 30_000);
+        // 02:00 Binance 把这个币改成 4 小时一结：T 从 8h 变成 4h，没到点，只换记下的时刻
+        next.put("AUSDT", T0 + 4 * H);
+        round(T0 + 2 * H + 30_000);
+        assertThat(charges).isEmpty();
+        verify(client, never()).getFundingRateHistory(anyString(), anyInt());
+
+        publish("AUSDT", 4);
+        next.put("AUSDT", T0 + 8 * H);
+        round(T0 + 4 * H + 30_000);
+        assertThat(charges).containsExactly(expected("AUSDT", 4));
+    }
+
+    @Test
+    void 结算间隔调长_没到点T往后跳不算结算_按新时刻收() {
+        positions.add(position(1, "AUSDT", T0));
+        next.put("AUSDT", T0 + H);
+        round(T0 + 30_000);
+        // 00:30 改成 4 小时一结：T 从 1h 跳到 4h，1h 那期不存在，不能当它结算了
+        next.put("AUSDT", T0 + 4 * H);
+        round(T0 + 30 * 60_000);
+        assertThat(charges).isEmpty();
+        verify(client, never()).getFundingRateHistory(anyString(), anyInt());
+
+        publish("AUSDT", 4);
+        next.put("AUSDT", T0 + 8 * H);
+        round(T0 + 4 * H + 30_000);
+        assertThat(charges).containsExactly(expected("AUSDT", 4));
+        verify(client, times(1)).getFundingRateHistory(eq("AUSDT"), anyInt());
     }
 
     @Test
@@ -195,6 +230,12 @@ class FundingRateServiceTest {
 
     private FundingRateService newService() {
         return new FundingRateService(client, cache, positionMapper, settlement);
+    }
+
+    /** 一分钟一轮 */
+    private void round(long now) {
+        service.nowMs = () -> now;
+        service.settleDue();
     }
 
     private void publish(String symbol, int hour) {

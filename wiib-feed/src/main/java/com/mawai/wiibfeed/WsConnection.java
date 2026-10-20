@@ -45,6 +45,8 @@ public class WsConnection {
     private volatile long connectedAt;
     /** 地址为空（按集合订的流集合空了）：不连，闲着 */
     private volatile boolean idle;
+    /** 这次连接用的地址，按集合订的流拿它判要不要换地址 */
+    private volatile String url = "";
     private ScheduledFuture<?> idleWatchdog;
     private volatile ScheduledFuture<?> reconnectFuture;
     /** 收帧和处理分开：读线程只把整条消息放进来就去要下一帧，处理由 consumer 一条线程按序做。满了丢最旧的，行情都是全量，下一条就补上 */
@@ -114,6 +116,9 @@ public class WsConnection {
 
     public int reconnectAttempt() { return reconnectAttempt.get(); }
 
+    /** 这条连接（在连或已连）实际用的地址；闲置是空串 */
+    public String url() { return url; }
+
     /** 由三个原子标志推导状态：已连 > 正在连 > 等退避 > 断开。 */
     public Status status() {
         if (connected.get()) return Status.CONNECTED;
@@ -136,21 +141,23 @@ public class WsConnection {
         if (connected.get()) return;
         if (!connecting.compareAndSet(false, true)) return;
 
-        String url = urlBuilder.get();
+        String target = urlBuilder.get();
         // 按集合订的流集合空了：不连，等集合有了 handler 再 reconnectNow
-        idle = url == null || url.isBlank();
+        idle = target == null || target.isBlank();
+        url = idle ? "" : target;
         if (idle) {
             connecting.set(false);
+            reconnecting.set(false);
             log.info("{} 无订阅符号，闲置", name);
             fireStatus(); // IDLE
             return;
         }
-        log.info("连接{} WS: {}", name, url);
+        log.info("连接{} WS: {}", name, target);
         fireStatus(); // CONNECTING
 
         httpClient.newWebSocketBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
-                .buildAsync(URI.create(url), new Listener())
+                .buildAsync(URI.create(target), new Listener())
                 // 回调不能落 commonPool：Lettuce 握手借 commonPool 发 HELLO，这里同步调 Redis 会互相卡死
                 .thenAcceptAsync(ws -> {
                     wsRef.set(ws);

@@ -60,13 +60,17 @@ def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights
             held: Mapping[str, Mapping[str, Sequence[str]]], t_ms: int, params: EvalParams) -> dict[str, Any]:
     """factors 与 weights 一一对应（勾选的因子、全部历史上学的 IC 权重），一条都没有时组合腿空仓、那一半资金闲着；
     held 是上一期各腿的多空集合。出每条腿的多空与每币明细，和每币净权重（只列不是 0 的）。
-    T 那根在池有数据的币不够 min_names 个就报错：数据没补全时出的空目标会把仓位全平掉"""
+    T 那根在池有波动的币不够 min_names 个、或者一条因子全池没值，就报错：数据没补全时出的空目标会把仓位全平掉，
+    缺值按 0 合成等于把那条因子静默踢出组合"""
     vol = values_at(panels, VOL, t_ms)
-    if len(vol) < params.min_names:
-        raise TradeError(f"T 那根在池有数据的币只有 {len(vol)} 个，不调仓")
+    if int(np.isfinite(vol).sum()) < params.min_names:
+        raise TradeError(f"T 那根在池有波动的币只有 {int(np.isfinite(vol).sum())} 个，不调仓")
     signal = pd.Series(dtype="float64")
     if factors:
         table = pd.concat([values_at(panels, e, t_ms) for e in factors], axis=1)
+        for e, col in zip(factors, table.to_numpy(dtype="float64").T):
+            if not np.isfinite(col).any():
+                raise TradeError(f"因子 {e} 在 T 那根全池没有值（回看窗口比 live 面板还长？），不调仓")
         c = combo.Combo(pd.DataFrame({"t": np.full(len(table), t_ms)}), tuple(table.index),
                         tuple(str(e) for e in factors), table.to_numpy(dtype="float64"))
         signal = pd.Series(combo.score(c, weights), index=table.index)

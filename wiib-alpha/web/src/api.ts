@@ -477,7 +477,7 @@ export interface TraderJob {
   finishedAt?: number | null;
   /** 这次调仓的 UTC 日期 */
   day?: string;
-  stage?: 'prepare' | 'account' | 'live' | 'targets' | 'orders' | null;
+  stage?: 'prepare' | 'account' | 'live' | 'targets' | 'waiting' | 'orders' | null;
   total?: number;
   done?: number;
   symbol?: string | null;

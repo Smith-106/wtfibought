@@ -164,8 +164,8 @@ def plan(weights: Mapping[str, float], positions: Sequence[Mapping[str, Any]], p
         if w:
             want = (_dec(abs(w) * equity_ / price) // rule.step) * rule.step * (1 if w > 0 else -1)
         row["target"] = float(want)
-        # 目标是 0 的下架币可能没价格，照样全平
-        if price is not None and float(abs(want - have["LONG"] + have["SHORT"])) * price < max(
+        # 目标是 0 的一律全平：碎仓留着这个币会一直占着交易员集合；下架币可能没价格，照样全平
+        if w and price is not None and float(abs(want - have["LONG"] + have["SHORT"])) * price < max(
                 float(rule.min_notional) if rule else 0.0, equity_ * MIN_TRADE):
             row["note"] = "差额太小，不动"
             continue

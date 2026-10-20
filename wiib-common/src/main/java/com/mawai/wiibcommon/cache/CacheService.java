@@ -238,17 +238,15 @@ public class CacheService {
         cryptoPriceCache.put("spot:" + symbol, price);
     }
 
-    /** feed 每帧写：标记价落 Redis，再刷本进程 L1 */
+    /** feed 每帧写：标记价落 Redis（feed 自己不读合约价，不进 L1） */
     public void setMarkPrice(String symbol, String price) {
         stringRedisTemplate.opsForValue().set("market:markprice:" + symbol, price);
-        cryptoPriceCache.put("mark:" + symbol, new BigDecimal(price));
     }
 
-    /** feed 每帧写：最新价和写入时刻一次 MSET 落 Redis，再刷本进程 L1。写入时刻给 sim 市价开仓判价格停没停 */
+    /** feed 每帧写：最新价和写入时刻一次 MSET 落 Redis。写入时刻给 sim 市价开仓判价格停没停 */
     public void setFuturesPrice(String symbol, String price, long nowMs) {
         stringRedisTemplate.opsForValue().multiSet(Map.of("market:futures-price:" + symbol, price,
                 "market:futures-price-at:" + symbol, Long.toString(nowMs)));
-        cryptoPriceCache.put("futures:" + symbol, new BigDecimal(price));
     }
 
     /** 最新价上次写入的时刻（毫秒）；没写过回 null */

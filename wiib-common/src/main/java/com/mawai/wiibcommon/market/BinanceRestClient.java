@@ -228,15 +228,6 @@ public class BinanceRestClient extends BaseRestTemplateConfig {
         return getGuarded(uri);
     }
 
-    /** premiumIndex 不带 symbol：一次返回全部合约的数组，资金费率结算点全量拉取用。 */
-    public String getPremiumIndexAll() {
-        String baseUrl = props.getFuturesRestBaseUrl();
-        if (baseUrl == null || baseUrl.isBlank()) return null;
-        URI uri = UriComponentsBuilder.fromUriString(baseUrl + "/fapi/v1/premiumIndex").build().toUri();
-        log.info("Binance REST premiumIndex 全量");
-        return getGuarded(uri);
-    }
-
     /**
      * 获取24h行情（涨跌幅/成交量/最高最低）
      */

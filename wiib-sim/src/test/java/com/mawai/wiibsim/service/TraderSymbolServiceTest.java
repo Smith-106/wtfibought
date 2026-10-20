@@ -64,15 +64,16 @@ class TraderSymbolServiceTest {
     }
 
     @Test
-    void 登记两小时后过期_登记完立刻重算() {
+    void 登记两小时后过期_登记完立刻重算_feed的币不进集合() {
         when(positionMapper.openSymbols()).thenReturn(List.of());
-        when(zset.range(TraderSymbolService.WATCH_KEY, 0, -1)).thenReturn(Set.of("WIFUSDT", "PEPEUSDT"));
+        when(zset.range(TraderSymbolService.WATCH_KEY, 0, -1)).thenReturn(Set.of("WIFUSDT", "PEPEUSDT", "BTCUSDT"));
         when(set.members(TraderSymbolService.SYMBOLS_KEY)).thenReturn(Set.of());
 
-        service.watch(List.of("WIFUSDT", "PEPEUSDT"));
+        service.watch(List.of("WIFUSDT", "PEPEUSDT", "BTCUSDT"));
 
         verify(zset).add(TraderSymbolService.WATCH_KEY, "WIFUSDT", (double) (T + 2 * H));
         verify(zset).add(TraderSymbolService.WATCH_KEY, "PEPEUSDT", (double) (T + 2 * H));
+        // 交易员登记里的 BTC 是 feed 的币，feed 本来就订着
         verify(set).add(TraderSymbolService.SYMBOLS_KEY, "PEPEUSDT", "WIFUSDT");
     }
 }

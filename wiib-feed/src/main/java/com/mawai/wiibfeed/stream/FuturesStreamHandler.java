@@ -112,12 +112,12 @@ public class FuturesStreamHandler implements StreamHandler {
         String price = tick.price();
         if (tick.markPrice()) {
             cacheService.setMarkPrice(symbol, price);
-            fundingRateWriter.write(symbol, tick.rate(), tick.nextTime());
 
             broadcastService.broadcastFuturesQuote(symbol, "{\"mp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 
             // markPrice 事件发 Redis：sim 侧消费做强平、quant 侧消费喂哨兵（解耦：currentPrice 由 sim 自己读 KV）
             matchPricePublisher.publish("{\"symbol\":\"" + symbol + "\",\"type\":\"markprice\",\"price\":\"" + price + "\"}");
+            fundingRateWriter.write(symbol, tick.rate(), tick.nextTime());
         } else {
             // 最新价连写入时刻一起落：sim 市价开仓按它判价格停没停
             cacheService.setFuturesPrice(symbol, price, System.currentTimeMillis());

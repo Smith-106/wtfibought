@@ -346,12 +346,14 @@ async def _observing(app: FastAPI) -> combo.Combo:
     return out
 
 
-async def _warm_observing(app: FastAPI) -> None:
-    """装载完先把观察区的值算好：手填评估是同步接口，现算几条会顶到 nginx 的 60 秒"""
+async def _warm(app: FastAPI) -> None:
+    """装载完、入库后先把观察区的值和库算好：手填评估是同步接口，现算几条会顶到 nginx 的 60 秒；
+    交易员 00:05 调仓也不该现算整个库"""
     try:
         await _observing(app)
+        await _library(app)
     except Exception:
-        logger.exception("观察区候选预热失败")
+        logger.exception("预热失败")
 
 
 def _data(app: FastAPI) -> Data:
@@ -365,7 +367,7 @@ async def _load(app: FastAPI, cfg: Config) -> None:
     universe = await app.state.store.universe()
     app.state.data = data = await asyncio.to_thread(load_data, cfg, app.state.params, universe)
     if data is not None:
-        asyncio.create_task(_warm_observing(app))
+        asyncio.create_task(_warm(app))
     job = app.state.runs.jobs["grid"]
     if data is None or data.reference_grid is not None or job.get("running"):
         return
@@ -616,7 +618,7 @@ async def observation(request: Request):
 
 
 def _reeval_view(r: dict[str, Any] | None) -> dict[str, Any] | None:
-    """观察区和库里因子的复评共用；库里因子没有同批（asked、peers 空）"""
+    """观察区和库里因子的复评共用；库里因子没有同批（peers 空）"""
     if r is None:
         return None
     return {"at": r["at"], "direction": r["direction"], "asked": r.get("asked", False), "passed": r["passed"],
@@ -732,6 +734,8 @@ async def approve(candidate_id: str, request: Request):
         "columns": latest["eval"]["columns"], "eval": latest["eval"], "gates": latest["gates"], "review": c.get("review"),
         "approved_at": now_ms(), "run_id": c["run_id"],
     })
+    if request.app.state.data is not None:
+        asyncio.create_task(_warm(request.app))
     return _ok({"id": c["id"], "name": name})
 
 
@@ -846,31 +850,35 @@ async def library_recheck(factor_id: str, request: Request):
 
 
 @router.post("/library/reeval")
-async def library_reeval(request: Request):
+async def library_reeval(request: Request, who: Auth = Depends(auth)):
     """库里全部因子用当前评估器重算一遍：G9 的基线是拿掉它的库 + 基差 carry，G6 比参照集、库里别的因子和观察区，
-    G8 的已知结构去掉它自己，G10 用它当初（候选）声明的方向，G5 只判单条的排列分位。结果写进 reeval，入库时那份和入库状态都不动"""
+    G8 的已知结构去掉它自己，G10 用它当初（候选）声明的方向，G5 只判单条的排列分位。结果写进 reeval，入库时那份和入库状态都不动。
+    当初没声明过方向的（加 direction 列之前的老候选，观察区复评也没补过）先只拿假设和表达式问生成模型补一个"""
     app = request.app
     data = _data(app)
+    store: Store = app.state.store
     job = app.state.runs.jobs["libraryReeval"]
     if job.get("running"):
         raise HTTPException(409, "已经在复评了")
-    if await app.state.store.active_campaign() is not None or app.state.runs.tasks:
+    if await store.active_campaign() is not None or app.state.runs.tasks:
         raise HTTPException(409, "有 campaign 在跑，等它结束再复评")
     _not_refreshing(app)
     if data.reference_grid is None:
         raise HTTPException(409, "参照网格还没算好，等它算完再复评")
     if app.state.runs.jobs["reeval"].get("running"):
         raise HTTPException(409, "观察区还在复评，等它算完")
-    lib = await _library(app)
-    if not lib.factors:
+    rows = await store.factors()
+    if not rows:
         raise HTTPException(409, "库是空的")
+    if any([await _declared(store, f) is None for f in rows]) and app.state.models is None:
+        app.state.models = build_models(await _model_specs(app))
     job.clear()
-    job.update(running=True, startedAt=now_ms(), total=len(lib.factors), done=0, current=None, error=None,
-               finishedAt=None)
+    job.update(running=True, startedAt=now_ms(), total=len(rows), done=0, current=None, error=None, finishedAt=None)
 
     async def work() -> None:
         try:
-            await _library_reeval(app, data, lib, job)
+            # 库刚变过要先算库（几分钟），放在任务里：期间刷新照样被挡
+            await _library_reeval(app, data, await _library(app), job, who.lang)
             job.update(finishedAt=now_ms())
         except Exception as exc:
             logger.exception("库里因子复评失败")
@@ -879,10 +887,18 @@ async def library_reeval(request: Request):
             job["running"] = False
 
     asyncio.create_task(work())
-    return _ok({"started": True, "total": len(lib.factors)})
+    return _ok({"started": True, "total": len(rows)})
 
 
-async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str, Any]) -> None:
+async def _declared(store: Store, f: Mapping[str, Any]) -> int | None:
+    """因子当初（候选）声明的方向：写表达式时声明的，或观察区复评时问模型补的；都没有是 None"""
+    c = await store.candidate(f["id"])
+    if c is None:
+        return None
+    return c["direction"] if c["direction"] is not None else (c["reeval"] or {}).get("direction")
+
+
+async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str, Any], lang: str) -> None:
     """逐条评估判门；lib.full 的列与 lib.factors 同序，拿掉第 j 列就是没有它的库"""
     params, thresholds = app.state.params, app.state.thresholds
     store: Store = app.state.store
@@ -892,13 +908,15 @@ async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str,
     basis, vol = data.basis[pool.in_search], data.vol[pool.in_search]
     for j, f in enumerate(lib.factors):
         job["current"] = f["name"]
+        direction = await _declared(store, f)
+        asked = direction is None
+        if asked:
+            direction = await _declare(app, data, f, lang)
         others = combo.Combo(search.rows, search.symbols, search.names[:j] + search.names[j + 1:],
                              np.delete(search.values, j, axis=1))
         base = await asyncio.to_thread(scheme.Base.of, others, basis, vol, params)
         ev = await asyncio.to_thread(evaluate, parse(f["expr"], FEATURE_COLUMNS), pool, data.vol, params,
                                      data.reference_grid, base, data.products, True, observing)
-        candidate = await store.candidate(f["id"])
-        direction = candidate["direction"] if candidate else None
         gates = judge(ev, thresholds, lib.known - {f["canonical"]}, direction)
         # 发现它那一轮的切点之后都是它没见过的，比当前 holdout 长
         run = await store.run(f["run_id"])
@@ -907,7 +925,7 @@ async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str,
             ev["unseen"] = await asyncio.to_thread(recheck, pool.rows, lib.full.values[:, j], seen, params)
         failed = [g for g in gates if not g["passed"]]
         await store.set_factor_reeval(f["id"], {
-            "at": now_ms(), "direction": direction, "passed": not failed,
+            "at": now_ms(), "direction": direction, "asked": asked, "passed": not failed,
             "reason": "；".join(f"{g['id']} {g['note']}" for g in failed) or None,
             "eval": clean(ev), "gates": clean(gates)})
         job["done"] += 1

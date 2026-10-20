@@ -68,8 +68,8 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
         assert c["refPrice"] == pytest.approx(fake.close(body["symbol"], DAY))
     assert sum(1 for o in run["orders"] if o["ok"]) == len(market.calls) == len(coins)
     assert run["equity_after"] == pytest.approx(10000)
-    # 算完目标就把目标里的币登记给 sim（feed 据此订行情）
-    assert market.watched == [sorted(coins)]
+    # 补数据之前就把当月在交易的币登记给 sim（feed 据此订行情），下单时都订上了
+    assert market.watched == [sorted(POOL_SYMBOLS)]
 
     # 页面：账户、持仓（带两条腿各占多少）、调仓记录与详情
     account = data(await client.get("/api/alpha/trader/account", headers=ADMIN))
@@ -95,10 +95,9 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     actions = [a for a, _ in market.calls]
     assert "close" in actions and actions == sorted(actions, key=lambda a: a != "close")
     assert all(body["clientRequestId"].startswith("ft-20250302-") for _, body in market.calls)
-    # 不在交易的币不出目标，持着的平掉；登记的只有目标里的币，要平的 sim 按仓位自己算
+    # 不在交易的币不出目标、不登记，持着的平掉（要平的币 sim 按仓位自己算进集合）
     assert second["targets"]["notTrading"] == ["X00"] and "X00" not in second["legs"]["combo"]["long"]
-    assert market.watched[1] == sorted(c["symbol"] for c in second["targets"]["coins"] if c["weight"])
-    assert "X00" not in market.watched[1]
+    assert market.watched[1] == sorted(set(POOL_SYMBOLS) - {"X00"})
     runs = data(await client.get("/api/alpha/trader/runs", headers=ADMIN))
     assert [r["day"] for r in runs["items"]] == ["2025-03-02", "2025-03-01"] and runs["job"]["running"] is False
 

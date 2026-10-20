@@ -68,18 +68,24 @@ class TraderFuturesStreamHandlerTest {
         handler.refresh();
         verify(conn).reconnectNow();
         verify(miniTickConn).reconnectNow();
-        assertThat(handler.buildUrl())
-                .isEqualTo("wss://fstream.binance.com/market/stream?streams=pepeusdt@markPrice@1s/wifusdt@markPrice@1s");
-        assertThat(handler.miniTickUrl())
-                .isEqualTo("wss://fstream.binance.com/market/stream?streams=pepeusdt@miniTicker/wifusdt@miniTicker");
+        String mark = "wss://fstream.binance.com/market/stream?streams=pepeusdt@markPrice@1s/wifusdt@markPrice@1s";
+        String mini = "wss://fstream.binance.com/market/stream?streams=pepeusdt@miniTicker/wifusdt@miniTicker";
+        assertThat(handler.buildUrl()).isEqualTo(mark);
+        assertThat(handler.miniTickUrl()).isEqualTo(mini);
 
+        // 建连途中集合没变上去：下一轮按连接实际用的地址再比一次
         handler.refresh();
-        verify(conn, times(1)).reconnectNow();
-
-        when(setOps.members(TraderFuturesStreamHandler.SYMBOLS_KEY)).thenReturn(Set.of());
+        verify(conn, times(2)).reconnectNow();
+        when(conn.url()).thenReturn(mark);
+        when(miniTickConn.url()).thenReturn(mini);
         handler.refresh();
         verify(conn, times(2)).reconnectNow();
         verify(miniTickConn, times(2)).reconnectNow();
+
+        when(setOps.members(TraderFuturesStreamHandler.SYMBOLS_KEY)).thenReturn(Set.of());
+        handler.refresh();
+        verify(conn, times(3)).reconnectNow();
+        verify(miniTickConn, times(3)).reconnectNow();
         assertThat(handler.buildUrl()).isEmpty();
     }
 }

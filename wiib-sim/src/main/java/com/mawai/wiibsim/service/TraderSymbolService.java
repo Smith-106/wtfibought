@@ -45,13 +45,13 @@ public class TraderSymbolService {
         refresh();
     }
 
-    public void refresh() {
+    /** 登记那一刻和每分钟定时各算一次，串行：不然定时那次读到登记前的 zset、登记后的 set，会把刚登记的删掉 */
+    public synchronized void refresh() {
         redis.opsForZSet().removeRangeByScore(WATCH_KEY, Double.NEGATIVE_INFINITY, nowMs.getAsLong());
         SortedSet<String> wanted = new TreeSet<>(redis.opsForZSet().range(WATCH_KEY, 0, -1));
-        Set<String> feed = Set.copyOf(binanceProperties.getAllFuturesSymbols());
-        for (String s : positionMapper.openSymbols()) {
-            if (!feed.contains(s)) wanted.add(s);
-        }
+        wanted.addAll(positionMapper.openSymbols());
+        // feed 配置里的币它本来就订着
+        wanted.removeAll(binanceProperties.getAllFuturesSymbols());
         Set<String> current = redis.opsForSet().members(SYMBOLS_KEY);
         if (wanted.equals(current)) return;
         List<String> added = wanted.stream().filter(s -> !current.contains(s)).toList();

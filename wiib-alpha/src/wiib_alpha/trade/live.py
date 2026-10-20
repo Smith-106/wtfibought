@@ -1,10 +1,10 @@
-"""live：交易员出信号用的最近 21 天面板，K 线、溢价 K 线、持仓量和大户持仓多空比全走 fapi，不读归档
+"""live：交易员出信号用的最近 28 天面板，K 线、溢价 K 线、持仓量和大户持仓多空比全走 fapi，不读归档
 （归档 metrics 出过成片乱跳的非零坏数，剔不干净）。
 
 存 live/{数据集}/{币}.parquet，滚动留 30 天；不写 raw/，不然下次刷新的增量起点被顶掉、两种口径混进历史。
 和 raw 重叠的那段给一致性核对（check.py）用。
 费率读 raw；另两种多空比、taker 比、强平没补，用到这些列的因子交易员不能勾（COLUMNS）。拼好按 panel.assemble 同一套规则装配。
-第一次要补满 22 天，约 50 分钟：部署后先跑 python -m wiib_alpha.trade.live 预热，别留到 00:05 调仓时现补。
+第一次要补满 29 天，约一小时：部署后先跑 python -m wiib_alpha.trade.live 预热，别留到 00:05 调仓时现补。
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ from . import scheme
 logger = logging.getLogger(__name__)
 
 KEEP_DAYS = 30
-# 出信号给多少天的面板：ls_pos_stable 是 672 套 672，至少 14 天
-WINDOW_DAYS = 21
+# 出信号给多少天的面板：rally_basis_chase 是 2016 套 96（22 天），ls_pos_stable 是 672 套 672（14 天）；
+# 回看更长的因子勾了也出不了值（targets 会报错不调仓）。持仓量、多空比接口只留 30 天，再长补不到
+WINDOW_DAYS = 28
 DATASETS = ("klines_15m", "premium_15m", "metrics")
 # live 尾巴补得出来的 DSL 列
 COLUMNS = frozenset({"open", "high", "low", "close", "volume", "quote_volume", "trades", "taker_buy_base",
@@ -110,7 +111,7 @@ def closes(binance: Binance, symbols: Iterable[str], close_time: int) -> dict[st
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="预热 live：给最新一个月币池里在交易的币和 BTC 补满最近 22 天").parse_args()
+    argparse.ArgumentParser(description="预热 live：给最新一个月币池里在交易的币和 BTC 补满最近 29 天").parse_args()
     logging.basicConfig(level=logging.WARNING)
     # fapi 已用权重打出来
     logging.getLogger("wiib_alpha").setLevel(logging.INFO)

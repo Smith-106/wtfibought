@@ -2,7 +2,7 @@
 
 整点记一次账户净值；每天 UTC 00:05 ~ 01:00 之间，今天还没调过、数据已装载、没在刷新，就调一次仓：
 00:05 起补尾巴、算目标，等到 00:15（晚一根）再下单。01:00 之后还没调成就跳过这一天，不拿 0 点的信号隔几小时再下。
-一次调仓：ensure-account → 当月币池补 live 尾巴 → 拼 21 天面板出目标 → 目标币登记给 sim（feed 按交易员集合订行情）→ 等到 00:15 → 读账户和标记价 → 下单 → 补拉 00:15 那根收盘价 → 再读账户；
+一次调仓：ensure-account → 当月币池登记给 sim（feed 按交易员集合订行情）→ 补 live 尾巴 → 拼面板出目标 → 等到 00:15 → 读账户和标记价 → 下单 → 补拉 00:15 那根收盘价 → 再读账户；
 跑完不管成败都落一条 trade_run；一笔单都没下出去就失败的（Binance、sim 一时不通），01:00 之前下一分钟再来，下过单的当天不再跑；
 进程在半路退出就不落，重启后同一天重跑（下单 ID 不变，sim 去重）。
 刷新期间不跑；调仓、因子对比跑着的时候刷新接口拒绝（main 里那串互斥）。
@@ -142,13 +142,13 @@ def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Seq
     info = binance.exchange_info()
     # 下架、停牌的币 fapi 拉不到，不出目标
     trading = [s for s in pool if info.get(s, {}).get("status") == "TRADING"]
+    # 可能下单的币先登记给 sim，feed 据此订上行情：补 live 尾巴要五六分钟，下单时都订上了（重试也一样）；要平掉的币 sim 按仓位自己算进集合
+    sim.watch(trading)
     job["stage"] = "live"
     live.update(store, binance, sorted({*trading, BENCHMARK}), now, job)
     job["stage"] = "targets"
     panels = live.window(live.loader(store, signal_ms), trading, months, signal_ms)
     out = targets.compute(panels, factors, weights, held, signal_ms, params)
-    # 目标里的币登记给 sim，feed 据此订上行情，到 00:15 下单有十分钟；要平掉的币 sim 按仓位自己算进集合
-    sim.watch(list(out["coins"]))
     job["stage"] = "waiting"
     time.sleep(max(0.0, (signal_ms + 1 + TRADE_AT_MS - now_ms()) / 1000))
     # 01:00 前开始的重试，补数据、算目标拖过了 01:00 的，这一天也跳过

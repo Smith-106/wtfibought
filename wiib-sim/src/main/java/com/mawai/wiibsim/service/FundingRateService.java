@@ -20,14 +20,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
  * 资金费：全部币按各自的结算时刻收，结算时刻从 feed 写的 markPrice 推送来（当期费率 r、下次结算时刻 T）。
- * 每分钟一次：只看有未平仓位的币，Redis 记"上次看到的下次结算时刻"；feed 给的 T 往后挪了，就是记下的那一期结算了——
+ * 每分钟一次：只看有未平仓位的币，Redis 记"上次看到的下次结算时刻"；到点了、feed 给的 T 也挪了，就是记下的那一期结算了——
  * 去 /fapi/v1/fundingRate 取这一期的实际费率（记录没出来下一分钟再试），给结算时刻之前开的仓收一次；先记已结算再收，不重收。
+ * 还没到点 T 就变了，是 Binance 改了这个币的结算间隔，只换记下的时刻。
  * sim 停机跨过一次结算，起来后 T 已经挪了，照样补上；跨过更多的只收最早那一期，其余打日志。
  * 前端查费率也读 feed 写的，不打 Binance。
  */
@@ -51,6 +53,8 @@ public class FundingRateService {
     private final FuturesPositionMapper positionMapper;
     private final FuturesSettlementService settlementService;
 
+    /** 墙钟注入点 */
+    LongSupplier nowMs = System::currentTimeMillis;
     private final ReentrantLock settling = new ReentrantLock();
 
     /** 前端查询的返回体；rate 是小数（0.0001 = 0.01%/期），fetchedAt 是 feed 写入时刻，nextTime 是下次结算时刻 */
@@ -66,6 +70,7 @@ public class FundingRateService {
     public void settleDue() {
         if (!settling.tryLock()) return;
         try {
+            long now = nowMs.getAsLong();
             Map<String, List<FuturesPosition>> open = positionMapper.selectList(new LambdaQueryWrapper<FuturesPosition>()
                             .eq(FuturesPosition::getStatus, "OPEN"))
                     .stream().collect(Collectors.groupingBy(FuturesPosition::getSymbol));
@@ -80,8 +85,13 @@ public class FundingRateService {
                     putSeenNext(symbol, next);
                     continue;
                 }
-                if (next <= seen) continue;
-                // T 往后挪了：seen 这一期结算了。没有要收的仓位就不取记录
+                if (next == seen) continue;
+                if (now < seen - FUNDING_TIME_MATCH_MS) {
+                    // 还没到记下的时刻 T 就变了：Binance 改了这个币的结算间隔，不是结算
+                    putSeenNext(symbol, next);
+                    continue;
+                }
+                // 到点了、T 也挪了：seen 这一期结算了。没有要收的仓位就不取记录
                 List<FuturesPosition> positions = openedBefore(entry.getValue(), seen);
                 if (positions.isEmpty()) {
                     putSeenNext(symbol, next);
@@ -101,13 +111,14 @@ public class FundingRateService {
                 if (history == null) continue;
                 BigDecimal rate = rateAt(history, seen);
                 if (rate == null) {
-                    // 记录还没出来：下一分钟再试。最近几条全在这一期之后：记录已经滚出去了，这一期不收
-                    if (history.isEmpty() || history.firstKey() <= seen + FUNDING_TIME_MATCH_MS) continue;
+                    // 记录还没出来：下一分钟再试。已经有更晚的记录却没有这一条：它不会再出来了，这一期不收
+                    if (history.isEmpty() || history.lastKey() <= seen + FUNDING_TIME_MATCH_MS) continue;
                     log.warn("资金费结算记录已经取不到，这一期不收 symbol={} 结算时刻={}", symbol, seen);
                     putSeenNext(symbol, next);
                     continue;
                 }
-                List<Long> missed = List.copyOf(history.subMap(seen + FUNDING_TIME_MATCH_MS, next - FUNDING_TIME_MATCH_MS).keySet());
+                List<Long> missed = List.copyOf(history.subMap(seen + FUNDING_TIME_MATCH_MS,
+                        Math.max(seen + FUNDING_TIME_MATCH_MS, next - FUNDING_TIME_MATCH_MS)).keySet());
                 if (!missed.isEmpty()) {
                     log.warn("资金费漏收（停机期间错过，不补）symbol={} 结算时刻={}", symbol, missed);
                 }

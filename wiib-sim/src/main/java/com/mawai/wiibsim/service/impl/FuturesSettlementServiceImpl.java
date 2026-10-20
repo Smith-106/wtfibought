@@ -34,7 +34,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
 import java.util.concurrent.locks.Lock;
-import java.util.function.Function;
 
 import static com.mawai.wiibcommon.enums.LedgerBizType.*;
 import static com.mawai.wiibsim.service.impl.FuturesHelper.*;
@@ -541,25 +540,20 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
 
     // ==================== 资金费率扣除 ====================
 
+    /** 逐个仓位收，单仓失败不影响别的 */
     @Override
     public void chargeFundingFee(String symbol, long fundingTime, BigDecimal rate, List<FuturesPosition> positions) {
-        int failCount = chargeEach(positions, pos -> rate);
-        log.info("资金费结算完成 symbol={} 结算时刻={} 费率={} 成功{} 失败{}",
-                symbol, fundingTime, rate, positions.size() - failCount, failCount);
-    }
-
-    /** 逐个仓位收资金费，单仓失败不影响别的；返回失败数 */
-    private int chargeEach(List<FuturesPosition> positions, Function<FuturesPosition, BigDecimal> rateOf) {
         int failCount = 0;
         for (FuturesPosition pos : positions) {
             try {
-                if (!chargeFundingFeeOne(pos, rateOf.apply(pos))) failCount++;
+                if (!chargeFundingFeeOne(pos, rate)) failCount++;
             } catch (Exception e) {
                 log.error("futures扣除资金费率失败 posId={}", pos.getId(), e);
                 failCount++;
             }
         }
-        return failCount;
+        log.info("资金费结算完成 symbol={} 结算时刻={} 费率={} 成功{} 失败{}",
+                symbol, fundingTime, rate, positions.size() - failCount, failCount);
     }
 
     boolean chargeFundingFeeOne(FuturesPosition pos, BigDecimal rate) {
