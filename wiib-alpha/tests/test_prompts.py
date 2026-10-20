@@ -46,8 +46,10 @@ def test_propose_and_implement_messages():
                                    "只看资金费率", "zh")
     assert "mom：$ret" in text and "[rejected_gates] old" in text and "只看资金费率" in text and "提出 3 条" in text
     assert "- [try] 新的\n- [avoid] 旧的" in text
-    # 可选方向里是截面上做得了的：没有强平（只有产品币有数）和时段（同一时刻所有币一样）
+    # 可选方向里是截面上做得了的：没有强平（只有产品币有数）和时段（同一时刻所有币一样），也没有做不成的纯价格类
     assert "溢价 / 基差" in text and "强平" not in text and "时段" not in text
+    assert not {"动量", "反转", "突破", "波动"} & set(prompts.FAMILIES)
+    assert "已折算成每 8 小时的等价费率" in prompts.system_gen(FACTS, "zh")
     assert "经验（最新在前）：\n（还没有）" in prompts.propose_message(1, [], [], [], "", "zh")
     cand = {"name": "carry", "hypothesis": "费率高做空"}
     plain = prompts.implement_message(cand, None)

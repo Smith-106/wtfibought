@@ -29,8 +29,10 @@ HORIZON_BARS = {6: 24, 12: 48, 24: 96}
 DELAY = 1
 LIQ_COLUMNS = ["liq_long", "liq_short", "liq_count"]
 METRIC_FEATURES = METRICS_COLUMNS[1:]
-# 费率 8 小时结算一次，一个半周期没新结算就当断了
+# 结算间隔最长 8 小时，一个半周期没新结算就当断了
 FUNDING_STALE_MS = 12 * 3_600_000
+# $funding_rate 折成"每 8 小时的等价费率"：各币结算间隔不同（1、4、8 小时），不折算截面上一起排就乱了
+FUNDING_PERIOD_MS = 8 * 3_600_000
 # 下架进结算期的币归档还在出零成交的平 K 线（TROY 停牌后一年半天天有），连续一整天零成交的段整段扔
 DEAD_BARS = 96
 # metrics 约 5 分钟一条，一小时没新的当断了
@@ -64,8 +66,8 @@ def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFra
     df = klines.drop_duplicates("close_time").set_index("close_time").sort_index()
     df = df[~_dead(df["trades"].to_numpy())]
     df["ret"] = np.log(df["close"] / df["close"].shift(1))
-    # 收盘时刻最近一次已结算的费率；离上次结算太久还没新的是数据断了（月度文件只到上个整月），记 NaN 不硬填
-    df["funding_rate"] = _asof(df.index, funding, "funding_time", "funding_rate")
+    # 收盘时刻最近一次已结算的费率（折成每 8 小时等价）；离上次结算太久还没新的是数据断了（月度文件只到上个整月），记 NaN 不硬填
+    df["funding_rate"] = _asof(df.index, _funding_per_period(funding), "funding_time", "funding_rate")
     settled = _asof(df.index, funding, "funding_time", "funding_time")
     df.loc[df.index.to_numpy() - settled > FUNDING_STALE_MS, "funding_rate"] = np.nan
     # BTC 按收盘时刻对齐：取 ≤ 该时刻最近的一根，与 Java benchmarkReturns 同口径
@@ -89,6 +91,15 @@ def add_targets(df: pd.DataFrame) -> None:
     for bars in HORIZON_BARS.values():
         df[f"fwd_ret_{bars}"] = (np.log(df["close"].shift(-(DELAY + bars)) / df["close"].shift(-DELAY))
                                  .where(_spaced(df.index, DELAY + bars)))
+
+
+def _funding_per_period(funding: pd.DataFrame | None) -> pd.DataFrame | None:
+    """费率 × 8 小时 ÷ 这一期的间隔。间隔按这次结算离上次多久推；第一条没有上一次、断档（超过 8 小时）都按 8 小时"""
+    if funding is None or funding.empty:
+        return funding
+    f = funding.drop_duplicates("funding_time").sort_values("funding_time")
+    interval = f["funding_time"].diff().fillna(FUNDING_PERIOD_MS).clip(upper=FUNDING_PERIOD_MS)
+    return f.assign(funding_rate=f["funding_rate"] * FUNDING_PERIOD_MS / interval)
 
 
 def _dead(trades: np.ndarray) -> np.ndarray:

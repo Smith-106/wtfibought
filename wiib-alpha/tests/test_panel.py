@@ -68,6 +68,23 @@ def test_funding_is_last_settled_at_close():
     assert df["funding_rate"].iloc[98] == -0.0002 and np.isnan(df["funding_rate"].iloc[99])
 
 
+def test_funding_is_converted_to_per_8h():
+    """4 小时结算的币每期费率是 8 小时币的一半（同样的日成本），折算后一样；第一条和断档按 8 小时"""
+    alt, btc = klines(N, 100.0), klines(N, 1000.0)
+    h, t0 = 3_600_000, close_time(2)
+    eight = pd.DataFrame({"funding_time": [t0, t0 + 8 * h, t0 + 16 * h], "funding_rate": [0.0002] * 3})
+    four = pd.DataFrame({"funding_time": [t0 + 4 * h * k for k in range(5)], "funding_rate": [0.0001] * 5})
+    a, b = panel.assemble(alt, eight, btc), panel.assemble(alt, four, btc)
+    # 第一条没有上一次结算，按 8 小时算：4 小时币原样
+    assert a["funding_rate"].iloc[2] == 0.0002 and b["funding_rate"].iloc[2] == 0.0001
+    # 之后 4 小时币每期 0.0001 折成每 8 小时 0.0002，和 8 小时币一样
+    assert a["funding_rate"].iloc[34] == pytest.approx(0.0002) and b["funding_rate"].iloc[18] == pytest.approx(0.0002)
+    assert b["funding_rate"].iloc[66] == pytest.approx(0.0002) == a["funding_rate"].iloc[66]
+    # 断档：隔了 24 小时才有下一条，按 8 小时算，不放大
+    gap = pd.DataFrame({"funding_time": [t0, t0 + 24 * h], "funding_rate": [0.0001, 0.0001]})
+    assert panel.assemble(alt, gap, btc)["funding_rate"].iloc[98] == 0.0001
+
+
 def test_btc_aligned_by_close_time():
     df = build(with_liq=False)
     assert df["btc_close"].iloc[4] == 1004.0
