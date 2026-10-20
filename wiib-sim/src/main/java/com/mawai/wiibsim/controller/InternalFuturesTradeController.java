@@ -15,6 +15,7 @@ import com.mawai.wiibsim.service.CrossMarginService;
 import com.mawai.wiibsim.service.FuturesRiskService;
 import com.mawai.wiibsim.service.FuturesTradingService;
 import com.mawai.wiibsim.service.InternalOrderIdempotency;
+import com.mawai.wiibsim.service.TraderSymbolService;
 import com.mawai.wiibsim.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -48,6 +49,7 @@ public class InternalFuturesTradeController {
     private final AccountResetService accountResetService;
     private final InternalOrderIdempotency idempotency;
     private final CrossMarginService crossMarginService;
+    private final TraderSymbolService traderSymbolService;
 
     /** 带 clientRequestId 就走幂等（调用方超时重发不会双仓），不带＝原样直发 */
     @PostMapping("/{userId}/open")
@@ -113,6 +115,13 @@ public class InternalFuturesTradeController {
         return Result.ok(Map.of("userId", user.getId(), "balance", user.getBalance(),
                 "frozenBalance", user.getFrozenBalance() == null ? BigDecimal.ZERO : user.getFrozenBalance(),
                 "available", crossMarginService.snapshot(userId).available()));
+    }
+
+    /** 交易员登记今天要下单的币：feed 按交易员集合订行情，登记 2 小时后过期 */
+    @PostMapping("/watch")
+    public Result<Void> watch(@RequestBody List<String> symbols) {
+        traderSymbolService.watch(symbols);
+        return Result.ok();
     }
 
     /**

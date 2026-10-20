@@ -5,7 +5,6 @@ import com.mawai.wiibcommon.exception.BizException;
 import com.mawai.wiibcommon.market.BinanceRestClient;
 import com.mawai.wiibcommon.market.TradeFilterDefaults;
 import com.mawai.wiibcommon.market.TradeFilterDefaults.Filter;
-import com.mawai.wiibsim.service.LowFreqFuturesService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,7 +23,7 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
  * 交易过滤器注册表（数量步长 / 最小数量 / 最小名义额），对齐 Binance exchangeInfo。
  * <p>
  * 启动时异步拉、之后每天拉一次官方 exchangeInfo 覆盖 {@link TradeFilterDefaults} 快照（拉不到沿用现有的，不挡启动、不依赖外网）；
- * 合约收全部 USDT 永续（含低频币），现货只认快照里已配置的 symbol。
+ * 合约收全部 USDT 永续，现货只认快照里已配置的 symbol。
  * <p>
  * 校验语义对齐 Binance：开仓单（含同向并入）步长必须对齐、名义额 ≥ minNotional 否则拒单；
  * 平仓/止盈损是 reduce-only，豁免 minNotional；平仓数量=持仓全量时豁免步长（存量尘埃仓要能平干净）。
@@ -46,7 +45,7 @@ public class TradeFilterRegistry {
 
     public void refreshFromBinance() {
         Map<String, Filter> fut = parseFilters(restClient.getFuturesExchangeInfo(),
-                TradeFilterDefaults.FUTURES, LowFreqFuturesService::isUsdtPerpetual, "MIN_NOTIONAL", "notional");
+                TradeFilterDefaults.FUTURES, FuturesLeverageBracketRegistry::isUsdtPerpetual, "MIN_NOTIONAL", "notional");
         if (fut != null) {
             futuresFilters = fut;
             log.info("合约交易过滤器已按官方exchangeInfo刷新 {}个", fut.size());

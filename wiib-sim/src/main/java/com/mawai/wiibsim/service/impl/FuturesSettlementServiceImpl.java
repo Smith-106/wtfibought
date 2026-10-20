@@ -550,7 +550,7 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
         // feed 币先刷费率缓存，扣费和前端查询都从缓存取
         fundingRateService.refresh();
 
-        // 只收 feed 币，低频币按各自结算时刻收（LowFreqFuturesService）
+        // 只收 feed 币
         Set<String> feed = Set.copyOf(binanceProperties.getAllFuturesSymbols());
         List<FuturesPosition> positions = positionMapper.selectList(new LambdaQueryWrapper<FuturesPosition>()
                         .eq(FuturesPosition::getStatus, "OPEN"))

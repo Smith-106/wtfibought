@@ -62,6 +62,10 @@ class Sim:
     def positions(self, user_id: int) -> list[dict[str, Any]]:
         return self._call("GET", f"/{user_id}/positions")
 
+    def watch(self, symbols: Sequence[str]) -> None:
+        """登记今天要下单的币：feed 按交易员集合订行情，sim 那边登记 2 小时后过期"""
+        self._call("POST", "/watch", json=list(symbols))
+
     def open(self, user_id: int, symbol: str, side: str, quantity: Decimal, request_id: str) -> dict[str, Any]:
         return self._order(f"/{user_id}/open", {
             "symbol": symbol, "side": side, "marginMode": "CROSS", "leverage": LEVERAGE, "orderType": "MARKET",
@@ -85,8 +89,7 @@ class Sim:
                     raise
             time.sleep(ORDER_RETRY_S)
 
-    def _call(self, method: str, path: str, params: dict[str, Any] | None = None,
-              json: dict[str, Any] | None = None) -> Any:
+    def _call(self, method: str, path: str, params: dict[str, Any] | None = None, json: Any = None) -> Any:
         try:
             resp = self._client.request(method, self._base + path, params=params, json=json, headers=self._headers)
         except httpx.TransportError as exc:

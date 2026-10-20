@@ -43,6 +43,8 @@ public class WsConnection {
     private volatile long lastMessageAt;
     /** 这条连接连上的时刻；在 connected 置 true 之前写，看到已连上就一定看到新值 */
     private volatile long connectedAt;
+    /** 地址为空（按集合订的流集合空了）：不连，闲着 */
+    private volatile boolean idle;
     private ScheduledFuture<?> idleWatchdog;
     private volatile ScheduledFuture<?> reconnectFuture;
     /** 收帧和处理分开：读线程只把整条消息放进来就去要下一帧，处理由 consumer 一条线程按序做。满了丢最旧的，行情都是全量，下一条就补上 */
@@ -56,8 +58,8 @@ public class WsConnection {
 
     private static final int[] BACKOFF_SECONDS = {1, 2, 5, 10, 30};
 
-    /** 对外只读连接状态。CONNECTING=正在建连；RECONNECTING=断开后等退避；DISCONNECTED=无活动连接（异常态） */
-    public enum Status { CONNECTED, CONNECTING, RECONNECTING, DISCONNECTED }
+    /** 对外只读连接状态。CONNECTING=正在建连；RECONNECTING=断开后等退避；DISCONNECTED=无活动连接（异常态）；IDLE=按集合订的流没有要订的币，闲着（正常态） */
+    public enum Status { CONNECTED, CONNECTING, RECONNECTING, DISCONNECTED, IDLE }
 
     // 旧签名：默认不启用静默检测，保持向后兼容
     public WsConnection(String name, Supplier<String> urlBuilder, Consumer<String> messageHandler,
@@ -117,7 +119,7 @@ public class WsConnection {
         if (connected.get()) return Status.CONNECTED;
         if (connecting.get()) return Status.CONNECTING;
         if (reconnecting.get()) return Status.RECONNECTING;
-        return Status.DISCONNECTED;
+        return idle ? Status.IDLE : Status.DISCONNECTED;
     }
 
     // 状态转换点调用；回调异常不能反噬连接逻辑，吞掉只记日志
@@ -135,6 +137,14 @@ public class WsConnection {
         if (!connecting.compareAndSet(false, true)) return;
 
         String url = urlBuilder.get();
+        // 按集合订的流集合空了：不连，等集合有了 handler 再 reconnectNow
+        idle = url == null || url.isBlank();
+        if (idle) {
+            connecting.set(false);
+            log.info("{} 无订阅符号，闲置", name);
+            fireStatus(); // IDLE
+            return;
+        }
         log.info("连接{} WS: {}", name, url);
         fireStatus(); // CONNECTING
 

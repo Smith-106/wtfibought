@@ -509,7 +509,7 @@ export interface ForceOrder {
 // feed WS 流健康（Admin 面板：状态展示 + 手动重试）
 export interface FeedStreamHealth {
   name: string;
-  status: 'CONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'DISCONNECTED';
+  status: 'CONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'DISCONNECTED' | 'IDLE';
   lastMessageAt: number;   // epoch millis，前端本地算"距上次数据 Xs"
   reconnectAttempt: number;
 }

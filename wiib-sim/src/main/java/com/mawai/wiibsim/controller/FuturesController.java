@@ -42,7 +42,7 @@ public class FuturesController {
     private final FundingRateService fundingRateService;
     private final BinanceProperties binanceProperties;
 
-    /** 开仓：用户只能开 feed 订阅的币，低频币只给内部接口 */
+    /** 开仓：用户只能开 feed 订阅的币，别的 USDT 永续只给内部接口（交易员） */
     @PostMapping("/open")
     public Result<FuturesOrderResponse> open(@CurrentUserId Long userId, @RequestBody FuturesOpenRequest request) {
         if (!binanceProperties.getAllFuturesSymbols().contains(request.getSymbol())) {

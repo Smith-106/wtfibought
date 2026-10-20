@@ -2,7 +2,6 @@ package com.mawai.wiibsim.config;
 
 import com.mawai.wiibcommon.enums.ErrorCode;
 import com.mawai.wiibcommon.exception.BizException;
-import com.mawai.wiibsim.service.LowFreqFuturesService;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -19,7 +18,7 @@ import java.util.Map;
  * <p>
  * 已配置：BTCUSDT、ETHUSDT、DOGEUSDT、SOLUSDT、XRPUSDT、BNBUSDT、ZECUSDT、HYPEUSDT、XAUUSDT、CLUSDT，
  * 及 TradFi 股票/ETF 永续：SNDKUSDT、SOXLUSDT、SKHYNIXUSDT、MUUSDT、KORUUSDT、SPCXUSDT。
- * 表里没有的 USDT 永续（低频币）统一用一档默认；其余 symbol 开仓抛 FUTURES_SYMBOL_NOT_CONFIGURED。
+ * 表里没有的 USDT 永续统一用一档默认；其余 symbol 开仓抛 FUTURES_SYMBOL_NOT_CONFIGURED。
  */
 @Component
 public class FuturesLeverageBracketRegistry {
@@ -240,8 +239,8 @@ public class FuturesLeverageBracketRegistry {
             Map.entry("SPCXUSDT",    SPCX_BRACKETS)
     );
 
-    // 低频币默认档：一档到底，最高 5x、MMR 2.5%、速算数 0
-    private static final List<Bracket> LOW_FREQ_BRACKETS = List.of(
+    // 表外 USDT 永续的默认档：一档到底，最高 5x、MMR 2.5%、速算数 0
+    private static final List<Bracket> DEFAULT_BRACKETS = List.of(
             new Bracket(1,  bd("0"),            bd("1000000000"),   5,  bd("0.0250"),  bd("0"))
     );
 
@@ -268,10 +267,15 @@ public class FuturesLeverageBracketRegistry {
         if (symbol == null) return null;
         List<Bracket> list = BRACKETS.get(symbol);
         if (list != null) return list;
-        return LowFreqFuturesService.isUsdtPerpetual(symbol) ? LOW_FREQ_BRACKETS : null;
+        return isUsdtPerpetual(symbol) ? DEFAULT_BRACKETS : null;
     }
 
-    /** 档位表里的 symbol（不含低频币），供前端预估强平价/MMR 时直接复用，避免前后端两份硬编码。 */
+    /** USDT 永续：USDT 结尾、不带下划线（带下划线的是交割合约） */
+    public static boolean isUsdtPerpetual(String symbol) {
+        return symbol != null && symbol.endsWith("USDT") && symbol.indexOf('_') < 0;
+    }
+
+    /** 档位表里的 symbol（不含走默认档的），供前端预估强平价/MMR 时直接复用，避免前后端两份硬编码。 */
     public Map<String, List<Bracket>> getAllBrackets() {
         return BRACKETS;
     }

@@ -25,7 +25,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * 用户开仓只认 feed 订阅的合约币；低频币（价格一分钟一跳）只给内部接口开。
+ * 用户开仓只认 feed 订阅的合约币；别的 USDT 永续只给内部接口（交易员）开。
  */
 class FuturesOpenSymbolGuardTest {
 
@@ -51,7 +51,7 @@ class FuturesOpenSymbolGuardTest {
     }
 
     @Test
-    void 低频币_用户开仓直接拒_不进下单() {
+    void feed外的币_用户开仓直接拒_不进下单() {
         assertThatThrownBy(() -> controller.open(UID, req("PEPEUSDT")))
                 .isInstanceOf(BizException.class)
                 .extracting("code").isEqualTo(ErrorCode.CRYPTO_SYMBOL_INVALID.getCode());

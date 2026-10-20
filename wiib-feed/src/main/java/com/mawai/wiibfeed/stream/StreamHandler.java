@@ -34,4 +34,10 @@ public interface StreamHandler {
      * 默认空——只有要读自身连接状态（填广播 ws 字段）、或要记空窗的价格流才重写。
      */
     default void bind(WsConnection conn) {}
+
+    /**
+     * 订阅集合运行中会变的流（交易员的币）：集合为空也建好连接对象，连的时候地址为空就闲置，
+     * 之后集合变了由 handler 自己 reconnectNow。默认 false：没订阅符号就不建连。
+     */
+    default boolean dynamicSymbols() { return false; }
 }

@@ -5,7 +5,7 @@ import com.mawai.wiibsim.service.CryptoOrderService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
 import com.mawai.wiibsim.service.FuturesLiquidationService;
 import com.mawai.wiibsim.service.FuturesSettlementService;
-import com.mawai.wiibsim.service.LowFreqFuturesService;
+import com.mawai.wiibsim.service.TraderSymbolService;
 import com.mawai.wiibsim.service.RankingService;
 import com.mawai.wiibsim.service.BankruptcyService;
 import com.mawai.wiibsim.service.MarginAccountService;
@@ -35,18 +35,17 @@ public class ScheduledTasks {
     private final CrossLiquidationService crossLiquidationService;
     private final FuturesLiquidationService futuresLiquidationService;
     private final PredictionService predictionService;
-    private final LowFreqFuturesService lowFreqFuturesService;
+    private final TraderSymbolService traderSymbolService;
     private final TradeFilterRegistry tradeFilterRegistry;
 
-    /** 低频币：每分钟拉一次全量 premiumIndex 写标记价，再收到点的资金费 */
+    /** 交易员集合：每分钟按库里的仓位和登记重算，变了才写 Redis，feed 按它订行情 */
     @Scheduled(fixedRate = 60 * 1000)
-    public void refreshLowFreqFutures() {
+    public void refreshTraderSymbols() {
         Thread.startVirtualThread(() -> {
             try {
-                lowFreqFuturesService.refresh();
-                lowFreqFuturesService.settleDueFunding();
+                traderSymbolService.refresh();
             } catch (Exception e) {
-                log.error("低频币价格刷新/资金费结算失败", e);
+                log.error("交易员集合刷新失败", e);
             }
         });
     }
@@ -63,7 +62,7 @@ public class ScheduledTasks {
         });
     }
 
-    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗（低频币没有tick，全靠这里） */
+    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗（交易员的币不发价格频道、没有 tick，全靠这里） */
     @Scheduled(fixedRate = 30 * 1000)
     public void sweepCrossAccounts() {
         Thread.startVirtualThread(crossLiquidationService::sweepAll);
@@ -129,7 +128,7 @@ public class ScheduledTasks {
         });
     }
 
-    /** feed 币资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费；低频币在上面每分钟那条里按各自结算时刻收 */
+    /** feed 币资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费，只收 feed 币 */
     @Scheduled(cron = "0 0 0,8,16 * * *")
     public void chargeFuturesFundingFee() {
         Thread.startVirtualThread(() -> {

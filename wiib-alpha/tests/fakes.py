@@ -146,7 +146,7 @@ class FakeFapi:
 
 class FakeSim:
     """sim 的 /internal/futures：一个账户（userId 42），按 price(币) 市价成交、不收手续费，同方向合并、平仓减量；
-    calls 按顺序记下每笔下单的 (open/close, 请求体)；fail 里的币下单回业务失败"""
+    calls 按顺序记下每笔下单的 (open/close, 请求体)；watched 记下每次登记的币；fail 里的币下单回业务失败"""
 
     USER = 42
 
@@ -155,6 +155,7 @@ class FakeSim:
         self.balance = 10000.0
         self.positions: dict[int, dict] = {}
         self.calls: list[tuple[str, dict]] = []
+        self.watched: list[list[str]] = []
         self.fail: set[str] = set()
         self._ids = 0
 
@@ -175,6 +176,9 @@ class FakeSim:
             return ok({"userId": self.USER, "balance": self.balance, "frozenBalance": 0, "available": self.balance})
         if path.endswith("/positions"):
             return ok([self.view(p) for p in self.positions.values()])
+        if path.endswith("/watch"):
+            self.watched.append(json.loads(request.content))
+            return ok(None)
         action = path.rsplit("/", 1)[-1]
         body = json.loads(request.content)
         self.calls.append((action, body))

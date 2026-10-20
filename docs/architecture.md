@@ -48,6 +48,8 @@ wiib-feed（上游进程）  交易所 WS → Redis
   -> futures markPrice@1s   -> Redis mark KV(market:markprice:) + Pub/Sub(feed:price)
   -> futures miniTicker     -> Redis 合约最新价 KV(market:futures-price:) + Pub/Sub(feed:price)
                                ↑ 独立物理连接：Binance 端点拆分后 markPrice 与 miniTicker 不能同连
+  -> 交易员的币 markPrice@1s / miniTicker（另两条连接，订阅集合 = Redis set futures:trader:symbols，sim 按仓位和交易员登记维护，feed 每 10 秒看一次、变了重连）
+                            -> 只写 market:markprice: / market:futures-price:（带写入时刻，sim 市价开仓超 30 秒没更新就拒），不发 feed:price、不推前端
   -> forceOrder(全市场流)    -> 白名单过滤 -> force_order 表(DB, 天然跨进程)
   -> aggTrade               -> Redis Stream(market:orderflow:<sym>, 读侧聚合)
   -> depth20@100ms          -> Redis KV(market:depth:, DepthStreamCache)

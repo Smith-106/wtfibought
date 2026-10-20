@@ -21,6 +21,10 @@ import java.util.Map;
 @Mapper
 public interface FuturesPositionMapper extends BaseMapper<FuturesPosition> {
 
+    /** 还开着的仓位都在哪些币上 */
+    @Select("SELECT DISTINCT symbol FROM futures_position WHERE status = 'OPEN'")
+    List<String> openSymbols();
+
     /** 调杠杆：杠杆与保证金一起改（逐仓=划扣额，全仓=占用额） */
     @Update("UPDATE futures_position SET leverage = #{leverage}, margin = #{margin}, updated_at = NOW() " +
             "WHERE id = #{positionId} AND status = 'OPEN'")

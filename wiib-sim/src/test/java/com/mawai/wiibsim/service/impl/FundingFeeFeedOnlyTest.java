@@ -26,12 +26,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * 0/8/16 点那条资金费只收 feed 币；低频币归 LowFreqFuturesService 按各自结算时刻收。
+ * 0/8/16 点那条资金费只收 feed 币，别的币不碰。
  */
 class FundingFeeFeedOnlyTest {
 
     @Test
-    void 每8小时那条只收feed币_低频币不碰() {
+    void 每8小时那条只收feed币_别的币不碰() {
         FuturesPositionMapper positionMapper = mock(FuturesPositionMapper.class);
         FairLockRegistry lockRegistry = mock(FairLockRegistry.class);
         FundingRateService fundingRateService = mock(FundingRateService.class);

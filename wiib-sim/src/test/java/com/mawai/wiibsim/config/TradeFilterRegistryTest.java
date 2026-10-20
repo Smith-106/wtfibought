@@ -92,7 +92,7 @@ class TradeFilterRegistryTest {
     @Test
     void 官方刷新_正常覆盖_异常响应沿用默认() {
         BinanceRestClient client = mock(BinanceRestClient.class);
-        // 构造官方响应：BTC 步长改 0.01、minNotional 改 100；低频币 PEPE 收进来，交割合约和 USDC 永续不收
+        // 构造官方响应：BTC 步长改 0.01、minNotional 改 100；表外的 PEPE 收进来，交割合约和 USDC 永续不收
         when(client.getFuturesExchangeInfo()).thenReturn("""
                 {"symbols":[
                   {"symbol":"BTCUSDT","filters":[
@@ -118,7 +118,7 @@ class TradeFilterRegistryTest {
         assertThat(reg.allFutures().get("BTCUSDT").minNotional()).isEqualByComparingTo("100");
         // 未返回的 symbol 保留默认
         assertThat(reg.allFutures().get("ETHUSDT").minNotional()).isEqualByComparingTo("20");
-        // 低频币按官方规则校验：PEPE 步长 1
+        // 表外的币也按官方规则校验：PEPE 步长 1
         assertThatThrownBy(() -> reg.validateFuturesOrder("PEPEUSDT", new BigDecimal("1.5"), new BigDecimal("10")))
                 .isInstanceOf(BizException.class)
                 .extracting("code").isEqualTo(ErrorCode.TRADE_STEP_INVALID.getCode());

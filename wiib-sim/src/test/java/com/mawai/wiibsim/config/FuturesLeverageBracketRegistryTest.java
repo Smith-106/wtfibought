@@ -17,7 +17,7 @@ class FuturesLeverageBracketRegistryTest {
     private final FuturesLeverageBracketRegistry registry = new FuturesLeverageBracketRegistry();
 
     @Test
-    void 表里的币照表_前端档位表不含低频币() {
+    void 表里的币照表_前端档位表不含走默认档的币() {
         assertThat(registry.getEffectiveMaxLeverage("BTCUSDT", new BigDecimal("1000"))).isEqualTo(150);
         assertThat(registry.getAllBrackets()).hasSize(16).doesNotContainKey("PEPEUSDT");
     }

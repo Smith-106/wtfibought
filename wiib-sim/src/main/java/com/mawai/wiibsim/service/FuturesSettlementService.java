@@ -21,6 +21,6 @@ public interface FuturesSettlementService {
     /** feed 币资金费率结算（0/8/16 点）：先拉一次官方费率写缓存，再按缓存给 feed 币持仓扣费 */
     void chargeFundingFeeAll();
 
-    /** 低频币某个结算时刻的资金费：给这些仓位按 rate 收，单仓失败不影响别的 */
+    /** 一个币某个结算时刻的资金费：给这些仓位按 rate 收，单仓失败不影响别的 */
     void chargeFundingFee(String symbol, long fundingTime, BigDecimal rate, List<FuturesPosition> positions);
 }
