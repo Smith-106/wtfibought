@@ -115,6 +115,10 @@ def test_g9_needs_the_scheme_sharpe_to_rise_past_the_threshold(planted):
     assert g9["id"] == "G9" and not g9["passed"] and "加进交易方案后搜索段净 Sharpe 1.00 → 0.90" in g9["note"]
     ev["gain"]["sharpe"] = {"base": 1.0, "with": 1.2, "gain": 0.2}
     assert judge(ev, GATES)[9]["passed"]
+    # 升了但不到默认的 0.1：和随机因子分不开，不过
+    ev["gain"]["sharpe"] = {"base": 1.0, "with": 1.05, "gain": 0.05}
+    assert not judge(ev, GATES)[9]["passed"] and judge(ev, GATES)[9]["threshold"] == {"sharpeGain": "> 0.1"}
+    ev["gain"]["sharpe"] = {"base": 1.0, "with": 1.2, "gain": 0.2}
     # 阈值抬到 0.3：升 0.2 不够
     g9 = judge(ev, Thresholds(min_samples=30, sharpe_gain_min=0.3))[9]
     assert not g9["passed"] and g9["threshold"] == {"sharpeGain": "> 0.3"}

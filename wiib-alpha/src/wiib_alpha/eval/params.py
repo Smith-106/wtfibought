@@ -59,7 +59,7 @@ class Thresholds:
     min_segments: int = 3               # G3：四段里同号的段数，最后一段必须同号
     perm_pct: float = 0.95              # G5：截面排列分位
     fdr_q: float = 0.10                 # G5：同批 BH-FDR
-    sharpe_gain_min: float = 0.0        # G9：加进交易方案后搜索段年化净 Sharpe 至少升这么多
+    sharpe_gain_min: float = 0.10       # G9：加进交易方案后搜索段年化净 Sharpe 至少升这么多；随机因子 95% 升不到（calibrate --g9）
     max_redundancy: float = 0.7         # G6
     max_nodes: int = COMPLEXITY["nodes"]        # G7：解析时已经卡住，这里只做报告
     max_windows: int = COMPLEXITY["windows"]

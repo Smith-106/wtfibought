@@ -34,7 +34,7 @@ def test_system_prompt_lists_every_column_and_operator():
     assert "t（ICIR × √月数）≥ 3" in text and "最近一段必须同号" in text
     # 门对齐交易方案：主档 24h、按波动分仓，单条净收益只报，G9 看加进交易方案后的净 Sharpe
     assert "主档 24 小时" in text and "按 7 天波动的倒数分仓" in text and "只报不判" in text
-    assert "G9 加进实盘的交易方案后净 Sharpe 要提升" in text
+    assert "G9 加进实盘的交易方案后净 Sharpe 至少升 0.1" in text
     assert "单边 4 / 6.5 / 10 bps" in prompts.system_gen({**FACTS, "costTiers": [4.0, 6.5, 10.0]}, "zh")
     assert "英文" in prompts.system_gen({**FACTS, "liqFrom": None}, "en")
 
