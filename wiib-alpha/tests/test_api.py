@@ -119,7 +119,8 @@ async def wait_campaign(client: httpx.AsyncClient, campaign_id: str, status: str
 
 
 async def test_one_round_campaign_then_approve_from_observation(client, planted_panels):
-    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None}
+    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None,
+                                                                             "reeval": {"running": False}}
     started = data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 2}, headers=ADMIN))
     campaign_id, run_id = started["id"], started["runId"]
     # 每一轮记下当时数据的 holdout 切点：之后复评按它算"它没见过的那段"
