@@ -52,10 +52,11 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS lesson(
         id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, campaign_id TEXT, kind TEXT NOT NULL,
         text TEXT NOT NULL, created_at INTEGER NOT NULL)""",
+    # recheck_json：入库后只用新数据算的 IC；reeval_json：用当前评估器复评的结果，入库时那份 eval、gates 不动
     """CREATE TABLE IF NOT EXISTS factor(
         id TEXT PRIMARY KEY, name TEXT NOT NULL, hypothesis TEXT NOT NULL, expr TEXT NOT NULL, canonical TEXT NOT NULL,
         columns_json TEXT NOT NULL, eval_json TEXT NOT NULL, gates_json TEXT NOT NULL, review_json TEXT,
-        approved_at INTEGER NOT NULL, run_id TEXT NOT NULL, recheck_json TEXT)""",
+        approved_at INTEGER NOT NULL, run_id TEXT NOT NULL, recheck_json TEXT, reeval_json TEXT)""",
     "CREATE TABLE IF NOT EXISTS trials(id INTEGER PRIMARY KEY CHECK (id = 1), count INTEGER NOT NULL)",
     "INSERT OR IGNORE INTO trials(id, count) VALUES (1, 0)",
     """CREATE TABLE IF NOT EXISTS reference_eval(
@@ -87,7 +88,8 @@ _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "rev
                  "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders"}
 # 建表之后才加的列：老库启动时补上
 _ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
-                  "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"}}
+                  "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"},
+                  "factor": {"reeval_json": "TEXT"}}
 
 
 def clean(obj: Any) -> Any:
@@ -336,6 +338,11 @@ class Store:
 
     async def set_recheck(self, factor_id: str, recheck: Any) -> None:
         await self.db.execute("UPDATE factor SET recheck_json = ? WHERE id = ?", (dumps(recheck), factor_id))
+        await self.db.commit()
+
+    async def set_factor_reeval(self, factor_id: str, reeval: Any) -> None:
+        """只写复评结果，入库时那份 eval、gates 不动"""
+        await self.db.execute("UPDATE factor SET reeval_json = ? WHERE id = ?", (dumps(reeval), factor_id))
         await self.db.commit()
 
     # ========== 参照集评估 ==========

@@ -360,6 +360,8 @@ export interface Factor {
   run_id: string;
   review: Review | null;
   recheck: Recheck | null;
+  /** 用当前评估器复评的结果；没有同批，asked 恒 false、peers 空 */
+  reeval: Reeval | null;
   brief: EvalBrief;
 }
 
@@ -383,6 +385,8 @@ export interface LibraryList {
   factors: Factor[];
   /** 库空或没装载数据时是 null */
   combo: ComboReport | null;
+  /** 库里因子复评任务的进度 */
+  reeval: ReevalJob;
 }
 
 export interface ReferenceJob {
@@ -750,6 +754,8 @@ export const alpha = {
   library: () => call<LibraryList>('GET', `${ALPHA}/library`),
   factor: (id: string) => call<FactorDetail>('GET', `${ALPHA}/library/${id}`),
   recheck: (id: string) => call<Recheck>('POST', `${ALPHA}/library/${id}/recheck`),
+  /** 库里全部因子用当前评估器重算，后台跑，进度看 library().reeval */
+  libraryReeval: () => call<{ started: boolean; total: number }>('POST', `${ALPHA}/library/reeval`),
   evaluate: (expr: string) => call<EvalResult>('POST', `${ALPHA}/eval`, { expr }),
   reference: () => call<ReferenceList>('GET', `${ALPHA}/reference`),
   /** windows 为 null 跑全部窗口 */

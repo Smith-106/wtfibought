@@ -311,13 +311,17 @@
       "ic": "主档 IC",
       "icir": "ICIR",
       "holdout": "Holdout IC",
-      "recheck": "复查 IC"
+      "recheck": "复查 IC",
+      "reeval": "复评 IC"
     },
     "hypothesis": "假设",
     "canonical": "规范形",
     "columns": "用到的列",
     "runId": "来自轮次",
     "approvedAt": "入库于",
+    "reeval": "用当前评估器复评",
+    "reevalRunning": "复评中",
+    "reevalHint": "库里全部因子按现在的门重算一遍：G9 的基线是拿掉它的库加基差 carry，G6 比参照集、库里别的因子和观察区，G10 用它当初声明的方向；结果另存在详情里，入库时的数字和状态不动。一条约一分钟。",
     "recheck": "入库后复查",
     "recheckRun": "复查",
     "recheckHint": "只用入库之后的数据算 IC。",

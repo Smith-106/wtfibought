@@ -311,13 +311,17 @@
       "ic": "Primary IC",
       "icir": "ICIR",
       "holdout": "Holdout IC",
-      "recheck": "Recheck IC"
+      "recheck": "Recheck IC",
+      "reeval": "Re-eval IC"
     },
     "hypothesis": "Hypothesis",
     "canonical": "Canonical form",
     "columns": "Columns used",
     "runId": "From round",
     "approvedAt": "Approved at",
+    "reeval": "Re-evaluate with current gates",
+    "reevalRunning": "Re-evaluating",
+    "reevalHint": "Every library factor is recomputed under today's gates: the G9 baseline is the library without it plus basis carry, G6 compares against the references, the other library factors and the observation list, G10 uses the direction it declared. Results are stored separately in the detail view; the approval numbers and status stay as they were. About a minute each.",
     "recheck": "Recheck since approval",
     "recheckRun": "Recheck",
     "recheckHint": "IC on data after approval only.",

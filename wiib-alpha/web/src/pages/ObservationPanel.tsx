@@ -105,7 +105,8 @@ export function ObservationPanel({ active }: { active: boolean }) {
   );
 }
 
-function ReevalProgress({ job }: { job: ReevalJob }) {
+/** 复评任务的进度，观察区和因子库共用 */
+export function ReevalProgress({ job }: { job: ReevalJob }) {
   const { t } = useTranslation();
   if (!job.startedAt) return null;
   return (
@@ -131,8 +132,8 @@ function ReevalProgress({ job }: { job: ReevalJob }) {
   );
 }
 
-/** 一条候选的复评：声明的方向、结论、当前门与数字、和观察区其它候选的截面相关 */
-function ReevalBlock({ r }: { r: Reeval }) {
+/** 一条候选的复评：声明的方向、结论、当前门与数字、和观察区其它候选的截面相关；库里因子的复评也用它（没有同批） */
+export function ReevalBlock({ r }: { r: Reeval }) {
   const { t } = useTranslation();
   const peers = [...r.peers].sort((a, b) => b[1] - a[1]);
   return (

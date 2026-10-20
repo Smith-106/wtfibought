@@ -337,6 +337,49 @@ async def test_observation_reeval(client):
     assert len(factor["gates"]) == 11 and factor["eval"]["horizons"]["48"]["leg"]["fundingBps"] == 0
 
 
+async def test_library_reeval(client):
+    """库里因子复评：G9 的基线是拿掉它的库 + carry，G6 的库对比集是别的因子，G8 的已知结构去掉它自己，
+    G10 用它当初声明的方向；结果另存在 reeval，入库时那份和状态都不动"""
+    store = m.app.state.store
+    assert (await client.post("/api/alpha/library/reeval", headers=ADMIN)).status_code == 409
+    early = m.app.state.data.cut_ms - 5 * 86_400_000
+    await store.create_run("old", 1, "", "zh", None, early)
+    for fid, name, expr, direction in (("f-vol", "vol4", "Mean($volume, 4)", 1), ("f-trades", "trades", "$trades", -1)):
+        e = parse(expr, ["volume", "trades"])
+        await store.upsert_candidate({"id": fid, "run_id": "old", "seq": 1, "name": name, "hypothesis": "h", "expr": expr,
+                                      "canonical": e.canonical(), "status": "approved", "direction": direction})
+        # 入库时那份照 /eval 的样子存一份，复评后要原样还在
+        ev = data(await client.post("/api/alpha/eval", json={"expr": expr}, headers=ADMIN))
+        await store.add_factor({"id": fid, "name": name, "hypothesis": "h", "expr": expr, "canonical": e.canonical(),
+                                "columns": sorted(e.columns()), "eval": ev["eval"], "gates": ev["gates"],
+                                "approved_at": 1, "run_id": "old"})
+    assert data(await client.post("/api/alpha/library/reeval", headers=ADMIN)) == {"started": True, "total": 2}
+
+    async def finished():
+        return not data(await client.get("/api/alpha/library", headers=ADMIN))["reeval"]["running"]
+
+    await wait_until(finished, 60)
+    out = data(await client.get("/api/alpha/library", headers=ADMIN))
+    assert out["reeval"]["done"] == 2 and out["reeval"]["error"] is None
+    by = {f["name"]: f for f in out["factors"]}
+    # 埋了信号的成交量均线全过：规范形不和已知结构重合（库里的已知去掉了它自己），方向和 IC 对得上；没有同批
+    vol = by["vol4"]["reeval"]
+    assert vol["passed"] is True and vol["direction"] == 1 and vol["asked"] is False and vol["peers"] == []
+    assert [g["id"] for g in vol["gates"]] == [f"G{i}" for i in range(11)]
+    # G6 的库对比集是别的因子，不含它自己
+    assert "lib:vol4" not in (vol["gates"][6]["note"] or "")
+    # 成交笔数是噪音：单条过不了
+    assert by["trades"]["reeval"]["passed"] is False and by["trades"]["reeval"]["direction"] == -1
+    # holdout 从现在的切点起；它没见过的那段从发现它那一轮的切点起
+    assert vol["brief"]["holdout"]["since"] == m.app.state.data.cut_ms and vol["brief"]["unseen"]["since"] == early
+    # 入库时那份不动，详情里两份都在
+    factor = await store.factor("f-vol")
+    assert factor["eval"]["horizons"] and factor["gates"] and factor["reeval"]["passed"] is True
+    detail = data(await client.get("/api/alpha/library/f-vol", headers=ADMIN))
+    assert detail["reeval"]["passed"] is True and detail["gates"] == factor["gates"]
+    assert await store.trials() == 0
+
+
 async def test_stop_after_this_round_and_only_one_campaign(client):
     gate = threading.Event()
 
@@ -369,7 +412,8 @@ async def test_refresh_and_reference_block_campaigns_and_each_other(client):
     jobs = m.app.state.runs.jobs
     # 刷新中开不了 campaign，也不起会存结果的复评、参照集：刷完会换数据和切点
     jobs["refresh"]["running"] = True
-    for path in ("/api/alpha/campaigns", "/api/alpha/observation/reeval", "/api/alpha/reference/run"):
+    for path in ("/api/alpha/campaigns", "/api/alpha/observation/reeval", "/api/alpha/library/reeval",
+                 "/api/alpha/reference/run"):
         resp = await client.post(path, json={"rounds": 1}, headers=ADMIN)
         assert resp.status_code == 409 and "刷新" in resp.json()["msg"], path
     jobs["refresh"]["running"] = False

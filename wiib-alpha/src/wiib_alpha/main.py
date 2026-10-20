@@ -192,10 +192,11 @@ class Runs:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task] = {}
         self.subscribers: dict[str, set[asyncio.Queue]] = {}
-        # grid 是启动时补算参照网格（刷新收尾那次算在 refresh 的进度里）；reeval 是观察区复评；
+        # grid 是启动时补算参照网格（刷新收尾那次算在 refresh 的进度里）；reeval 是观察区复评，libraryReeval 是库里因子复评；
         # trader 是交易员调仓，compare 是交易员的因子对比
         self.jobs: dict[str, dict[str, Any]] = {"refresh": {"running": False}, "reference": {"running": False},
                                                 "grid": {"running": False}, "reeval": {"running": False},
+                                                "libraryReeval": {"running": False},
                                                 "trader": {"running": False}, "compare": {"running": False}}
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
@@ -483,8 +484,8 @@ async def data_refresh(request: Request):
     if await app.state.store.active_campaign() is not None:
         raise HTTPException(409, "有 campaign 在跑，停了再刷新")
     # 后台任务可能还在读上一版面板，刷新开头要把上一版删掉
-    for name, label in (("grid", "参照网格还在补算"), ("reeval", "观察区还在复评"), ("reference", "参照集还在跑"),
-                        ("trader", "交易员在调仓"), ("compare", "交易员的因子对比还在算")):
+    for name, label in (("grid", "参照网格还在补算"), ("reeval", "观察区还在复评"), ("libraryReeval", "库里因子还在复评"),
+                        ("reference", "参照集还在跑"), ("trader", "交易员在调仓"), ("compare", "交易员的因子对比还在算")):
         if app.state.runs.jobs[name].get("running"):
             raise HTTPException(409, f"{label}，等它算完再刷新")
     # 上一轮留下的阶段、进度、币数全清掉，页面不会先看到旧值
@@ -542,6 +543,8 @@ async def create_campaign(body: CreateCampaign, request: Request, who: Auth = De
     jobs = app.state.runs.jobs
     if jobs["reeval"].get("running"):
         raise HTTPException(409, "观察区还在复评，等它算完")
+    if jobs["libraryReeval"].get("running"):
+        raise HTTPException(409, "库里因子还在复评，等它算完")
     # 参照集和 campaign 一起跑会抢内存和 CPU，超了容器上限会被杀掉
     if jobs["reference"].get("running"):
         raise HTTPException(409, "参照集还在跑，等它算完")
@@ -613,10 +616,11 @@ async def observation(request: Request):
 
 
 def _reeval_view(r: dict[str, Any] | None) -> dict[str, Any] | None:
+    """观察区和库里因子的复评共用；库里因子没有同批（asked、peers 空）"""
     if r is None:
         return None
-    return {"at": r["at"], "direction": r["direction"], "asked": r["asked"], "passed": r["passed"],
-            "reason": r["reason"], "peers": r["peers"],
+    return {"at": r["at"], "direction": r["direction"], "asked": r.get("asked", False), "passed": r["passed"],
+            "reason": r["reason"], "peers": r.get("peers", []),
             "gates": [{"id": g["id"], "name": g["name"], "passed": g["passed"], "note": g["note"]} for g in r["gates"]],
             "brief": eval_brief(r["eval"], r["gates"])}
 
@@ -635,6 +639,8 @@ async def observation_reeval(request: Request, who: Auth = Depends(auth)):
     _not_refreshing(app)
     if data.reference_grid is None:
         raise HTTPException(409, "参照网格还没算好，等它算完再复评")
+    if app.state.runs.jobs["libraryReeval"].get("running"):
+        raise HTTPException(409, "库里因子还在复评，等它算完")
     rows = await app.state.store.observing()
     if not rows:
         raise HTTPException(409, "观察区是空的")
@@ -798,11 +804,12 @@ def _frame(e: dict[str, Any]) -> str:
 
 @router.get("/library")
 async def library(request: Request):
-    """因子列表加组合报告；没装载数据时只有列表"""
+    """因子列表加组合报告；没装载数据时只有列表。reeval 是库里因子复评任务的进度"""
     app = request.app
     rows = await app.state.store.factors()
     report = (await _library(app)).report if app.state.data else None
-    return _ok({"factors": [_factor_view(f, full=False) for f in rows], "combo": report})
+    return _ok({"factors": [_factor_view(f, full=False) for f in rows], "combo": report,
+                "reeval": app.state.runs.jobs["libraryReeval"]})
 
 
 @router.get("/library/{factor_id}")
@@ -817,6 +824,7 @@ def _factor_view(f: dict[str, Any], full: bool) -> dict[str, Any]:
     out = {k: f.get(k) for k in ("id", "name", "hypothesis", "expr", "canonical", "columns", "approved_at",
                                   "run_id", "review", "recheck")}
     out["brief"] = eval_brief(f["eval"], f["gates"])
+    out["reeval"] = _reeval_view(f.get("reeval"))
     if full:
         out["eval"] = f["eval"]
         out["gates"] = f["gates"]
@@ -835,6 +843,75 @@ async def library_recheck(factor_id: str, request: Request):
     result = await asyncio.to_thread(recheck, data.pool.rows, values.f, int(f["approved_at"]), app.state.params)
     await app.state.store.set_recheck(factor_id, result)
     return _ok(result)
+
+
+@router.post("/library/reeval")
+async def library_reeval(request: Request):
+    """库里全部因子用当前评估器重算一遍：G9 的基线是拿掉它的库 + 基差 carry，G6 比参照集、库里别的因子和观察区，
+    G8 的已知结构去掉它自己，G10 用它当初（候选）声明的方向，G5 只判单条的排列分位。结果写进 reeval，入库时那份和入库状态都不动"""
+    app = request.app
+    data = _data(app)
+    job = app.state.runs.jobs["libraryReeval"]
+    if job.get("running"):
+        raise HTTPException(409, "已经在复评了")
+    if await app.state.store.active_campaign() is not None or app.state.runs.tasks:
+        raise HTTPException(409, "有 campaign 在跑，等它结束再复评")
+    _not_refreshing(app)
+    if data.reference_grid is None:
+        raise HTTPException(409, "参照网格还没算好，等它算完再复评")
+    if app.state.runs.jobs["reeval"].get("running"):
+        raise HTTPException(409, "观察区还在复评，等它算完")
+    lib = await _library(app)
+    if not lib.factors:
+        raise HTTPException(409, "库是空的")
+    job.clear()
+    job.update(running=True, startedAt=now_ms(), total=len(lib.factors), done=0, current=None, error=None,
+               finishedAt=None)
+
+    async def work() -> None:
+        try:
+            await _library_reeval(app, data, lib, job)
+            job.update(finishedAt=now_ms())
+        except Exception as exc:
+            logger.exception("库里因子复评失败")
+            job.update(error=str(exc)[:300])
+        finally:
+            job["running"] = False
+
+    asyncio.create_task(work())
+    return _ok({"started": True, "total": len(lib.factors)})
+
+
+async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str, Any]) -> None:
+    """逐条评估判门；lib.full 的列与 lib.factors 同序，拿掉第 j 列就是没有它的库"""
+    params, thresholds = app.state.params, app.state.thresholds
+    store: Store = app.state.store
+    pool = data.pool
+    observing = await _observing(app)
+    search = combo.Combo(pool.search, pool.symbols, lib.full.names, lib.full.values[pool.in_search])
+    basis, vol = data.basis[pool.in_search], data.vol[pool.in_search]
+    for j, f in enumerate(lib.factors):
+        job["current"] = f["name"]
+        others = combo.Combo(search.rows, search.symbols, search.names[:j] + search.names[j + 1:],
+                             np.delete(search.values, j, axis=1))
+        base = await asyncio.to_thread(scheme.Base.of, others, basis, vol, params)
+        ev = await asyncio.to_thread(evaluate, parse(f["expr"], FEATURE_COLUMNS), pool, data.vol, params,
+                                     data.reference_grid, base, data.products, True, observing)
+        candidate = await store.candidate(f["id"])
+        direction = candidate["direction"] if candidate else None
+        gates = judge(ev, thresholds, lib.known - {f["canonical"]}, direction)
+        # 发现它那一轮的切点之后都是它没见过的，比当前 holdout 长
+        run = await store.run(f["run_id"])
+        seen = run["cut_ms"] if run else None
+        if seen is not None and seen < data.cut_ms:
+            ev["unseen"] = await asyncio.to_thread(recheck, pool.rows, lib.full.values[:, j], seen, params)
+        failed = [g for g in gates if not g["passed"]]
+        await store.set_factor_reeval(f["id"], {
+            "at": now_ms(), "direction": direction, "passed": not failed,
+            "reason": "；".join(f"{g['id']} {g['note']}" for g in failed) or None,
+            "eval": clean(ev), "gates": clean(gates)})
+        job["done"] += 1
+    job["current"] = None
 
 
 @router.post("/eval")

@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Library, RefreshCw, Sigma } from 'lucide-react';
-import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck } from '../api';
+import { Library, RefreshCw, ScanSearch, Sigma } from 'lucide-react';
+import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck, type ReevalJob } from '../api';
 import { cx, HORIZON_BARS, HORIZONS, localTime, num, primaryOf, utcMinute } from '../format';
+import { usePoll } from '../poll';
 import { useSort } from '../sort';
 import { useFail } from '../toast';
 import { BriefTable, ExprBlock, GateList, ReviewLine } from '../components/FactorCard';
 import { Badge, Button, Card, Drawer, Empty, RawJson, SortTh, Spinner } from '../components/ui';
+import { ReevalBlock, ReevalProgress } from './ObservationPanel';
 
-type FactorKey = 'name' | 'approvedAt' | 'ic' | 'icir' | 'holdout' | 'recheck';
+type FactorKey = 'name' | 'approvedAt' | 'ic' | 'icir' | 'holdout' | 'recheck' | 'reeval';
 
-// 表里的主档数字：搜索段、holdout、入库后复查；主档是这条入库时判门用的那一档
+// 表里的主档数字：搜索段、holdout、入库后复查、复评；主档是这条入库时判门用的那一档，复评的是现在的主档
 const primaryIc = (f: Factor) => f.brief.horizons[primaryOf(f.brief)]?.meanIc;
 const primaryIcir = (f: Factor) => f.brief.horizons[primaryOf(f.brief)]?.icir;
 const holdoutIc = (f: Factor) => f.brief.holdout?.horizons[primaryOf(f.brief)]?.meanIc;
 const recheckIc = (f: Factor) =>
   f.recheck?.horizons[HORIZON_BARS[primaryOf(f.brief) as (typeof HORIZONS)[number]]]?.mean;
+const reevalIc = (f: Factor) => f.reeval?.brief.horizons[primaryOf(f.reeval.brief)]?.meanIc;
 
 const FACTOR_VALUES: Record<FactorKey, (f: Factor) => string | number | null | undefined> = {
   name: f => f.name,
@@ -24,25 +27,43 @@ const FACTOR_VALUES: Record<FactorKey, (f: Factor) => string | number | null | u
   icir: primaryIcir,
   holdout: holdoutIc,
   recheck: recheckIc,
+  reeval: reevalIc,
 };
 
-/** 管理员的因子库：列表、组合报告、详情与复查 */
+/** 管理员的因子库：列表、组合报告、详情与复查；可以用当前评估器整批复评 */
 export function LibraryPanel({ active, loaded }: { active: boolean; loaded: boolean }) {
   const { t } = useTranslation();
   const fail = useFail();
   const [factors, setFactors] = useState<Factor[] | null>(null);
   const [combo, setCombo] = useState<ComboReport | null>(null);
+  const [job, setJob] = useState<ReevalJob | null>(null);
   const [detail, setDetail] = useState<FactorDetail | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [rechecking, setRechecking] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   const load = useCallback(() => alpha.library()
-    .then(r => { setFactors(r.factors); setCombo(r.combo); })
+    .then(r => { setFactors(r.factors); setCombo(r.combo); setJob(r.reeval); })
     .catch(fail), [fail]);
 
   useEffect(() => {
     if (active) void load();
   }, [active, load]);
+
+  const running = job?.running ?? false;
+  usePoll(active && running, load, 3000);
+
+  const reeval = async () => {
+    setStarting(true);
+    try {
+      await alpha.libraryReeval();
+      await load();
+    } catch (err) {
+      fail(err);
+    } finally {
+      setStarting(false);
+    }
+  };
 
   const { sorted, sort, toggle } = useSort(factors ?? [], FACTOR_VALUES, { key: 'approvedAt', dir: 'desc' });
 
@@ -79,33 +100,45 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
       <Card title={t('library.title')} icon={Library}
             actions={<Button variant="ghost" icon={RefreshCw} onClick={() => void load()} className="px-2" />}>
         {!factors ? <Spinner /> : factors.length === 0 ? <Empty>{t('library.empty')}</Empty> : (
-          <div className="overflow-x-auto -mx-4">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  {th('name', t('library.col.name'), false)}
-                  <th>{t('library.col.expr')}</th>
-                  {th('approvedAt', t('library.col.approvedAt'))}
-                  {th('ic', t('library.col.ic'))}
-                  {th('icir', t('library.col.icir'))}
-                  {th('holdout', t('library.col.holdout'))}
-                  {th('recheck', t('library.col.recheck'))}
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map(f => (
-                  <tr key={f.id} onClick={() => open(f.id)} className="cursor-pointer">
-                    <td className="font-semibold whitespace-nowrap">{f.name}</td>
-                    <td className="max-w-[28rem]"><code className="block truncate text-[11.5px] text-muted" title={f.expr}>{f.expr}</code></td>
-                    <td className="r num whitespace-nowrap">{localTime(f.approved_at)}</td>
-                    <td className="r num">{num(primaryIc(f))}</td>
-                    <td className="r num">{num(primaryIcir(f), 2)}</td>
-                    <td className="r num">{num(holdoutIc(f))}</td>
-                    <td className="r num">{num(recheckIc(f))}</td>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[11px] text-muted">{t('library.reevalHint')}</p>
+              <Button icon={ScanSearch} loading={starting || running} disabled={!loaded}
+                      onClick={() => void reeval()} className="ml-auto">
+                {running ? t('library.reevalRunning') : t('library.reeval')}
+              </Button>
+            </div>
+            {job && <ReevalProgress job={job} />}
+            <div className="overflow-x-auto -mx-4">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    {th('name', t('library.col.name'), false)}
+                    <th>{t('library.col.expr')}</th>
+                    {th('approvedAt', t('library.col.approvedAt'))}
+                    {th('ic', t('library.col.ic'))}
+                    {th('icir', t('library.col.icir'))}
+                    {th('holdout', t('library.col.holdout'))}
+                    {th('recheck', t('library.col.recheck'))}
+                    {th('reeval', t('library.col.reeval'))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {sorted.map(f => (
+                    <tr key={f.id} onClick={() => open(f.id)} className="cursor-pointer">
+                      <td className="font-semibold whitespace-nowrap">{f.name}</td>
+                      <td className="max-w-[28rem]"><code className="block truncate text-[11.5px] text-muted" title={f.expr}>{f.expr}</code></td>
+                      <td className="r num whitespace-nowrap">{localTime(f.approved_at)}</td>
+                      <td className="r num">{num(primaryIc(f))}</td>
+                      <td className="r num">{num(primaryIcir(f), 2)}</td>
+                      <td className="r num">{num(holdoutIc(f))}</td>
+                      <td className="r num">{num(recheckIc(f))}</td>
+                      <td className={cx('r num', f.reeval && !f.reeval.passed && 'text-loss')}>{num(reevalIc(f))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </Card>
@@ -153,6 +186,7 @@ function FactorDetailView({ f, loaded, rechecking, onRecheck }: {
       {f.review && <ReviewLine review={f.review} />}
       <GateList gates={f.gates} />
       <BriefTable brief={f.brief} />
+      {f.reeval && <ReevalBlock r={f.reeval} />}
       <section className="border border-line bg-panel p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="microlabel">{t('library.recheck')}</span>
