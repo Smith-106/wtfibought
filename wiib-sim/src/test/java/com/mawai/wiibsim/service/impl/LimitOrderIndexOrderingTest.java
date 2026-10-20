@@ -1,6 +1,7 @@
 package com.mawai.wiibsim.service.impl;
 
 import com.mawai.wiibcommon.cache.CacheService;
+import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibsim.config.FuturesLeverageBracketRegistry;
 import com.mawai.wiibsim.config.TradeFilterRegistry;
 import com.mawai.wiibsim.config.TradingConfig;
@@ -115,6 +116,6 @@ class LimitOrderIndexOrderingTest {
                 mock(FuturesLeverageBracketRegistry.class), cacheService, mock(FuturesPositionIndexService.class),
                 mock(FuturesRiskService.class), mock(CrossMarginService.class), mock(CrossLiquidationService.class),
                 mock(FairLockRegistry.class), mock(FundingRateService.class),
-                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))));
+                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))), new BinanceProperties());
     }
 }

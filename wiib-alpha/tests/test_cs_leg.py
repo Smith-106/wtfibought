@@ -28,6 +28,11 @@ def points(cells: list[tuple[np.ndarray, np.ndarray, np.ndarray]], syms: list[np
                   times=times, months=np.zeros(len(cells), dtype="int64"))
 
 
+def unit(p: Points) -> np.ndarray:
+    """每个币波动一样：按波动分仓就是等权"""
+    return np.ones(len(p.g))
+
+
 def flat(f: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return f.astype("float64"), np.zeros(len(f)), np.ones(len(f), dtype="int8")
 
@@ -95,6 +100,44 @@ def test_missing_name_leaves_and_a_skipped_point_rebuilds():
     assert held(q, w, 2)[0] == [15, 16, 17, 18]
 
 
+def test_step_day_by_day_matches_the_whole_history():
+    # 交易员一天算一步：上一点方向相同（有仓位）才把上一点的持仓带进来，和整段算的 weights 逐点一样；
+    # 方向翻号、学不出方向（0）、整个点被跳过、有币缺席又回来、因子有并列都在里面
+    rng = np.random.default_rng(21)
+    total, n = 40, 30
+    f = np.zeros((total, n))
+    for i in range(1, total):
+        f[i] = 0.8 * f[i - 1] + rng.normal(size=n)
+    f[5, :6] = 0.0
+    gs, syms, fs = [], [], []
+    for g in range(total):
+        if g == 25:
+            continue
+        keep = np.flatnonzero(rng.random(n) > 0.1) if g % 7 == 3 else np.arange(n)
+        gs.append(np.full(len(keep), g))
+        syms.append(keep)
+        fs.append(f[g, keep])
+    g = np.concatenate(gs)
+    p = Points(g=g, sym=np.concatenate(syms), tier=np.ones(len(g), dtype="int8"), f=np.concatenate(fs),
+               y=np.zeros(len(g)), fund=np.zeros(len(g)), times=BASE + (np.arange(total) + 1) * 24 * BAR_MS - 1,
+               months=np.zeros(total, dtype="int64"))
+    direction = np.ones(total)
+    direction[10:13], direction[18] = -1.0, 0.0
+    w = cs_leg.weights(p, direction, 0.2, 0.4)
+    long_held, short_held, before = set(), set(), 0.0
+    for k in range(total):
+        at = p.g == k
+        sym = p.sym[at]
+        sign = direction[k] if at.any() else 0.0
+        carry = sign != 0 and sign == before
+        long_, short = cs_leg.step(p.f[at], sign, np.isin(sym, list(long_held)) & carry,
+                                   np.isin(sym, list(short_held)) & carry, 0.2, 0.4)
+        assert (long_ == (w[at] > 0)).all() and (short == (w[at] < 0)).all(), k
+        long_held, short_held, before = set(sym[long_]), set(sym[short]), sign
+    # 缓冲真的起了作用：有的点留着已经掉出头部 1/5 的币
+    assert any(((w[p.g == k] > 0).sum() > 6) for k in range(total))
+
+
 def test_rebalance_pays_only_for_names_that_change():
     tiers = np.array([1] * 10 + [3] * 10, dtype="int8")
     f1 = swapped(20, 3, 16).astype("float64")  # 3 号（一档）与 16 号（三档）对调
@@ -131,11 +174,11 @@ def test_break_even_is_the_cost_that_zeroes_the_net():
     p = points([(np.arange(5.0), np.zeros(5), ones), (np.arange(5.0), up, ones), (np.arange(5.0), same, ones)])
     ic = np.full(3, 0.5)
     params = EvalParams(min_points=1, cost_tiers_bps=(100.0, 100.0, 100.0))
-    out = cs_leg.simulate(p, ic, [Window(1, 1, 3)], 24, params, 0)
+    out = cs_leg.simulate(p, unit(p), ic, [Window(1, 1, 3)], 24, params, 0)
     assert out["periods"] == 2 and out["breakEvenBps"] == pytest.approx(100.0)
     assert out["netReturn"] == pytest.approx(0.0, abs=1e-12) and out["grossReturn"] == pytest.approx(0.02)
     # 一直没仓位：换手量是 0，盈亏平衡算不出来
-    none = cs_leg.simulate(p, np.full(3, np.nan), [Window(1, 1, 3)], 24, params, 0)
+    none = cs_leg.simulate(p, unit(p), np.full(3, np.nan), [Window(1, 1, 3)], 24, params, 0)
     assert np.isnan(none["breakEvenBps"])
 
 
@@ -145,12 +188,23 @@ def test_funding_is_paid_by_longs_and_received_by_shorts():
     fund = np.array([0.003, 0, 0, 0, 0.001])
     p = points([(np.arange(5.0), np.zeros(5), ones)] * 3, fund=[fund] * 3)
     params = EvalParams(min_points=1, cost_tiers_bps=(0.0, 0.0, 0.0))
-    out = cs_leg.simulate(p, np.full(3, 0.5), [Window(1, 1, 3)], 24, params, 0)
+    out = cs_leg.simulate(p, unit(p), np.full(3, 0.5), [Window(1, 1, 3)], 24, params, 0)
     assert out["fundingBps"] == pytest.approx(20.0) and out["breakEvenBps"] == pytest.approx(20.0)
     assert out["grossReturn"] == pytest.approx(1.002 ** 2 - 1) and out["netReturn"] == pytest.approx(out["grossReturn"])
     # 方向反过来：多头是 0 号付 0.3%，空头是 4 号收 0.1%，每期净付 0.2%
-    flipped = cs_leg.simulate(p, np.full(3, -0.5), [Window(1, 1, 3)], 24, params, 0)
+    flipped = cs_leg.simulate(p, unit(p), np.full(3, -0.5), [Window(1, 1, 3)], 24, params, 0)
     assert flipped["fundingBps"] == pytest.approx(-20.0) and flipped["netReturn"] == pytest.approx(0.998 ** 2 - 1)
+
+
+def test_each_side_is_sized_by_inverse_vol():
+    # 10 个币每边 2 个名额：多头 8、9 号，9 号付 0.2% 资金费、波动 0.01，8 号不付、波动 0.03；按 1/波动分仓 9 号占 3/4
+    ones = np.ones(10, dtype="int8")
+    fund = np.zeros(10)
+    fund[9] = 0.002
+    p = points([(np.arange(10.0), np.zeros(10), ones)] * 3, fund=[fund] * 3)
+    vol = np.tile(np.r_[np.full(8, 0.02), 0.03, 0.01], 3)
+    out = cs_leg.simulate(p, vol, np.full(3, 0.5), [Window(1, 1, 3)], 24, EvalParams(min_points=1), 0)
+    assert out["fundingBps"] == pytest.approx(-15.0)
 
 
 def test_permutation_matches_the_closed_form():
@@ -178,20 +232,20 @@ def test_simulate_learns_the_sign_and_beats_cost():
     wins = grid_windows(200, 24, PARAMS)
     up = synthetic()
     down = replace(up, f=-up.f)
-    a = cs_leg.simulate(up, cs_ic.series(up), wins, 24, PARAMS, PARAMS.iterations)
-    b = cs_leg.simulate(down, cs_ic.series(down), wins, 24, PARAMS, PARAMS.iterations)
+    a = cs_leg.simulate(up, unit(up), cs_ic.series(up), wins, 24, PARAMS, PARAMS.iterations)
+    b = cs_leg.simulate(down, unit(down), cs_ic.series(down), wins, 24, PARAMS, PARAMS.iterations)
     assert a["periods"] == wins[-1].test_end - wins[0].test_start
     assert a["netReturn"] > 0 and a["permPct"] >= 0.99 and a["exposure"] == 1.0
     assert a["netReturn"] < a["grossReturn"] and 0 < a["turnover"] <= 1 and a["breakEvenBps"] > 12
     # 反号的因子学到反方向，仓位完全一样
     assert b["netReturn"] == pytest.approx(a["netReturn"]) and b["permPct"] == a["permPct"]
-    assert cs_leg.simulate(up, cs_ic.series(up), wins, 24, PARAMS, 0)["permPct"] is None
-    assert cs_leg.simulate(up, cs_ic.series(up), [], 24, PARAMS, 0) == {"periods": 0}
+    assert cs_leg.simulate(up, unit(up), cs_ic.series(up), wins, 24, PARAMS, 0)["permPct"] is None
+    assert cs_leg.simulate(up, unit(up), cs_ic.series(up), [], 24, PARAMS, 0) == {"periods": 0}
 
 
 def test_noise_is_not_significant():
     rng = np.random.default_rng(11)
     cells = [(rng.normal(size=25), rng.normal(0, 0.02, 25), np.ones(25, dtype="int8")) for _ in range(200)]
     p = points(cells)
-    out = cs_leg.simulate(p, cs_ic.series(p), grid_windows(200, 24, PARAMS), 24, PARAMS, PARAMS.iterations)
+    out = cs_leg.simulate(p, unit(p), cs_ic.series(p), grid_windows(200, 24, PARAMS), 24, PARAMS, PARAMS.iterations)
     assert 0.02 < out["permPct"] < 0.98

@@ -7,7 +7,7 @@ import type {
   CampaignStatus, Candidate, CandidateStatus, EvalBrief, GateBrief, HoldoutBrief, HorizonBrief, Review, RunStatus,
   TimeseriesBrief,
 } from '../api';
-import { cx, HORIZONS, num, pct, PRIMARY, signedPct, utcDay } from '../format';
+import { cx, HORIZONS, num, pct, primaryOf, signedPct, utcDay } from '../format';
 import { Badge, type Tone } from './ui';
 
 const STATUS: Record<CandidateStatus, { tone: Tone; icon: LucideIcon }> = {
@@ -167,15 +167,16 @@ function bps(v: number | null, signed = false): string {
   return `${signed && v > 0 ? '+' : ''}${v.toFixed(1)} bps`;
 }
 
-function HorizonHead({ label }: { label: ReactNode }) {
+/** primary 是判门用的那一档，高亮出来 */
+function HorizonHead({ label, primary }: { label: ReactNode; primary: string }) {
   const { t } = useTranslation();
   return (
     <thead>
       <tr>
         <th>{label}</th>
         {HORIZONS.map(h => (
-          <th key={h} className={cx('r', h === PRIMARY && 'text-primary')}>
-            {h}{h === PRIMARY && <span className="ml-1 font-normal">{t('brief.primary')}</span>}
+          <th key={h} className={cx('r', h === primary && 'text-primary')}>
+            {h}{h === primary && <span className="ml-1 font-normal">{t('brief.primary')}</span>}
           </th>
         ))}
       </tr>
@@ -183,10 +184,14 @@ function HorizonHead({ label }: { label: ReactNode }) {
   );
 }
 
-const primaryCell = (h: string) => cx('r num', h === PRIMARY && 'bg-primary/5');
+const primaryCell = (h: string, primary: string) => cx('r num', h === primary && 'bg-primary/5');
 
 /** 切点之后的 IC；titleKey 换标题：holdout 是当前切点起，unseen 是发现它那一轮的切点起 */
-export function HoldoutTable({ holdout, titleKey = 'brief.holdout' }: { holdout: HoldoutBrief; titleKey?: string }) {
+export function HoldoutTable({ holdout, primary, titleKey = 'brief.holdout' }: {
+  holdout: HoldoutBrief;
+  primary: string;
+  titleKey?: string;
+}) {
   const { t } = useTranslation();
   const rows: { key: string; get: (h: HoldoutBrief['horizons'][string]) => ReactNode }[] = [
     { key: 'meanIc', get: h => num(h.meanIc) },
@@ -198,12 +203,12 @@ export function HoldoutTable({ holdout, titleKey = 'brief.holdout' }: { holdout:
   ];
   return (
     <table className="tbl">
-      <HorizonHead label={t(titleKey, { from: utcDay(holdout.since) })} />
+      <HorizonHead label={t(titleKey, { from: utcDay(holdout.since) })} primary={primary} />
       <tbody>
         {rows.map(r => (
           <tr key={r.key}>
             <td className="text-muted">{t(`brief.${r.key}`)}</td>
-            {HORIZONS.map(h => <td key={h} className={primaryCell(h)}>{holdout.horizons[h] ? r.get(holdout.horizons[h]) : '—'}</td>)}
+            {HORIZONS.map(h => <td key={h} className={primaryCell(h, primary)}>{holdout.horizons[h] ? r.get(holdout.horizons[h]) : '—'}</td>)}
           </tr>
         ))}
       </tbody>
@@ -212,7 +217,7 @@ export function HoldoutTable({ holdout, titleKey = 'brief.holdout' }: { holdout:
 }
 
 /** 产品币时序报告：三档 IC 与方向腿，主档再按币列 IC；只报告不做门 */
-function TimeseriesTable({ ts }: { ts: TimeseriesBrief }) {
+function TimeseriesTable({ ts, primary }: { ts: TimeseriesBrief; primary: string }) {
   const { t } = useTranslation();
   const rows: { key: string; get: (h: TimeseriesBrief['horizons'][string]) => ReactNode }[] = [
     { key: 'meanIc', get: h => num(h.meanIc) },
@@ -223,12 +228,12 @@ function TimeseriesTable({ ts }: { ts: TimeseriesBrief }) {
   return (
     <div className="space-y-1.5">
       <table className="tbl">
-        <HorizonHead label={t('brief.timeseries')} />
+        <HorizonHead label={t('brief.timeseries')} primary={primary} />
         <tbody>
           {rows.map(r => (
             <tr key={r.key}>
               <td className="text-muted whitespace-nowrap">{t(`brief.${r.key}`)}</td>
-              {HORIZONS.map(h => <td key={h} className={primaryCell(h)}>{ts.horizons[h] ? r.get(ts.horizons[h]) : '—'}</td>)}
+              {HORIZONS.map(h => <td key={h} className={primaryCell(h, primary)}>{ts.horizons[h] ? r.get(ts.horizons[h]) : '—'}</td>)}
             </tr>
           ))}
         </tbody>
@@ -242,36 +247,38 @@ function TimeseriesTable({ ts }: { ts: TimeseriesBrief }) {
 }
 
 type BriefLike = Pick<EvalBrief, 'horizons'>
-  & Partial<Pick<EvalBrief, 'gain' | 'gainSharpe' | 'holdout' | 'unseen' | 'timeseries' | 'redundancy' | 'complexity' | 'neutral'>>;
+  & Partial<Pick<EvalBrief, 'primary' | 'gain' | 'gainSharpe' | 'holdout' | 'unseen' | 'timeseries' | 'redundancy'
+    | 'complexity' | 'neutral'>>;
 
-/** 三档截面数字表；单因子再带组合增量一行、冗余/复杂度两项；算过 holdout、没见过的那段、时序报告的再各来一张 */
+/** 三档截面数字表；单因子再带交易方案增量一行、冗余/复杂度两项；算过 holdout、没见过的那段、时序报告的再各来一张 */
 export function BriefTable({ brief }: { brief: BriefLike }) {
   const { t } = useTranslation();
   const { gain, gainSharpe, holdout, unseen, timeseries, redundancy, complexity, neutral } = brief;
+  const primary = primaryOf(brief);
   return (
     <div className="space-y-2.5 min-w-0">
       <div className="overflow-x-auto">
         <table className="tbl">
-          <HorizonHead label={t('brief.metric')} />
+          <HorizonHead label={t('brief.metric')} primary={primary} />
           <tbody>
             {ROWS.map(r => (
               <tr key={r.key}>
                 <td className="text-muted whitespace-nowrap">{t(`brief.${r.key}`)}</td>
-                {HORIZONS.map(h => <td key={h} className={primaryCell(h)}>{brief.horizons[h] ? r.get(brief.horizons[h]) : '—'}</td>)}
+                {HORIZONS.map(h => <td key={h} className={primaryCell(h, primary)}>{brief.horizons[h] ? r.get(brief.horizons[h]) : '—'}</td>)}
               </tr>
             ))}
             {gain && (
               <tr>
                 <td className="text-muted whitespace-nowrap">{t('brief.gain')}</td>
-                {HORIZONS.map(h => <td key={h} className={primaryCell(h)}>{num(gain[h])}</td>)}
+                {HORIZONS.map(h => <td key={h} className={primaryCell(h, primary)}>{num(gain[h])}</td>)}
               </tr>
             )}
             {gainSharpe && (
               <tr>
                 <td className="text-muted whitespace-nowrap">{t('brief.gainSharpe')}</td>
                 {HORIZONS.map(h => (
-                  <td key={h} className={primaryCell(h)}>
-                    {h === PRIMARY ? `${num(gainSharpe.base, 2)} → ${num(gainSharpe.with, 2)}` : '—'}
+                  <td key={h} className={primaryCell(h, primary)}>
+                    {h === primary ? `${num(gainSharpe.base, 2)} → ${num(gainSharpe.with, 2)}` : '—'}
                   </td>
                 ))}
               </tr>
@@ -301,9 +308,9 @@ export function BriefTable({ brief }: { brief: BriefLike }) {
           <dd className="num">{t('brief.complexityValue', complexity)}</dd>
         </dl>
       )}
-      {holdout && <div className="overflow-x-auto"><HoldoutTable holdout={holdout} /></div>}
-      {unseen && <div className="overflow-x-auto"><HoldoutTable holdout={unseen} titleKey="brief.unseen" /></div>}
-      {timeseries && <div className="overflow-x-auto"><TimeseriesTable ts={timeseries} /></div>}
+      {holdout && <div className="overflow-x-auto"><HoldoutTable holdout={holdout} primary={primary} /></div>}
+      {unseen && <div className="overflow-x-auto"><HoldoutTable holdout={unseen} primary={primary} titleKey="brief.unseen" /></div>}
+      {timeseries && <div className="overflow-x-auto"><TimeseriesTable ts={timeseries} primary={primary} /></div>}
     </div>
   );
 }

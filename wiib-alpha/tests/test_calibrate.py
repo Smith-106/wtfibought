@@ -1,3 +1,5 @@
+import sqlite3
+
 import numpy as np
 
 from wiib_alpha import calibrate
@@ -5,6 +7,8 @@ from wiib_alpha.data.panel import BENCHMARK, FEATURE_COLUMNS, TARGET_COLUMNS
 from wiib_alpha.dsl import parse
 from wiib_alpha.eval.evaluate import evaluate
 from wiib_alpha.eval.params import EvalParams
+from wiib_alpha.store import SCHEMA
+from wiib_alpha.trade import scheme
 
 
 def test_synthetic_store_has_the_real_layout_and_a_planted_carry(tmp_path):
@@ -21,8 +25,32 @@ def test_synthetic_store_has_the_real_layout_and_a_planted_carry(tmp_path):
     # 植入的信号：费率截面排名高的币之后涨得多
     pool = calibrate.load_pool(store, universe, holdout_days=5)
     params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=50, holdout_days=5)
-    ev = evaluate(parse("$funding_rate", FEATURE_COLUMNS), pool, params)
-    assert ev["horizons"][48]["ic"]["mean"] > 0.1
+    ev = evaluate(parse("$funding_rate", FEATURE_COLUMNS), pool, pool.values(scheme.VOL).f, params)
+    assert ev["horizons"][ev["primary"]]["ic"]["mean"] > 0.1
+
+
+def test_g9_prints_the_gain_of_the_library_candidates_and_random_factors(tmp_path, capsys):
+    store, universe = calibrate.synthetic_store(tmp_path / "data", coins=25, days=40, seed=1, beta=2e-4)
+    conn = sqlite3.connect(tmp_path / "alpha.sqlite")
+    for statement in SCHEMA:
+        conn.execute(statement)
+    conn.executemany("INSERT INTO universe(month, symbol, rank, avg_quote_volume) VALUES (?, ?, ?, ?)",
+                     list(universe.itertuples(index=False)))
+    conn.execute("INSERT INTO factor(id, name, hypothesis, expr, canonical, columns_json, eval_json, gates_json, "
+                 "approved_at, run_id) VALUES ('f1', 'carry', 'h', '$funding_rate', '', '[]', '{}', '[]', 1, 'r')")
+    # 入库那条的候选记录不再算一遍；同一个表达式交了两次只算一次
+    conn.executemany("INSERT INTO candidate(id, run_id, seq, name, hypothesis, expr, status, updated_at) "
+                     "VALUES (?, 'r', 1, ?, 'h', ?, 'rejected_gates', 1)",
+                     [("c1", "carry", "$funding_rate"), ("c2", "vol", "Mean($volume, 4)"),
+                      ("c3", "vol_again", "Mean($volume, 4)")])
+    conn.commit()
+    conn.close()
+    params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=0, holdout_days=5)
+    calibrate.g9(store, str(tmp_path / "alpha.sqlite"), params, 2, 0)
+    out = capsys.readouterr().out
+    assert "基线：库里 1 条 + carry" in out and "  carry: " in out
+    assert "== 库外候选：1 条 ==" in out and "vol_again  Mean($volume, 4)" in out
+    assert "== 随机因子：2 条 ==" in out and out.count("增量：中位") == 2
 
 
 def test_random_expression_is_valid_and_not_degenerate(tmp_path):

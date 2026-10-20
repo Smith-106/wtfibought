@@ -26,9 +26,10 @@ export const localTime = (ms: number | null | undefined): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-/** 6h/12h/24h 三档；12h（48 根）是主档 */
+/** 6h/12h/24h 三档 */
 export const HORIZONS = ['6h', '12h', '24h'] as const;
-export const PRIMARY = '12h';
+/** 判门用的那一档：现在是 24h，之前落库的老结果没记、是 12h */
+export const primaryOf = (brief: { primary?: string }): string => brief.primary ?? '12h';
 /** 复查结果按 bar 数做键 */
 export const HORIZON_BARS: Record<(typeof HORIZONS)[number], string> = { '6h': '24', '12h': '48', '24h': '96' };
 

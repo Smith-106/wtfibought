@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Library, RefreshCw, Sigma } from 'lucide-react';
 import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck } from '../api';
-import { cx, HORIZON_BARS, HORIZONS, localTime, num, PRIMARY, utcMinute } from '../format';
+import { cx, HORIZON_BARS, HORIZONS, localTime, num, primaryOf, utcMinute } from '../format';
 import { useSort } from '../sort';
 import { useFail } from '../toast';
 import { BriefTable, ExprBlock, GateList, ReviewLine } from '../components/FactorCard';
@@ -10,11 +10,12 @@ import { Badge, Button, Card, Drawer, Empty, RawJson, SortTh, Spinner } from '..
 
 type FactorKey = 'name' | 'approvedAt' | 'ic' | 'icir' | 'holdout' | 'recheck';
 
-// 表里的主档数字：搜索段、holdout、入库后复查
-const primaryIc = (f: Factor) => f.brief.horizons[PRIMARY]?.meanIc;
-const primaryIcir = (f: Factor) => f.brief.horizons[PRIMARY]?.icir;
-const holdoutIc = (f: Factor) => f.brief.holdout?.horizons[PRIMARY]?.meanIc;
-const recheckIc = (f: Factor) => f.recheck?.horizons[HORIZON_BARS[PRIMARY]]?.mean;
+// 表里的主档数字：搜索段、holdout、入库后复查；主档是这条入库时判门用的那一档
+const primaryIc = (f: Factor) => f.brief.horizons[primaryOf(f.brief)]?.meanIc;
+const primaryIcir = (f: Factor) => f.brief.horizons[primaryOf(f.brief)]?.icir;
+const holdoutIc = (f: Factor) => f.brief.holdout?.horizons[primaryOf(f.brief)]?.meanIc;
+const recheckIc = (f: Factor) =>
+  f.recheck?.horizons[HORIZON_BARS[primaryOf(f.brief) as (typeof HORIZONS)[number]]]?.mean;
 
 const FACTOR_VALUES: Record<FactorKey, (f: Factor) => string | number | null | undefined> = {
   name: f => f.name,
@@ -161,15 +162,15 @@ function FactorDetailView({ f, loaded, rechecking, onRecheck }: {
           </Button>
         </div>
         {!loaded && <p className="text-[11px] text-warn">{t('common.needData')}</p>}
-        {f.recheck ? <RecheckView recheck={f.recheck} /> : <Empty>{t('library.recheckNone')}</Empty>}
+        {f.recheck ? <RecheckView recheck={f.recheck} primary={primaryOf(f.brief)} /> : <Empty>{t('library.recheckNone')}</Empty>}
       </section>
       <RawJson value={f.eval} />
     </>
   );
 }
 
-/** 复查结果：三档截面 IC */
-function RecheckView({ recheck }: { recheck: Recheck }) {
+/** 复查结果：三档截面 IC，primary 是这条判门用的那一档 */
+function RecheckView({ recheck, primary }: { recheck: Recheck; primary: string }) {
   const { t } = useTranslation();
   const cell = (h: (typeof HORIZONS)[number]) => recheck.horizons[HORIZON_BARS[h]];
   const rows: { key: string; get: (h: Recheck['horizons'][string]) => string | number }[] = [
@@ -186,7 +187,7 @@ function RecheckView({ recheck }: { recheck: Recheck }) {
         <thead>
           <tr>
             <th>{t('brief.metric')}</th>
-            {HORIZONS.map(h => <th key={h} className={cx('r', h === PRIMARY && 'text-primary')}>{h}</th>)}
+            {HORIZONS.map(h => <th key={h} className={cx('r', h === primary && 'text-primary')}>{h}</th>)}
           </tr>
         </thead>
         <tbody>

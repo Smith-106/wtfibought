@@ -1,4 +1,5 @@
 import io
+import logging
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -6,6 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from fakes import FakeFapi
 
 from wiib_alpha.data import binance as b
 
@@ -297,3 +299,59 @@ def test_client_error_raises():
                     list_url="https://s3")
     with pytest.raises(b.BinanceError):
         api.klines("X", LISTED, NOW)
+
+
+# ========== fapi 实时 ==========
+
+# 0 点过 5 分：0 点开盘那根还没收
+LIVE_NOW = ms(2026, 9, 21) + 5 * 60_000
+
+
+def live_client() -> tuple[b.Binance, FakeFapi]:
+    fake = FakeFapi(["X", "Y"], LIVE_NOW)
+    return fake.binance(), fake
+
+
+def test_recent_klines_take_one_small_window_for_a_day_and_pages_of_1000_for_a_gap():
+    api, fake = live_client()
+    day = api.recent_klines("X", LIVE_NOW - DAY, LIVE_NOW)
+    # 一天 96 根以内一次拿完，limit 99（权重 1）；还没收盘的那根扔掉
+    assert [p["limit"] for _, p in fake.log] == ["99"]
+    assert day["open_time"].tolist() == list(range(ms(2026, 9, 20) + BAR, ms(2026, 9, 21), BAR))
+    assert day["open_time"].dtype == "int64" and day["close"].dtype == "float64" and list(day.columns) == b.KLINE_COLUMNS
+    assert day["close"].iloc[-1] == pytest.approx(fake.close("X", ms(2026, 9, 21) - BAR))
+    fake.log.clear()
+    # 缺 12 天：1000 根一窗翻两窗，接起来不重不漏
+    gap = api.recent_klines("X", LIVE_NOW - 12 * DAY, LIVE_NOW)
+    assert [p["limit"] for _, p in fake.log] == ["1000", "1000"]
+    assert gap["open_time"].tolist() == list(range(ms(2026, 9, 9) + BAR, ms(2026, 9, 21), BAR))
+    premium = api.recent_premium("X", LIVE_NOW - DAY, LIVE_NOW)
+    assert list(premium.columns) == b.PREMIUM_COLUMNS and premium["close_time"].tolist() == (day["close_time"]).tolist()
+
+
+def test_recent_metrics_join_open_interest_and_top_position_ratio():
+    api, fake = live_client()
+    df = api.recent_metrics("Y", LIVE_NOW - 2 * DAY, LIVE_NOW)
+    # 两天 576 条，500 条一窗：两个接口各翻两窗
+    assert [path for path, _ in fake.log] == ["/futures/data/openInterestHist"] * 2 + ["/futures/data/topLongShortPositionRatio"] * 2
+    assert all(p["period"] == "5m" and p["limit"] == "500" for _, p in fake.log)
+    # 接口的时间戳比归档晚一格：请求往后挪一格、拿回来再挪回去。0 点过 5 分时接口最新那条记在 0 点，挪回去是 23:55
+    first = fake.log[0][1]
+    assert int(first["startTime"]) == LIVE_NOW - 2 * DAY + b.METRIC_MS
+    # 列同归档 metrics，这两个接口给不了的是空的
+    assert list(df.columns) == b.METRICS_COLUMNS and len(df) == 575 and df["ls_acct"].isna().all()
+    assert df["time"].iloc[0] == LIVE_NOW - 2 * DAY and df["time"].iloc[-1] == LIVE_NOW - 2 * b.METRIC_MS
+    assert df["time"].is_monotonic_increasing
+    # 接口记在 t + 5 分钟的那条值，落在 t
+    api_t = (LIVE_NOW - 2 * DAY) // b.METRIC_MS + 1
+    assert df["ls_top_pos"].iloc[0] == pytest.approx(1 + 0.01 * ((api_t + 1) % 9))
+    assert df["oi"].iloc[0] == 1001 + api_t % 7 and df["oi_value"].iloc[0] == 2e5
+
+
+def test_rest_logs_the_used_weight_and_marks_come_in_one_call(caplog):
+    api, fake = live_client()
+    with caplog.at_level(logging.INFO, logger="wiib_alpha.data.binance"):
+        api.recent_klines("X", LIVE_NOW - DAY, LIVE_NOW)
+    assert "fapi /fapi/v1/klines X 已用权重 3" in caplog.text
+    assert api.mark_prices() == {"X": pytest.approx(fake.mark("X")), "Y": pytest.approx(fake.mark("Y"))}
+    assert fake.log[-1] == ("/fapi/v1/premiumIndex", {})

@@ -24,8 +24,8 @@ import java.util.Set;
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
- * 资金费率的唯一出口。只在结算点（0:00/8:00/16:00）调一次官方全量 premiumIndex 写缓存，
- * 扣费和前端查询都只读缓存——查询链路绝不打 Binance。
+ * feed 币资金费率的出口。只在结算点（0:00/8:00/16:00）调一次官方全量 premiumIndex 写缓存，
+ * 扣费和前端查询都只读缓存——查询链路绝不打 Binance。低频币的资金费见 {@link LowFreqFuturesService}。
  */
 @Slf4j
 @Service

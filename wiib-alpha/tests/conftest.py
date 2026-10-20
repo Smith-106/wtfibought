@@ -7,6 +7,7 @@ from wiib_alpha.data.binance import BAR_MS
 from wiib_alpha.data.panel import PanelStore, holdout_cut
 from wiib_alpha.data.pool import Pool
 from wiib_alpha.dsl import parse
+from wiib_alpha.trade import scheme
 
 PLANTED_N = 6000
 # 截面每个时刻要至少 20 个币；前三个兼当产品币
@@ -18,7 +19,7 @@ REFERENCES = {"noise4": "Mean($trades, 4)"}
 
 
 def planted_panel(seed: int, n: int = PLANTED_N) -> pd.DataFrame:
-    """volume 是埋进去的 AR(1) 预测信号，trades 是纯噪音；全程在池；列够 evaluate 用。
+    """volume 是埋进去的 AR(1) 预测信号，trades、premium 是纯噪音；全程在池；列够 evaluate 和交易方案用。
     每个币各埋一条：同一时刻 volume 高的币之后也涨得多，截面上就是信号"""
     rng = np.random.default_rng(seed)
     s = np.zeros(n)
@@ -29,6 +30,7 @@ def planted_panel(seed: int, n: int = PLANTED_N) -> pd.DataFrame:
     df = pd.DataFrame({"close": close, "ret": r, "volume": s, "trades": rng.normal(0, 1, n),
                        "liq_long": np.nan, "liq_short": np.nan, "liq_count": np.nan, "in_pool": 1.0},
                       index=np.arange(n) * BAR_MS + 1_735_689_600_000)
+    df["premium"] = rng.normal(0, 0.0005, n)
     df.index.name = "close_time"
     for h in (24, 48, 96):
         df[f"fwd_ret_{h}"] = np.log(df["close"].shift(-h) / df["close"])
@@ -68,6 +70,12 @@ def planted_store(tmp_path_factory, planted_panels) -> PanelStore:
 def planted_pool(planted_store, planted_panels) -> Pool:
     cut = holdout_cut(planted_panels, HOLDOUT_DAYS)
     return Pool.load(planted_store, planted_universe(planted_panels), cut)
+
+
+@pytest.fixture(scope="session")
+def planted_vol(planted_pool) -> np.ndarray:
+    """全量骨架上的 Std($ret, 672)：多空腿按它分仓"""
+    return planted_pool.values(scheme.VOL).f
 
 
 @pytest.fixture(scope="session")

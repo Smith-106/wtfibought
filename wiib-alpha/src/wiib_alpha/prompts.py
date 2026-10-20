@@ -60,9 +60,20 @@ FAMILIES = ["动量", "反转", "突破", "波动", "量能", "流动性", "资�
 # ========== 生成角色 ==========
 
 
-def system_gen(facts: Mapping[str, Any], lang: str) -> str:
+def _dsl_docs() -> str:
+    """列、语法、算子：生成、评审、复盘三个角色都要读公式，共用这一份"""
     columns = "\n".join(f"- ${c}：{COLUMN_DOCS.get(c, '')}" for c in FEATURE_COLUMNS)
     operators = "\n".join(f"- {name}：{OPERATOR_DOCS.get(name, '')}" for name in ops.OPERATORS)
+    return f"""可用的列（表达式里写成 $列名）：
+{columns}
+
+表达式语法：Python 表达式写法，只允许 + - * / 与负号、数字字面量、$列、下面这些函数。窗口单位是 bar（15 分钟），必须是 1~{MAX_WINDOW} 的整数字面量，换算：{WINDOW_TABLE}。
+{operators}
+
+截面算子（CsRank / CsDemean / CsZ）在同一时刻跨池内币算，不看别的时刻；每条表达式最多 2 个。评估本来就按截面排序，最外层套 CsRank 不改变 IC；它们的用处是把各币量纲不同的量先拉到可比的尺度再做运算或滚动，比如先截面标准化再和别的量相减。"""
+
+
+def system_gen(facts: Mapping[str, Any], lang: str) -> str:
     known = "\n".join(f"- {name}：{text}（{what}）"
                       for name, (text, what) in {**reference.BASELINES, **reference.KNOWN_EFFECTS}.items())
     # 强平桶只给产品币装配（refresh 里 s in product），池里别的币全是空的
@@ -73,26 +84,20 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 
 数据：币安 USDT 永续，每月初按过去 30 天日均成交额取前 {facts['poolSize']} 个币进池（历史上进过池的共 {facts['poolSymbols']} 个，含已下架的），15 分钟 K 线，{facts['from']} 到 {facts['to']}。{liq}。
 {facts['holdoutFrom']} 起是锁定的 holdout：硬门、评审、你看到的所有数字都只来自它之前的数据；过门的候选会在 holdout 上单独算一次 IC 给人决定入不入库，结果不会反馈给你。
-标准答案是截面的：每 6/12/24 小时取一个时刻，把当时在池的币按因子值排序，与它们之后 6/12/24 小时的对数涨跌幅算 Spearman 相关（截面 rank IC），主档 12 小时。因子要回答的是"此刻哪些币接下来比别的币强"，不是"这个币接下来涨不涨"。
+标准答案是截面的：每 6/12/24 小时取一个时刻，把当时在池的币按因子值排序，与它们之后 6/12/24 小时的对数涨跌幅（信号那根收盘后晚 15 分钟建仓起算）算 Spearman 相关（截面 rank IC），主档 24 小时，和实盘的交易方案一样 24 小时调一次仓。因子要回答的是"此刻哪些币接下来比别的币强"，不是"这个币接下来涨不涨"。
 另外会对 {', '.join(facts['symbols'])} 这几个产品币按时间序列算一份时序报告给评审看，不做门。
 
-可用的列（表达式里写成 $列名）：
-{columns}
-
-表达式语法：Python 表达式写法，只允许 + - * / 与负号、数字字面量、$列、下面这些函数。窗口单位是 bar（15 分钟），必须是 1~{MAX_WINDOW} 的整数字面量，换算：{WINDOW_TABLE}。
-{operators}
-
-截面算子（CsRank / CsDemean / CsZ）在同一时刻跨池内币算，不看别的时刻；每条表达式最多 2 个。评估本来就按截面排序，最外层套 CsRank 不改变 IC；它们的用处是把各币量纲不同的量先拉到可比的尺度再做运算或滚动，比如先截面标准化再和别的量相减。
+{_dsl_docs()}
 
 评估是代码硬门，不是人看：
-- G0 前视自检；G1 样本量；G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组、每期收益两头各截掉 5% 后，顶组减底组每期之差和 IC 同向、t ≥ 2（三组的形状只报不判，只有一头有效也行）；G3 四段至少三段同号，且最近一段必须同号；G4 三档同号；G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每 12 小时调一次，按币的流动性分档扣单边 {tiers} bps 成本，持有期间按真实结算记录付或收资金费：多头付正费率、空头收）扣完能赚，且截面排列检验显著；G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6、截面算子 ≤ 2（解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进库里因子的组合之后，组合多空腿扣成本和资金费的净 Sharpe 要提升、主档样本外 IC 不能降；G10 主档截面 IC 的符号要和你声明的方向一样。另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
-- 写表达式时同时声明方向：按假设，因子值越大未来 12 小时相对越强填 1，越弱填 -1。方向由假设决定；把表达式取负、同时把方向翻过来，G10 的结果不变。IC 和假设反号，说明数据不支持这条假设。
+- G0 前视自检；G1 样本量；G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组、每期收益两头各截掉 5% 后，顶组减底组每期之差和 IC 同向、t ≥ 2（三组的形状只报不判，只有一头有效也行）；G3 四段至少三段同号，且最近一段必须同号；G4 三档同号；G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每边按 7 天波动的倒数分仓，每 24 小时调一次）的截面排列检验显著；这条腿按币的流动性分档扣单边 {tiers} bps 成本、持有期间按真实结算记录付或收资金费（多头付正费率、空头收）后的净收益也会算出来，只报不判；G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名；G7 节点 ≤ 40、窗口 ≤ 6、常量 ≤ 6、截面算子 ≤ 2（解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进实盘的交易方案后净 Sharpe 要提升：方案是一半资金做库里因子的组合（每个时刻先转截面秩、按 24 小时 IC 加权，多空两头按上面的缓冲带选币、按波动分仓）、一半做基差 carry（做空 7 天溢价高的、做多折价的），24 小时调一次，扣成本和资金费，你的因子加进组合那一半；G10 主档截面 IC 的符号要和你声明的方向一样。另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
+- 写表达式时同时声明方向：按假设，因子值越大未来 24 小时相对越强填 1，越弱填 -1。方向由假设决定；把表达式取负、同时把方向翻过来，G10 的结果不变。IC 和假设反号，说明数据不支持这条假设。
 - 已知效应（名字：公式（是什么））；"去老效应"回归掉的是其中 10 条老效应，G6 除了这些还比 Alpha158 的一百多条量价因子：
 {known}
 - 门没过会把没过的门和关键数字给你，同一假设最多再写两版；每一版都算一次试验，进同批多重检验。
 - 之前几轮复盘写下的经验（lessons）会放在出题提示词里。
 - 截面上比的是币与币：价格、成交量、持仓量的绝对水平在币之间不可比，直接排序排出来的是"哪个币大"。用收益、比值、z-score、秩这类各币可比的量。
-- 换手越高成本越高：12 小时持有期上，变化很快的短窗信号要扣更多成本。
+- 换手越高成本越高：24 小时持有期上，变化很快的短窗信号要扣更多成本。
 - 资金费率 8 小时才变一次，对它做短窗差分几乎全是 0。强平列只有产品币有数，截面上用不了；$hour 同一时刻所有币都一样，单独排序没有意义。
 - 参数越少越好，先有一句能说清的经济理由，再写公式。
 
@@ -118,7 +123,7 @@ def propose_message(k: int, library: Sequence[Mapping[str, Any]], tried: Sequenc
 可选的方向：{'、'.join(FAMILIES)}，只是启发不是限制。
 
 提出 {k} 条彼此不同的假设。只输出一个 JSON 数组，不要代码块、不要任何别的字：
-[{{"name": "短英文 slug", "family": "方向", "hypothesis": "一两句话（用{_LANG_NAME[lang]}）：什么现象、为什么能预测未来 12 小时哪些币比别的币强"}}]"""
+[{{"name": "短英文 slug", "family": "方向", "hypothesis": "一两句话（用{_LANG_NAME[lang]}）：什么现象、为什么能预测未来 24 小时哪些币比别的币强"}}]"""
 
 
 def implement_message(cand: Mapping[str, Any], feedback: str | None, problem: str | None = None) -> str:
@@ -133,11 +138,11 @@ def implement_message(cand: Mapping[str, Any], feedback: str | None, problem: st
 
 写之前先过一遍这几条，想清楚再写，别先交一版简单的、等门的数字回来再往上加东西：
 1. 截面上排出来的到底是什么：会不会只是系统提示里那些已知效应换了个说法，和库里的因子差在哪。
-2. 换手：窗口多长、信号变得多快，12 小时调一次仓扣不扣得起成本。
+2. 换手：窗口多长、信号变得多快，24 小时调一次仓扣不扣得起成本。
 3. 资金费：排在做多那头和做空那头的币，费率通常各是正是负，持仓期间哪头在付。
 4. 方向：按假设，因子值越大越强还是越弱。
 
-把这条假设写成一条表达式，并按假设声明方向：因子值越大、未来 12 小时相对越强填 1，越弱填 -1。只输出一个 JSON 对象，不要代码块、不要任何别的字：
+把这条假设写成一条表达式，并按假设声明方向：因子值越大、未来 24 小时相对越强填 1，越弱填 -1。只输出一个 JSON 对象，不要代码块、不要任何别的字：
 {{"expr": "表达式", "direction": 1 或 -1, "note": "一句话说明公式怎么对应假设"}}"""
 
 
@@ -147,18 +152,18 @@ def direction_message(cand: Mapping[str, Any]) -> str:
 表达式：{cand['expr']}
 公式说明：{cand.get('note') or '（无）'}
 
-按这条假设，这个表达式的值越大，币未来 12 小时相对越强还是越弱？越强填 1，越弱填 -1。只输出一个 JSON 对象，不要代码块、不要任何别的字：
+按这条假设，这个表达式的值越大，币未来 24 小时相对越强还是越弱？越强填 1，越弱填 -1。只输出一个 JSON 对象，不要代码块、不要任何别的字：
 {{"direction": 1 或 -1}}"""
 
 
-def gate_feedback(cand: Mapping[str, Any], primary: int) -> str:
+def gate_feedback(cand: Mapping[str, Any]) -> str:
     """门没过：每道没过的门一句，再附主档的关键数字；只摆数字，不替模型下结论"""
     failed = "\n".join(f"- {g['id']} {g['name']}：{g['note']}" for g in cand["gates"] if not g["passed"])
     said = "越大越强" if cand["direction"] > 0 else "越大越弱"
     return f"""上一版表达式：{cand['expr']}（声明的方向 {cand['direction']}，因子值{said}）
 没过的门：
 {failed}
-主档（{primary // 4} 小时）搜索段的数字：{key_numbers(cand['eval'], primary)}
+主档（{hours(primary_of(cand['eval']))}）搜索段的数字：{key_numbers(cand['eval'])}
 同一假设，换一种写法；这些数字说明了什么由你判断。"""
 
 
@@ -166,10 +171,15 @@ def revise_feedback(cand: Mapping[str, Any], review: Mapping[str, Any]) -> str:
     return f"上一版表达式：{cand['expr']}\n评审要求修改：{review.get('suggestion') or review.get('comment') or '（没说怎么改）'}"
 
 
-def key_numbers(ev: Mapping[str, Any], primary: int) -> str:
+def primary_of(ev: Mapping[str, Any]) -> int:
+    """判门用的那一档；落过库的老结果没记，是 12h"""
+    return int(ev.get("primary") or 48)
+
+
+def key_numbers(ev: Mapping[str, Any]) -> str:
     """主档 IC、ICIR、顶减底、三组形状、换手、资金费、盈亏平衡成本、冗余、去老效应后的 IC，一行；落过库的键是字符串，先归一"""
-    h = {int(k): v for k, v in ev["horizons"].items()}[primary]
-    ic, leg, red, pure = h["ic"], h["leg"], ev["redundancy"], neutral_brief(ev, primary)
+    h = {int(k): v for k, v in ev["horizons"].items()}[primary_of(ev)]
+    ic, leg, red, pure = h["ic"], h["leg"], ev["redundancy"], neutral_brief(ev)
     mono = ic["monotonic"]
     spread = mono["spread"]
     if not red["ready"]:
@@ -190,13 +200,13 @@ def key_numbers(ev: Mapping[str, Any], primary: int) -> str:
     ])
 
 
-def neutral_brief(ev: Mapping[str, Any], primary: int) -> dict[str, Any] | None:
+def neutral_brief(ev: Mapping[str, Any]) -> dict[str, Any] | None:
     """去老效应标签：回归掉老效应后的主档 IC、它占原 IC 的比例、t（|ICIR| × √月数）；网格没算好是 None。
     落过库的 NaN 已经是 None，键是字符串"""
     pure = ev.get("neutral")
     if not pure:
         return None
-    raw = _f({int(k): v for k, v in ev["horizons"].items()}[primary]["ic"]["mean"])
+    raw = _f({int(k): v for k, v in ev["horizons"].items()}[primary_of(ev)]["ic"]["mean"])
     mean, icir = _f(pure["mean"]), _f(pure["icir"])
     return {"meanIc": _r(mean), "icir": _r(icir), "t": _r(abs(icir) * math.sqrt(pure["months"])),
             "retained": _r(mean / raw if raw else math.nan), "against": pure["against"]}
@@ -214,13 +224,16 @@ _OUTCOMES = {"passed": "过门、过评审、过同批 BH，进观察区等人�
 
 
 def system_reflect(lang: str) -> str:
-    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、截尾后顶组减底组、四段、三档、扣成本和资金费的多空腿、冗余、复杂度、对库的增量、IC 方向与假设一致），另报回归掉已知效应后还剩多少 IC，门没过的同一假设最多重写两版，过门的再由评审看一遍。
+    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、截尾后顶组减底组、四段、三档、多空腿的排列检验、冗余、复杂度、加进实盘交易方案后净 Sharpe 的增量、IC 方向与假设一致），另报回归掉已知效应后还剩多少 IC，门没过的同一假设最多重写两版，过门的再由评审看一遍。
 你看这一轮全部候选的假设、最终表达式、结局和数字，写下几条经验。它们会原样放进之后几轮的出题提示词里，给出题的人看。
-数字全部来自 holdout 之前的搜索段。经验用{_LANG_NAME[lang]}写，一条一句话，说具体的。"""
+出题的人另外能看到之前每条假设的最终表达式、结局和没过的门，所以经验不写某一条候选的复盘，要写换一条假设也用得上的规律：哪类数据、哪种构造、多空两头的资金费怎么付，一再出问题或一再有效，为什么。
+数字全部来自 holdout 之前的搜索段。经验用{_LANG_NAME[lang]}写，每条一两句话、中文不超过 80 字（英文不超过 50 词），不抄表达式，数字最多带一两个关键的。
+公式算的是什么以下面的说明为准，别按算子名字猜：
+
+{_dsl_docs()}"""
 
 
-def reflect_message(candidates: Sequence[Mapping[str, Any]], lessons: Sequence[Mapping[str, Any]],
-                    primary: int, lang: str) -> str:
+def reflect_message(candidates: Sequence[Mapping[str, Any]], lessons: Sequence[Mapping[str, Any]], lang: str) -> str:
     """lessons 是已有的最近几条，最新在前"""
     blocks = []
     for c in candidates:
@@ -228,7 +241,7 @@ def reflect_message(candidates: Sequence[Mapping[str, Any]], lessons: Sequence[M
                  f"   最终表达式：{c.get('expr') or '未写出'}（评估了 {c.get('evaluations', 0)} 版）",
                  f"   结局：{_OUTCOMES.get(c['status'], c['status'])}" + (f"（{c['reason']}）" if c.get("reason") else "")]
         if c.get("eval"):
-            lines.append(f"   主档数字：{key_numbers(c['eval'], primary)}")
+            lines.append(f"   主档数字：{key_numbers(c['eval'])}")
         blocks.append("\n".join(lines))
     candidates_text = "\n".join(blocks)
     return f"""这一轮的候选与结局：
@@ -252,11 +265,14 @@ def system_review(lang: str) -> str:
 3. 硬门看不见的问题：常量凑数、把一个已知因子换皮、依赖历史很短的列、结果实际上由某个退化项主导。
 
 裁决：pass = 可以进观察区等人决定入库；revise = 假设对但公式要改，给出具体改法；reject = 假设本身不成立或就是换皮。
-评语用{_LANG_NAME[lang]}写。"""
+评语用{_LANG_NAME[lang]}写。
+公式算的是什么以下面的说明为准，别按算子名字猜：
+
+{_dsl_docs()}"""
 
 
 def review_message(cand: Mapping[str, Any], brief: Mapping[str, Any]) -> str:
-    said = "因子值越大，未来 12 小时相对越强" if cand["direction"] > 0 else "因子值越大，未来 12 小时相对越弱"
+    said = "因子值越大，未来 24 小时相对越强" if cand["direction"] > 0 else "因子值越大，未来 24 小时相对越弱"
     return f"""假设 [{cand['name']}]：{cand['hypothesis']}
 表达式：{cand['expr']}
 公式说明：{cand.get('note') or '（无）'}
@@ -298,20 +314,23 @@ def _first(text: str, pattern: str, kind: type) -> Any:
     return None
 
 
-def eval_brief(ev: Mapping[str, Any], gates: Sequence[Mapping[str, Any]], primary: int) -> dict[str, Any]:
-    """给评审和页面看的精简数字：三档截面 IC、单调性与多空腿、每门一句；算过增量、holdout、时序报告的再各带一段"""
+def eval_brief(ev: Mapping[str, Any], gates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """给评审和页面看的精简数字：判门用的主档、三档截面 IC、单调性与多空腿、每门一句；算过增量、holdout、时序报告的再各带一段"""
+    primary = primary_of(ev)
     red = ev["redundancy"]
     out = {
+        "primary": hours(primary),
         "horizons": horizons_brief(ev["horizons"]),
         "redundancy": {"maxAbs": _r(red["maxAbs"]), "with": red["with"], "ready": red["ready"]},
         "complexity": ev["complexity"],
         "gates": [{"id": g["id"], "passed": g["passed"], "note": g["note"]} for g in gates],
     }
     if ev.get("neutral"):
-        out["neutral"] = neutral_brief(ev, primary)
+        out["neutral"] = neutral_brief(ev)
     if ev.get("gain"):
-        out["gain"] = {_hours(bars): _r(h["gain"]) for bars, h in ev["gain"]["horizons"].items()}
-        # 组合净 Sharpe 的增量是后来加的，之前入库的老结果里没有
+        # 老结果的 G9 是加进库组合后三档 IC 的变化，现在的是加进交易方案后的净 Sharpe
+        if ev["gain"].get("horizons"):
+            out["gain"] = {hours(bars): _r(h["gain"]) for bars, h in ev["gain"]["horizons"].items()}
         if ev["gain"].get("sharpe"):
             out["gainSharpe"] = {k: _r(v) for k, v in ev["gain"]["sharpe"].items()}
     if ev.get("holdout"):
@@ -329,7 +348,7 @@ def horizons_brief(horizons: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
     out = {}
     for bars, h in horizons.items():
         ic, leg, mono = h["ic"], h["leg"], h["ic"]["monotonic"]
-        out[_hours(bars)] = {
+        out[hours(bars)] = {
             "meanIc": _r(ic["mean"]), "icir": _r(ic["icir"]), "months": ic["months"],
             "monotonic": _r(mono["rho"]), "spread": _r(mono["spread"]), "spreadT": _r(mono.get("spreadT")),
             "shape": shape(mono, ic["mean"]),
@@ -344,7 +363,7 @@ def horizons_brief(horizons: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
 def holdout_brief(held: Mapping[str, Any]) -> dict[str, Any]:
     """se 是后来加的，之前算的 holdout 里没有"""
     return {"since": held["since"], "horizons": {
-        _hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]), "se": _r(h.get("se")), "months": h["months"],
+        hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]), "se": _r(h.get("se")), "months": h["months"],
                        "monotonic": _r(h["monotonic"]), "samples": h["samples"]}
         for bars, h in held["horizons"].items()}}
 
@@ -353,14 +372,14 @@ def timeseries_brief(ts: Mapping[str, Any], primary: int) -> dict[str, Any]:
     """产品币时序报告：三档 IC、同号币数、方向腿净收益，主档再带每币 IC。落过库的键是字符串，先归一"""
     horizons = {int(k): v for k, v in ts["horizons"].items()}
     return {
-        "horizons": {_hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]),
+        "horizons": {hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]),
                                     "sameSignSymbols": h["sameSignSymbols"], "netReturn": _r(h["netReturn"])}
                      for bars, h in horizons.items()},
         "bySymbol": {s: _r(v) for s, v in horizons[primary]["bySymbol"].items()},
     }
 
 
-def _hours(bars: Any) -> str:
+def hours(bars: Any) -> str:
     return f"{int(bars) // 4}h"
 
 

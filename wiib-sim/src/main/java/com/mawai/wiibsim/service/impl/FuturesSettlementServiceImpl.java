@@ -1,6 +1,7 @@
 package com.mawai.wiibsim.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibcommon.entity.FuturesOrder;
 import com.mawai.wiibcommon.entity.FuturesPosition;
 import com.mawai.wiibcommon.entity.FuturesStopLoss;
@@ -35,6 +36,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
 import java.util.concurrent.locks.Lock;
+import java.util.function.Function;
 
 import static com.mawai.wiibcommon.enums.LedgerBizType.*;
 import static com.mawai.wiibsim.service.impl.FuturesHelper.*;
@@ -60,6 +62,7 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
     private final FairLockRegistry lockRegistry;
     private final FundingRateService fundingRateService;
     private final LedgerTx ledgerTx;
+    private final BinanceProperties binanceProperties;
 
     record FundingFeeChargeResult(boolean success, boolean checkLiquidation) {}
 
@@ -544,33 +547,42 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
 
     @Override
     public void chargeFundingFeeAll() {
-        // 全站唯一一次调官方资金费率接口：先刷缓存，扣费和前端查询都从缓存取
+        // feed 币先刷费率缓存，扣费和前端查询都从缓存取
         fundingRateService.refresh();
 
+        // 只收 feed 币，低频币按各自结算时刻收（LowFreqFuturesService）
+        Set<String> feed = Set.copyOf(binanceProperties.getAllFuturesSymbols());
         List<FuturesPosition> positions = positionMapper.selectList(new LambdaQueryWrapper<FuturesPosition>()
-                .eq(FuturesPosition::getStatus, "OPEN"));
+                        .eq(FuturesPosition::getStatus, "OPEN"))
+                .stream().filter(p -> feed.contains(p.getSymbol())).toList();
         if (positions.isEmpty()) return;
 
         Map<String, BigDecimal> rateBySymbol = new HashMap<>();
-        int successCount = 0;
-        int failCount = 0;
+        int failCount = chargeEach(positions,
+                pos -> rateBySymbol.computeIfAbsent(pos.getSymbol(), fundingRateService::rateForSettlement));
 
+        log.info("futures资金费率结算完成 成功{} 失败{} 费率={}", positions.size() - failCount, failCount, rateBySymbol);
+    }
+
+    @Override
+    public void chargeFundingFee(String symbol, long fundingTime, BigDecimal rate, List<FuturesPosition> positions) {
+        int failCount = chargeEach(positions, pos -> rate);
+        log.info("低频币资金费结算完成 symbol={} 结算时刻={} 费率={} 成功{} 失败{}",
+                symbol, fundingTime, rate, positions.size() - failCount, failCount);
+    }
+
+    /** 逐个仓位收资金费，单仓失败不影响别的；返回失败数 */
+    private int chargeEach(List<FuturesPosition> positions, Function<FuturesPosition, BigDecimal> rateOf) {
+        int failCount = 0;
         for (FuturesPosition pos : positions) {
             try {
-                BigDecimal rate = rateBySymbol.computeIfAbsent(pos.getSymbol(), fundingRateService::rateForSettlement);
-                boolean success = chargeFundingFeeOne(pos, rate);
-                if (success) {
-                    successCount++;
-                } else {
-                    failCount++;
-                }
+                if (!chargeFundingFeeOne(pos, rateOf.apply(pos))) failCount++;
             } catch (Exception e) {
                 log.error("futures扣除资金费率失败 posId={}", pos.getId(), e);
                 failCount++;
             }
         }
-
-        log.info("futures资金费率结算完成 成功{} 失败{} 费率={}", successCount, failCount, rateBySymbol);
+        return failCount;
     }
 
     boolean chargeFundingFeeOne(FuturesPosition pos, BigDecimal rate) {

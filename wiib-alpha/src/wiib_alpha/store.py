@@ -1,4 +1,5 @@
-"""SQLite：campaign、运行、候选、因子库、已试假设、轮后经验、事件回放、全局试验计数、两个角色的模型端点。
+"""SQLite：campaign、运行、候选、因子库、已试假设、轮后经验、事件回放、全局试验计数、两个角色的模型端点，
+交易员的调仓记录、净值快照与因子勾选。
 
 评估结果里有 NaN 和 numpy 标量，落库和下发前一律 clean 成纯 JSON。
 线上库只加表加列：老库缺的列在 open 时补上。
@@ -8,7 +9,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
+import sqlite3
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import aiosqlite
@@ -60,10 +67,24 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS model(
         role TEXT PRIMARY KEY, protocol TEXT NOT NULL, base_url TEXT NOT NULL, model TEXT NOT NULL,
         api_key TEXT NOT NULL, effort TEXT NOT NULL, updated_at INTEGER NOT NULL)""",
+    # 交易员每天一次调仓，day 是 UTC 日期，signal_ms 是出信号那根的收盘时刻；status：done / partial / failed。
+    # factors_json 是这次用的因子与权重，legs_json 是每条腿这一期的多空集合（下一期缓冲用），
+    # targets_json 是每币目标与各腿信号，orders_json 是下单与结果
+    """CREATE TABLE IF NOT EXISTS trade_run(
+        day TEXT PRIMARY KEY, signal_ms INTEGER NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
+        status TEXT NOT NULL, user_id INTEGER, factors_json TEXT, legs_json TEXT, targets_json TEXT, orders_json TEXT,
+        equity_before REAL, equity_after REAL, error TEXT)""",
+    # 交易员账户每小时一次的净值快照；多空名义是持仓的数量 × 标记价
+    """CREATE TABLE IF NOT EXISTS trade_equity(
+        ts INTEGER PRIMARY KEY, equity REAL NOT NULL, balance REAL NOT NULL, long_notional REAL NOT NULL,
+        short_notional REAL NOT NULL)""",
+    # 交易员勾选的因子
+    "CREATE TABLE IF NOT EXISTS trade_factor(factor_id TEXT PRIMARY KEY, selected_at INTEGER NOT NULL)",
 ]
 
 _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "review", "data_json": "data",
-                 "columns_json": "columns", "recheck_json": "recheck", "reeval_json": "reeval"}
+                 "columns_json": "columns", "recheck_json": "recheck", "reeval_json": "reeval",
+                 "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders"}
 # 建表之后才加的列：老库启动时补上
 _ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
                   "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"}}
@@ -90,6 +111,21 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+@contextmanager
+def snapshot(path: str) -> Iterator[sqlite3.Connection]:
+    """库拷到临时目录再开，命令行脚本读库用：WAL 模式的库只读挂载打不开，也不和服务抢锁"""
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = os.path.join(tmp, "alpha.sqlite")
+        for ext in ("", "-wal", "-shm"):
+            if os.path.exists(path + ext):
+                shutil.copy(path + ext, copy + ext)
+        db = sqlite3.connect(copy)
+        try:
+            yield db
+        finally:
+            db.close()
+
+
 class Store:
     def __init__(self, db: aiosqlite.Connection):
         self.db = db
@@ -99,8 +135,12 @@ class Store:
         db = await aiosqlite.connect(path)
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA journal_mode=WAL")
+        fresh = not await db.execute_fetchall("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_factor'")
         for statement in SCHEMA:
             await db.execute(statement)
+        # 交易员的因子勾选第一次建表时默认勾上库里现有的全部
+        if fresh:
+            await db.execute("INSERT INTO trade_factor(factor_id, selected_at) SELECT id, ? FROM factor", (now_ms(),))
         for table, columns in _ADDED_COLUMNS.items():
             have = {r["name"] for r in await db.execute_fetchall(f"PRAGMA table_info({table})")}
             for name, kind in columns.items():
@@ -335,6 +375,62 @@ class Store:
     async def models(self) -> dict[str, dict[str, Any]]:
         """按角色；api_key 是明文，只在服务端用，下发前截尾"""
         return {r["role"]: r for r in await self._all("SELECT * FROM model", ())}
+
+    # ========== 交易员 ==========
+
+    async def add_trade_run(self, r: dict[str, Any]) -> None:
+        """一天一条，同一天再写就覆盖"""
+        await self.db.execute(
+            """INSERT OR REPLACE INTO trade_run(day, signal_ms, started_at, finished_at, status, user_id, factors_json,
+                   legs_json, targets_json, orders_json, equity_before, equity_after, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (r["day"], r["signal_ms"], r["started_at"], r["finished_at"], r["status"], r.get("user_id"),
+             *(dumps(r[k]) if r.get(k) is not None else None for k in ("factors", "legs", "targets", "orders")),
+             r.get("equity_before"), r.get("equity_after"), r.get("error")))
+        await self.db.commit()
+
+    async def trade_run(self, day: str) -> dict[str, Any] | None:
+        return await self._one("SELECT * FROM trade_run WHERE day = ?", (day,))
+
+    async def trade_runs(self, limit: int = 200) -> list[dict[str, Any]]:
+        """新的在前"""
+        return await self._all("SELECT * FROM trade_run ORDER BY day DESC LIMIT ?", (limit,))
+
+    async def last_trade_legs(self) -> dict[str, Any] | None:
+        """最近一次出了目标的调仓里每条腿的多空集合：下一期的缓冲按它算"""
+        row = await self._one("SELECT legs_json FROM trade_run WHERE legs_json IS NOT NULL ORDER BY day DESC LIMIT 1", ())
+        return row["legs"] if row else None
+
+    async def trade_user(self) -> int | None:
+        """交易员账户的 userId：调仓第一步建号时记下的"""
+        row = await self._one("SELECT user_id FROM trade_run WHERE user_id IS NOT NULL ORDER BY day DESC LIMIT 1", ())
+        return row["user_id"] if row else None
+
+    async def add_trade_equity(self, ts: int, equity: float, balance: float, long_notional: float,
+                               short_notional: float) -> None:
+        await self.db.execute(
+            "INSERT OR REPLACE INTO trade_equity(ts, equity, balance, long_notional, short_notional) VALUES (?, ?, ?, ?, ?)",
+            (ts, equity, balance, long_notional, short_notional))
+        await self.db.commit()
+
+    async def trade_equity(self) -> list[dict[str, Any]]:
+        return await self._all("SELECT * FROM trade_equity ORDER BY ts", ())
+
+    async def last_equity_ts(self) -> int | None:
+        row = await self._one("SELECT MAX(ts) AS ts FROM trade_equity", ())
+        return row["ts"] if row else None
+
+    async def trade_factor_ids(self) -> set[str]:
+        """勾选的因子 id，可能有已经不在库里的"""
+        return {r["factor_id"] for r in await self._all("SELECT factor_id FROM trade_factor", ())}
+
+    async def set_trade_factor(self, factor_id: str, selected: bool) -> None:
+        if selected:
+            await self.db.execute("INSERT OR IGNORE INTO trade_factor(factor_id, selected_at) VALUES (?, ?)",
+                                  (factor_id, now_ms()))
+        else:
+            await self.db.execute("DELETE FROM trade_factor WHERE factor_id = ?", (factor_id,))
+        await self.db.commit()
 
     # ========== 全局试验计数 ==========
 

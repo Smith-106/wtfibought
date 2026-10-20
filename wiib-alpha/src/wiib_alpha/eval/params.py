@@ -23,7 +23,7 @@ class EvalParams:
     seed: int = 42
     # 单边成本 bps，按流动性档：当月排名 1~20 / 21~50 / 其余
     cost_tiers_bps: tuple[float, float, float] = (5.0, 8.0, 12.0)
-    primary: int = 48           # 主档 12h
+    primary: int = 96           # 主档 24h，和交易方案的调仓周期一样
     lookahead_cuts: int = 20    # 前视自检抽的币数，每币截一刀
     min_points: int = 8         # 一个月/一段少于这么多有效时刻（时序报告是非重叠点）不算 IC
     min_names: int = 20         # 一个时刻有数的币少于这么多就跳过
@@ -59,6 +59,7 @@ class Thresholds:
     min_segments: int = 3               # G3：四段里同号的段数，最后一段必须同号
     perm_pct: float = 0.95              # G5：截面排列分位
     fdr_q: float = 0.10                 # G5：同批 BH-FDR
+    sharpe_gain_min: float = 0.0        # G9：加进交易方案后搜索段年化净 Sharpe 至少升这么多
     max_redundancy: float = 0.7         # G6
     max_nodes: int = COMPLEXITY["nodes"]        # G7：解析时已经卡住，这里只做报告
     max_windows: int = COMPLEXITY["windows"]

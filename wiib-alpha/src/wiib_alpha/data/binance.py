@@ -9,6 +9,7 @@ metrics 八列，create_time 是 UTC 字符串，文件内可能无序。老文�
 费率没有日度文件，月度文件之后的尾巴走 fapi 的 /fapi/v1/fundingRate（公开接口，不要 key），只给还在交易的币补：
 有些币还在交易但费率月度文件早就不出了（TROY、ALPACA 停在 2025-06），尾巴可能长达一年多，分页翻完。
 基差与 metrics 也有币中途断档（FTT 基差 2023-07 停、RAY metrics 2024-07 停），REST 补不了历史，断了就是 NaN。
+交易员出信号要归档之后到现在的尾巴，另有几个 fapi 实时接口（recent_*），每次响应的已用权重打进日志。
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ DAY_MS = 86_400_000
 # 两种 K 线一根多长，数一天该有几根用
 _BAR_MS = {"15m": BAR_MS, "1d": DAY_MS}
 _PAGE = 1000
+# fapi K 线的权重按 limit 算：< 100 是 1，不传默认 500 是 5；日常补一天用这个
+_SMALL = 99
+# /futures/data 的 5 分钟统计，一页最多 500 条
+METRIC_MS = 5 * 60_000
+_METRIC_PAGE = 500
 DEFAULT_LIST_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 _UM = "data/futures/um"
 _S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
@@ -192,6 +198,61 @@ class Binance:
             return empty_funding()
         return pd.DataFrame({"funding_time": times, "funding_rate": rates})
 
+    # ========== fapi 实时：交易员的 live 尾巴和下单价 ==========
+
+    def recent_klines(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """fapi 的 15m K 线，open_time 在 [start_ms, end_ms) 内、已收盘的，列同归档"""
+        return self._recent_bars("klines", symbol, start_ms, end_ms)
+
+    def recent_premium(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """fapi 的 15m 溢价 K 线收盘，列同归档 premium_15m"""
+        df = self._recent_bars("premiumIndexKlines", symbol, start_ms, end_ms)
+        return df[["close_time", "close"]].rename(columns={"close": "premium"})
+
+    def recent_metrics(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """[start_ms, end_ms) 内的持仓量（openInterestHist）和大户持仓多空比（topLongShortPositionRatio），5 分钟一条；
+        列同归档 metrics，这两个接口给不了的另三列是 NaN。接口只留最近 30 天。
+        接口的时间戳比归档 metrics 的 create_time 晚一格（同一个值，接口记在 5 分钟之后），挪回来和归档对齐；
+        多空比接口只给 4 位小数，归档是 6 位"""
+        oi = self._history("openInterestHist", symbol, start_ms + METRIC_MS, end_ms + METRIC_MS)
+        ls = self._history("topLongShortPositionRatio", symbol, start_ms + METRIC_MS, end_ms + METRIC_MS)
+        a = pd.DataFrame({"time": pd.Series([r["timestamp"] - METRIC_MS for r in oi], dtype="int64"),
+                          "oi": pd.Series([r["sumOpenInterest"] for r in oi], dtype="float64"),
+                          "oi_value": pd.Series([r["sumOpenInterestValue"] for r in oi], dtype="float64")})
+        b = pd.DataFrame({"time": pd.Series([r["timestamp"] - METRIC_MS for r in ls], dtype="int64"),
+                          "ls_top_pos": pd.Series([r["longShortRatio"] for r in ls], dtype="float64")})
+        df = a.merge(b, on="time", how="outer").reindex(columns=METRICS_COLUMNS)
+        return df[(df["time"] >= start_ms) & (df["time"] < end_ms)].sort_values("time").reset_index(drop=True)
+
+    def mark_prices(self) -> dict[str, float]:
+        """全部合约的标记价：/fapi/v1/premiumIndex 不带 symbol 一次全给（权重 10）"""
+        return {r["symbol"]: float(r["markPrice"]) for r in self._rest("/fapi/v1/premiumIndex", {})}
+
+    def _recent_bars(self, kind: str, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """K 线形状的接口按窗往后翻，一窗正好装得下 limit 根：整段不到 99 根一次拿完，缺口大按 1000 根一窗；
+        还没收盘的那根不要"""
+        limit = _SMALL if end_ms - start_ms <= _SMALL * BAR_MS else _PAGE
+        rows: list[list[Any]] = []
+        for a in range(start_ms, end_ms, limit * BAR_MS):
+            rows += self._rest(f"/fapi/v1/{kind}", {"symbol": symbol, "interval": INTERVAL, "startTime": a,
+                                                    "endTime": min(end_ms, a + limit * BAR_MS) - 1, "limit": limit})
+        if not rows:
+            return empty_klines()
+        df = pd.DataFrame(rows, columns=_KLINE_CSV)[KLINE_COLUMNS]
+        df[_INT_COLUMNS] = df[_INT_COLUMNS].astype("int64")
+        df[_FLOAT_COLUMNS] = df[_FLOAT_COLUMNS].astype("float64")
+        df = df[df["close_time"] < end_ms]
+        return df.drop_duplicates("open_time").sort_values("open_time").reset_index(drop=True)
+
+    def _history(self, name: str, symbol: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+        """/futures/data 下的 5 分钟统计，一窗 500 条往后翻"""
+        rows: list[dict[str, Any]] = []
+        for a in range(start_ms, end_ms, _METRIC_PAGE * METRIC_MS):
+            rows += self._rest(f"/futures/data/{name}", {"symbol": symbol, "period": "5m", "startTime": a,
+                                                         "endTime": min(end_ms, a + _METRIC_PAGE * METRIC_MS) - 1,
+                                                         "limit": _METRIC_PAGE})
+        return rows
+
     # ========== 传输 ==========
 
     def _zips(self, prefix: str, after: str) -> list[str]:
@@ -240,6 +301,8 @@ class Binance:
             self._rest_at = time.monotonic()
         if resp is None:
             raise BinanceError(f"fapi {path} 返回 404")
+        # 这个 IP 这一分钟已用的权重，对着方案估的请求量看
+        logger.info("fapi %s %s 已用权重 %s", path, params.get("symbol", ""), resp.headers.get("X-MBX-USED-WEIGHT-1M"))
         return resp.json()
 
     def _get(self, url: str, params: dict[str, Any] | None) -> httpx.Response | None:

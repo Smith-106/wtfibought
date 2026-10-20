@@ -2,6 +2,7 @@ package com.mawai.wiibsim.config;
 
 import com.mawai.wiibcommon.enums.ErrorCode;
 import com.mawai.wiibcommon.exception.BizException;
+import com.mawai.wiibsim.service.LowFreqFuturesService;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -18,7 +19,7 @@ import java.util.Map;
  * <p>
  * 已配置：BTCUSDT、ETHUSDT、DOGEUSDT、SOLUSDT、XRPUSDT、BNBUSDT、ZECUSDT、HYPEUSDT、XAUUSDT、CLUSDT，
  * 及 TradFi 股票/ETF 永续：SNDKUSDT、SOXLUSDT、SKHYNIXUSDT、MUUSDT、KORUUSDT、SPCXUSDT。
- * 新增 symbol 必须先在此处补完档位数据，否则开仓抛 FUTURES_SYMBOL_NOT_CONFIGURED。
+ * 表里没有的 USDT 永续（低频币）统一用一档默认；其余 symbol 开仓抛 FUTURES_SYMBOL_NOT_CONFIGURED。
  */
 @Component
 public class FuturesLeverageBracketRegistry {
@@ -239,6 +240,11 @@ public class FuturesLeverageBracketRegistry {
             Map.entry("SPCXUSDT",    SPCX_BRACKETS)
     );
 
+    // 低频币默认档：一档到底，最高 5x、MMR 2.5%、速算数 0
+    private static final List<Bracket> LOW_FREQ_BRACKETS = List.of(
+            new Bracket(1,  bd("0"),            bd("1000000000"),   5,  bd("0.0250"),  bd("0"))
+    );
+
     /**
      * 按仓位名义价值定档位。
      * 已知 symbol：返回命中档；notional 超出最高档时保守返回最高档（避免空指针，模拟盘
@@ -247,7 +253,7 @@ public class FuturesLeverageBracketRegistry {
      * 使用 calcMaintenanceMargin / getEffectiveMaxLeverage 等带异常的 API）。
      */
     public Bracket findBracket(String symbol, BigDecimal notional) {
-        List<Bracket> list = BRACKETS.get(symbol);
+        List<Bracket> list = getBrackets(symbol);
         if (list == null) return null;
         for (Bracket b : list) {
             if (notional.compareTo(b.notionalFloor) >= 0 && notional.compareTo(b.notionalCap) < 0) {
@@ -257,13 +263,15 @@ public class FuturesLeverageBracketRegistry {
         return list.getLast();
     }
 
-    /** 已配置 symbol 的完整档位；未配置 symbol 返回 null。 */
+    /** symbol 的完整档位：档位表里的照表，表外的 USDT 永续给默认档，都不是返回 null。 */
     public List<Bracket> getBrackets(String symbol) {
         if (symbol == null) return null;
-        return BRACKETS.get(symbol);
+        List<Bracket> list = BRACKETS.get(symbol);
+        if (list != null) return list;
+        return LowFreqFuturesService.isUsdtPerpetual(symbol) ? LOW_FREQ_BRACKETS : null;
     }
 
-    /** 全部 symbol 的档位表，供前端预估强平价/MMR 时直接复用，避免前后端两份硬编码。 */
+    /** 档位表里的 symbol（不含低频币），供前端预估强平价/MMR 时直接复用，避免前后端两份硬编码。 */
     public Map<String, List<Bracket>> getAllBrackets() {
         return BRACKETS;
     }

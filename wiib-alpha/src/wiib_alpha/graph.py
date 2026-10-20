@@ -25,13 +25,14 @@ from . import prompts
 from .data.panel import FEATURE_COLUMNS
 from .data.pool import Pool
 from .dsl import DslError, Expr, parse
-from .eval.combo import Combo, gain
+from .eval.combo import Combo
 from .eval.evaluate import cross_corr, evaluate
 from .eval.gates import apply_fdr, fmt, judge, origin_gate, passed
 from .eval.params import EvalParams, Thresholds
 from .eval.recheck import recheck
 from .reference import Grid
 from .store import Store, clean
+from .trade.scheme import Base, gain
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,14 @@ class Context:
     review: BaseChatModel
     # 评估和门只看 pool.search（cut 之前）；holdout 用 pool.rows
     pool: Pool
+    # 全量骨架上的 Std($ret, 672)，多空腿按它分仓
+    vol: np.ndarray
     # 产品币搜索段面板，只给时序报告
     products: dict[str, pd.DataFrame]
     # 参照网格没算好是 None，G6 不过
     reference_grid: Grid | None
-    # 库里因子在搜索段上的组合，G9 的基线
-    combo: Combo
+    # G9 的基线：库里因子 + 基差 carry 的交易方案
+    base: Base
     # 观察区候选在搜索段上的值，和库里因子一起进 G6 的对比集
     observing: Combo
     known: set[str]
@@ -143,9 +146,9 @@ def build_graph(ctx: Context):
             cand["status"], cand["reason"] = "evaluating", None
             await _save(ctx.store, run_id, cand)
             async with evaluating:
-                ev = await asyncio.to_thread(evaluate, expr, ctx.pool, ctx.params, ctx.reference_grid, ctx.combo,
-                                             ctx.products, observing=ctx.observing)
-            gates = judge(ev, ctx.thresholds, ctx.params.primary, ctx.known, cand["direction"])
+                ev = await asyncio.to_thread(evaluate, expr, ctx.pool, ctx.vol, ctx.params, ctx.reference_grid,
+                                             ctx.base, ctx.products, observing=ctx.observing)
+            gates = judge(ev, ctx.thresholds, ctx.known, cand["direction"])
             cand["eval"], cand["gates"] = clean(ev), clean(gates)
             # 每评估一次就是一次试验，门没过重写的、被评审打回的版本都算
             cand["evaluations"] = cand.get("evaluations", 0) + 1
@@ -156,7 +159,7 @@ def build_graph(ctx: Context):
                     cand["status"] = "rewrite"
                     settled = ("rejected_gates", cand["reason"])
                     await _save(ctx.store, run_id, cand)
-                    feedback = prompts.gate_feedback(cand, ctx.params.primary)
+                    feedback = prompts.gate_feedback(cand)
                     continue
                 cand["status"] = "rejected_gates"
                 break
@@ -212,7 +215,7 @@ def build_graph(ctx: Context):
         return None, problem
 
     async def _review(cand: dict[str, Any], lang: str) -> dict[str, Any]:
-        summary = prompts.eval_brief(cand["eval"], cand["gates"], ctx.params.primary)
+        summary = prompts.eval_brief(cand["eval"], cand["gates"])
         obj = await ask_json(ctx.review, prompts.system_review(lang), prompts.review_message(cand, summary),
                               prompts.parse_object)
         verdict = str((obj or {}).get("verdict") or "").strip().lower()
@@ -241,7 +244,7 @@ def build_graph(ctx: Context):
         for c in survivors:
             async with evaluating:
                 full[c["id"]] = (await asyncio.to_thread(ctx.pool.values, parse(c["expr"], FEATURE_COLUMNS))).f
-        kept = await asyncio.to_thread(screen_batch, survivors, full, ctx.pool, ctx.combo, ctx.params, ctx.thresholds)
+        kept = await asyncio.to_thread(screen_batch, survivors, full, ctx.pool, ctx.base, ctx.params, ctx.thresholds)
         for c in survivors:
             if c["status"] != "passed":
                 await _save(ctx.store, run_id, c)
@@ -266,7 +269,7 @@ def build_graph(ctx: Context):
         if not candidates:
             return {}
         await emit(ctx.store, run_id, "status", {"stage": "reflecting"})
-        message = prompts.reflect_message(candidates, await ctx.store.lessons(), ctx.params.primary, state["lang"])
+        message = prompts.reflect_message(candidates, await ctx.store.lessons(), state["lang"])
         try:
             items = await ask_json(ctx.gen, prompts.system_reflect(state["lang"]), message, prompts.parse_list)
         except Exception as exc:
@@ -323,9 +326,9 @@ def build_graph(ctx: Context):
 # ========== 辅助 ==========
 
 
-def screen_batch(cands: list[dict[str, Any]], full: dict[str, np.ndarray], pool: Pool, base: Combo,
+def screen_batch(cands: list[dict[str, Any]], full: dict[str, np.ndarray], pool: Pool, base: Base,
                  params: EvalParams, thresholds: Thresholds) -> list[dict[str, Any]]:
-    """同批过了门的按净 Sharpe 增量从大到小排队，就地改：规范形和前面留下的重合按 G8 拒，和前面留下的截面相关到了 G6 阈值按 G6 拒；
+    """同批过了门的按交易方案净 Sharpe 增量从大到小排队，就地改：规范形和前面留下的重合按 G8 拒，和前面留下的截面相关到了 G6 阈值按 G6 拒；
     留下的再对 base 加前面留下的算一次增量，写进 G9 备注给人看（不是门）。full 是每条在全量骨架上的值，按 id。返回留下的"""
     cands.sort(key=lambda c: -c["eval"]["gain"]["sharpe"]["gain"])
     kept, batch, canon, out = base, Combo.empty(pool.search, pool.symbols), {}, []
@@ -344,10 +347,9 @@ def screen_batch(cands: list[dict[str, Any]], full: dict[str, np.ndarray], pool:
             continue
         if out:
             again = gain(kept, c["name"], f, params)
-            note = (f"；排在同批 {'、'.join(x['name'] for x in out)} 之后净 Sharpe 增量 {fmt(again['sharpe']['gain'], 2)}、"
-                    f"IC 增量 {fmt(again['horizons'][params.primary]['gain'])}")
+            note = f"；排在同批 {'、'.join(x['name'] for x in out)} 之后净 Sharpe 增量 {fmt(again['sharpe']['gain'], 2)}"
             c["gates"] = [{**g, "note": g["note"] + note} if g["id"] == "G9" else g for g in c["gates"]]
-        kept, batch = kept.plus(c["name"], f), batch.plus(c["name"], f)
+        kept, batch = kept.plus(c["name"], f, params), batch.plus(c["name"], f)
         canon[c["canonical"]] = c["name"]
         out.append(c)
     return out
@@ -370,13 +372,8 @@ def brief(c: dict[str, Any]) -> dict[str, Any]:
         out["gates"] = [{"id": g["id"], "name": g.get("name"), "passed": g["passed"], "note": g["note"]}
                         for g in c["gates"]]
     if c.get("eval"):
-        out["brief"] = prompts.eval_brief(c["eval"], c["gates"], _primary(c["eval"]))
+        out["brief"] = prompts.eval_brief(c["eval"], c["gates"])
     return out
-
-
-def _primary(ev: dict[str, Any]) -> int:
-    keys = [int(k) for k in ev["horizons"]]
-    return 48 if 48 in keys else keys[0]
 
 
 async def emit(store: Store, run_id: str, event: str, data: Any) -> None:

@@ -32,40 +32,26 @@ def test_combine_ignores_weightless_and_missing_factors():
     assert combo._combine(z[:1], np.array([1.0, -1.0]))[0] == pytest.approx(0.25)
 
 
-def test_empty_combo_has_no_signal(planted_pool):
+def test_empty_combo(planted_pool):
     empty = combo.Combo.empty(planted_pool.search, planted_pool.symbols)
     assert empty.names == () and empty.values.shape == (len(planted_pool.search), 0)
-    assert all(np.isnan(h["mean"]) for h in combo.ics(empty, PARAMS).values())
-
-
-def test_gain_of_planted_its_twin_and_noise(planted_pool):
-    empty = combo.Combo.empty(planted_pool.search, planted_pool.symbols)
-    planted = search_values(planted_pool, "Mean($volume, 4)")
-    first = combo.gain(empty, "planted", planted, PARAMS)
-    assert first["horizons"][48]["base"] == 0.0 and first["horizons"][48]["gain"] > 0.3
-    assert first["monthsBetter"] == first["months"] > 0
-    # 库空时净 Sharpe 从 0 算；植入信号扣完成本也赚
-    assert first["sharpe"]["base"] == 0.0 and first["sharpe"]["gain"] == first["sharpe"]["with"] > 0
-    lib = empty.plus("planted", planted)
-    twin = combo.gain(lib, "twin", search_values(planted_pool, "Mean($volume, 8)"), PARAMS)
-    assert twin["horizons"][48]["base"] == pytest.approx(first["horizons"][48]["with"])
-    assert twin["sharpe"]["base"] == pytest.approx(first["sharpe"]["with"])
-    # 换个窗口的翻版加不了多少；噪音权重接近 0，组合几乎不动
-    assert abs(twin["horizons"][48]["gain"]) < 0.05
-    assert abs(combo.gain(lib, "noise", search_values(planted_pool, "$trades"), PARAMS)["horizons"][48]["gain"]) < 0.05
 
 
 def test_signal_learns_the_sign_of_an_inverted_factor(planted_pool):
     empty = combo.Combo.empty(planted_pool.search, planted_pool.symbols)
     inverted = empty.plus("inv", -search_values(planted_pool, "$volume"))
-    assert combo.ics(inverted, PARAMS)[48]["mean"] > 0.3
+    s = combo.signal(inverted, combo.zscores(inverted), 48, PARAMS)
+    planted = search_values(planted_pool, "$volume")
+    ok = np.isfinite(s)
+    # 方向学成负的：组合信号和原值同号排序
+    assert ok.any() and np.corrcoef(s[ok], planted[ok])[0, 1] > 0.5
 
 
-def test_evaluate_holdout_and_latest(planted_pool):
+def test_evaluate_holdout_and_latest(planted_pool, planted_vol):
     expr = parse("Mean($volume, 4)", COLS)
     full_values = planted_pool.values(expr).f
     base = combo.Combo.empty(planted_pool.search, planted_pool.symbols).plus("planted", full_values[planted_pool.in_search])
-    ev = combo.evaluate(base, PARAMS)
+    ev = combo.evaluate(base, planted_vol[planted_pool.in_search], PARAMS)
     assert set(ev) == {24, 48, 96} and ev[48]["ic"]["mean"] > 0.3
     assert ev[48]["leg"]["netReturn"] > 0 and ev[48]["leg"]["permPct"] >= 0.95
 

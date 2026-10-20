@@ -1,9 +1,11 @@
 package com.mawai.wiibsim.task;
 
+import com.mawai.wiibsim.config.TradeFilterRegistry;
 import com.mawai.wiibsim.service.CryptoOrderService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
 import com.mawai.wiibsim.service.FuturesLiquidationService;
 import com.mawai.wiibsim.service.FuturesSettlementService;
+import com.mawai.wiibsim.service.LowFreqFuturesService;
 import com.mawai.wiibsim.service.RankingService;
 import com.mawai.wiibsim.service.BankruptcyService;
 import com.mawai.wiibsim.service.MarginAccountService;
@@ -33,8 +35,35 @@ public class ScheduledTasks {
     private final CrossLiquidationService crossLiquidationService;
     private final FuturesLiquidationService futuresLiquidationService;
     private final PredictionService predictionService;
+    private final LowFreqFuturesService lowFreqFuturesService;
+    private final TradeFilterRegistry tradeFilterRegistry;
 
-    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗 */
+    /** 低频币：每分钟拉一次全量 premiumIndex 写标记价，再收到点的资金费 */
+    @Scheduled(fixedRate = 60 * 1000)
+    public void refreshLowFreqFutures() {
+        Thread.startVirtualThread(() -> {
+            try {
+                lowFreqFuturesService.refresh();
+                lowFreqFuturesService.settleDueFunding();
+            } catch (Exception e) {
+                log.error("低频币价格刷新/资金费结算失败", e);
+            }
+        });
+    }
+
+    /** 交易过滤器：每天 UTC 00:30 按官方 exchangeInfo 刷一次 */
+    @Scheduled(cron = "0 30 0 * * *", zone = "UTC")
+    public void refreshTradeFilters() {
+        Thread.startVirtualThread(() -> {
+            try {
+                tradeFilterRegistry.refreshFromBinance();
+            } catch (Exception e) {
+                log.error("交易过滤器刷新失败", e);
+            }
+        });
+    }
+
+    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗（低频币没有tick，全靠这里） */
     @Scheduled(fixedRate = 30 * 1000)
     public void sweepCrossAccounts() {
         Thread.startVirtualThread(crossLiquidationService::sweepAll);
@@ -100,7 +129,7 @@ public class ScheduledTasks {
         });
     }
 
-    /** futures资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费。全站只有这里调官方接口 */
+    /** feed 币资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费；低频币在上面每分钟那条里按各自结算时刻收 */
     @Scheduled(cron = "0 0 0,8,16 * * *")
     public void chargeFuturesFundingFee() {
         Thread.startVirtualThread(() -> {

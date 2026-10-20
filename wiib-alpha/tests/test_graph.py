@@ -10,6 +10,7 @@ from wiib_alpha.eval.combo import Combo
 from wiib_alpha.eval.params import EvalParams, Thresholds
 from wiib_alpha.graph import Context, build_graph
 from wiib_alpha.store import Store
+from wiib_alpha.trade import scheme
 
 PARAMS = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
 GATES = Thresholds(min_samples=30)
@@ -31,12 +32,16 @@ def review_blind_to_holdout(prompt: str) -> str:
 
 
 @pytest.fixture
-def ctx_of(planted_pool, planted_grid, planted_panels):
+def ctx_of(planted_pool, planted_vol, planted_grid, planted_panels):
+    pick = planted_pool.in_search
+    empty = Combo.empty(planted_pool.search, planted_pool.symbols)
+    # 库是空的：G9 的基线是只有基差 carry 的交易方案
+    base = scheme.Base.of(empty, planted_pool.values(scheme.CARRY).f[pick], planted_vol[pick], PARAMS)
+
     def build(store, gen=gen_reply, review=review_blind_to_holdout) -> Context:
         products = {s: truncate(planted_panels[s], planted_pool.cut_ms) for s in PRODUCTS}
-        empty = Combo.empty(planted_pool.search, planted_pool.symbols)
-        return Context(gen=model(gen), review=model(review), pool=planted_pool, products=products,
-                       reference_grid=planted_grid, combo=empty, observing=empty, known=set(), library=[], facts=FACTS,
+        return Context(gen=model(gen), review=model(review), pool=planted_pool, vol=planted_vol, products=products,
+                       reference_grid=planted_grid, base=base, observing=empty, known=set(), library=[], facts=FACTS,
                        store=store, params=PARAMS, thresholds=GATES)
     return build
 
@@ -68,9 +73,9 @@ async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, 
     # 幸存者带着 holdout 的数字；埋进去的信号在 holdout 上也该是正的
     assert planted["eval"]["holdout"]["since"] == planted_pool.cut_ms
     assert planted["eval"]["holdout"]["horizons"]["48"]["mean"] > 0
-    # 库是空的：G9 的基线是 0，增量就是它自己的组合 IC
+    # 库是空的：G9 的基线是只有 carry 的交易方案，加进埋了信号的因子净 Sharpe 升
     assert planted["gates"][9]["id"] == "G9" and planted["gates"][9]["passed"]
-    assert planted["eval"]["gain"]["horizons"]["48"]["base"] == 0 and planted["eval"]["gain"]["horizons"]["48"]["gain"] > 0.3
+    assert planted["eval"]["gain"]["sharpe"]["gain"] > 1
     # noise：门没过，带着数字重写两版还是没过，拒掉；拒掉的不算 holdout
     noise = rows["noise"]
     assert noise["status"] == "rejected_gates" and noise["attempts"] == 3 and "G5" in noise["reason"]
@@ -149,9 +154,8 @@ async def test_batch_keeps_one_of_survivors_that_are_the_same_signal(store, ctx_
 async def test_batch_notes_later_survivors_gain_after_earlier_ones(store, ctx_of, monkeypatch):
     """截面相关没到阈值的照样留（这里把相关压成 0.1）：同批规范形相同的只留一条（G8 拒），
     排在后面的 G9 备注里写明排在谁后面增量多少，留给人判"""
-    def no_gain(combo, name, f, params):
-        return {"horizons": {b: {"base": 0.5, "with": 0.49, "gain": -0.01} for b in (24, 48, 96)},
-                "months": 2, "monthsBetter": 0, "sharpe": {"base": 2.0, "with": 1.9, "gain": -0.1}}
+    def no_gain(base, name, f, params):
+        return {"sharpe": {"base": 2.0, "with": 1.9, "gain": -0.1}, "netReturn": {"base": 0.5, "with": 0.49}}
 
     monkeypatch.setattr(graph_module, "gain", no_gain)
     monkeypatch.setattr(graph_module, "cross_corr", lambda rows, f, others, params: [(n, 0.1) for n in others.names])
@@ -166,7 +170,7 @@ async def test_batch_notes_later_survivors_gain_after_earlier_ones(store, ctx_of
     # 排在后面的那条 G9 没被翻成不过，备注里带着相对前一条的增量
     noted = [c for c in survivors if "排在同批" in c["gates"][9]["note"]]
     assert len(noted) == 1 and all(g["passed"] for g in noted[0]["gates"])
-    assert "净 Sharpe 增量 -0.10、IC 增量 -0.0100" in noted[0]["gates"][9]["note"]
+    assert noted[0]["gates"][9]["note"].endswith("之后净 Sharpe 增量 -0.10")
     assert all("holdout" in c["eval"] for c in survivors)
     assert rows["noise"]["status"] == "rejected_gates"
 

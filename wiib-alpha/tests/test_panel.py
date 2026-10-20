@@ -30,10 +30,10 @@ def premium_frame() -> pd.DataFrame:
 
 
 def metrics_frame(until: int) -> pd.DataFrame:
-    """每小时一条，落在整点 bar 收盘前 1 分钟，故意倒序；oi = 第几根"""
+    """每小时一条，落在整点 bar 收盘前 1 分钟，故意倒序；oi = 第几根 + 1（0 是坏数）"""
     ks = list(range(0, until, 4))[::-1]
-    return pd.DataFrame({"time": [close_time(k) - 60_000 for k in ks], "oi": [float(k) for k in ks],
-                         "oi_value": [k * 10.0 for k in ks],
+    return pd.DataFrame({"time": [close_time(k) - 60_000 for k in ks], "oi": [k + 1.0 for k in ks],
+                         "oi_value": [(k + 1) * 10.0 for k in ks],
                          **{c: 1.0 for c in METRICS_COLUMNS[3:]}})
 
 
@@ -74,11 +74,12 @@ def test_btc_aligned_by_close_time():
     assert df["btc_ret"].iloc[4] == np.log(1004.0 / 1003.0)
 
 
-def test_targets_look_forward_only():
+def test_targets_enter_one_bar_late_and_look_forward_only():
     df = build(with_liq=False)
-    assert df["fwd_ret_24"].iloc[0] == np.log(124.0 / 100.0)
-    assert df["fwd_ret_96"].iloc[N - 97] == np.log((100.0 + N - 1) / (100.0 + N - 97))
-    assert df["fwd_ret_96"].iloc[N - 96:].isna().all()
+    # 第 0 根出信号、第 1 根收盘建仓、持有 24 根
+    assert df["fwd_ret_24"].iloc[0] == np.log(125.0 / 101.0)
+    assert df["fwd_ret_96"].iloc[N - 98] == np.log((100.0 + N - 1) / (100.0 + N - 97))
+    assert df["fwd_ret_96"].iloc[N - 97:].isna().all()
 
 
 def test_liquidation_zero_vs_nan():
@@ -103,10 +104,19 @@ def test_premium_exact_by_close_time():
 def test_metrics_asof_and_stale_after_an_hour():
     df = build(with_liq=False, metrics=metrics_frame(until=48))
     # 整点那条落在收盘前一分钟：这根和后面三根都拿它
-    assert df["oi"].iloc[0] == 0.0 and df["oi"].iloc[3] == 0.0 and df["oi"].iloc[4] == 4.0
-    assert df["oi_value"].iloc[47] == 440.0
+    assert df["oi"].iloc[0] == 1.0 and df["oi"].iloc[3] == 1.0 and df["oi"].iloc[4] == 5.0
+    assert df["oi_value"].iloc[47] == 450.0
     # 最后一条在第 44 根，第 47 根离它 46 分钟还算新，第 48 根 61 分钟就断了
     assert df["ls_acct"].iloc[47] == 1.0 and np.isnan(df["oi"].iloc[48]) and np.isnan(df["ls_acct"].iloc[48])
+
+
+def test_metrics_zero_is_missing_per_column():
+    m = metrics_frame(until=48)
+    # 第 8 根那条 oi 是 0（归档的坏数）：oi 当没有，上一条有效的离第 8 根 61 分钟已经断了；同一条的别的列照常
+    m.loc[m["time"] == close_time(8) - 60_000, "oi"] = 0.0
+    df = build(with_liq=False, metrics=m)
+    assert df["oi"].iloc[7] == 5.0 and np.isnan(df["oi"].iloc[8]) and df["oi"].iloc[12] == 13.0
+    assert df["oi_value"].iloc[8] == 90.0 and df["ls_acct"].iloc[8] == 1.0
 
 
 def test_no_premium_or_metrics_is_all_nan():
@@ -146,10 +156,10 @@ def test_dead_stretch_dropped_and_gap_returns_nan():
     after = df.index.get_loc(close_time(220))
     assert np.isnan(df["ret"].iloc[after]) and np.isnan(df["btc_ret"].iloc[after])
     assert df["ret"].iloc[after + 1] == np.log(321.0 / 320.0)
-    # 缺口前 24 根之内的 6 小时标准答案跨了缺口，不算；再往前的照常
+    # 缺口前 25 根之内（晚一根建仓、持有 24 根）的 6 小时标准答案跨了缺口，不算；再往前的照常
     before = df.index.get_loc(close_time(99))
-    assert df["fwd_ret_24"].iloc[before - 23:before + 1].isna().all()
-    assert df["fwd_ret_24"].iloc[before - 24] == np.log(199.0 / 175.0)
+    assert df["fwd_ret_24"].iloc[before - 24:before + 1].isna().all()
+    assert df["fwd_ret_24"].iloc[before - 25] == np.log(199.0 / 175.0)
     assert panel.describe(df)["gaps"] == 1
 
 
@@ -159,8 +169,8 @@ def test_holdout_cut_and_truncate():
     assert cut == close_time(N - 1) - DAY
     search = panel.truncate(df, cut)
     assert search.index.max() <= cut and len(search) == 2 * 96
-    # 搜索段末尾的答案在截断处重算：最后 96 根的 24h 答案看不到 holdout 的价格
-    assert search["fwd_ret_96"].iloc[-96:].isna().all() and df["fwd_ret_96"].iloc[len(search) - 1] > 0
+    # 搜索段末尾的答案在截断处重算：最后 97 根的 24h 答案看不到 holdout 的价格
+    assert search["fwd_ret_96"].iloc[-97:].isna().all() and df["fwd_ret_96"].iloc[len(search) - 2] > 0
     assert search["fwd_ret_24"].iloc[0] == df["fwd_ret_24"].iloc[0]
     assert set(search.columns) == set(df.columns)
 

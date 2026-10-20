@@ -2,6 +2,8 @@
 
   uv run python -m wiib_alpha.calibrate --synthetic            合成币池：验假阳率、泄漏捕获、植入信号过不过
   uv run python -m wiib_alpha.calibrate --data-dir ./data      真数据：看基线与参照集能活几个（要先刷新出池子面板）
+  uv run python -m wiib_alpha.calibrate --g9 60 --data-dir ./data   真数据：G9 阈值怎么定，库里每条、库外候选、60 条随机因子
+                                                                    加进交易方案后净 Sharpe 各升多少，只跑这一项
 
 合成币池：N 个币随机游走（第一个当 BTC），共同的市场因子乘各币的 beta 再加各币自己的噪音，全程在池，排名按成交额；
 资金费率每 8 小时结算、按 AR(1) 慢慢变，植入一个截面信号：每根 bar 的收益加 β × 上一根费率的截面 z 分数，
@@ -13,11 +15,10 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 import tempfile
 import time
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,8 @@ from .eval.combo import Combo
 from .eval.evaluate import evaluate
 from .eval.gates import apply_fdr, judge, passed
 from .eval.params import EvalParams, Thresholds
+from .store import snapshot
+from .trade import scheme
 
 # funding_rate 是植入信号的列，随机因子不用它
 RANDOM_COLUMNS = ("close", "volume", "ret", "quote_volume", "taker_buy_base", "high", "low")
@@ -108,9 +111,8 @@ def synthetic_store(root: str | Path, coins: int, days: int, seed: int, beta: fl
 
 
 def real_universe(db_path: str) -> pd.DataFrame:
-    """池子表只读直连 SQLite"""
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        return pd.read_sql_query("SELECT month, symbol, rank, avg_quote_volume FROM universe", conn)
+    with snapshot(db_path) as db:
+        return pd.read_sql_query("SELECT month, symbol, rank, avg_quote_volume FROM universe", db)
 
 
 def load_pool(store: PanelStore, table: pd.DataFrame, holdout_days: int) -> Pool:
@@ -147,34 +149,82 @@ def random_expression(rng: np.random.Generator, panel: pd.DataFrame) -> Expr:
             return expr
 
 
-def run(name: str, exprs: dict[str, Expr], pool: Pool, params: EvalParams, thresholds: Thresholds,
-        grid: reference.Grid, known: set[str], library: Combo) -> list[dict[str, Any]]:
+def run(name: str, exprs: dict[str, Expr], pool: Pool, vol: np.ndarray, params: EvalParams, thresholds: Thresholds,
+        grid: reference.Grid, known: set[str], base: scheme.Base) -> list[dict[str, Any]]:
     out = []
     print(f"\n== {name}：{len(exprs)} 条 ==", flush=True)
     for i, (label, expr) in enumerate(exprs.items(), 1):
         t = time.perf_counter()
-        ev = evaluate(expr, pool, params, grid, library)
+        ev = evaluate(expr, pool, vol, params, grid, base)
         ev["name"] = label
         ev["seconds"] = time.perf_counter() - t
-        ev["gates"] = judge(ev, thresholds, params.primary, known)
+        ev["gates"] = judge(ev, thresholds, known)
         ev["passed"] = passed(ev["gates"])
         out.append(ev)
         print(f"  [{i}/{len(exprs)}] {label} {ev['seconds']:.1f}s {'PASS' if ev['passed'] else ''}", flush=True)
     return out
 
 
+def g9(store: PanelStore, db_path: str, params: EvalParams, randoms: int, seed: int) -> None:
+    """G9 的阈值怎么定：库里每条（拿掉它的方案再加回去）、库外的候选、随机因子，加进交易方案后搜索段净 Sharpe 各升多少"""
+    with snapshot(db_path) as db:
+        universe = pd.read_sql_query("SELECT month, symbol, rank, avg_quote_volume FROM universe", db)
+        library = db.execute("SELECT name, expr FROM factor ORDER BY approved_at").fetchall()
+        # 每条假设留着的是最后一版表达式；同一个表达式只算一次
+        candidates = {expr: name for name, expr in db.execute(
+            "SELECT name, expr FROM candidate WHERE expr IS NOT NULL ORDER BY updated_at")}
+    pool = load_pool(store, universe, params.holdout_days)
+    pick = pool.in_search
+    vol, basis = pool.values(scheme.VOL).f[pick], pool.values(scheme.CARRY).f[pick]
+    search = lambda expr: pool.values(parse(expr, FEATURE_COLUMNS)).f[pick]
+
+    def base(values: dict[str, np.ndarray]) -> scheme.Base:
+        c = Combo.empty(pool.search, pool.symbols)
+        for name, f in values.items():
+            c = c.plus(name, f)
+        return scheme.Base.of(c, basis, vol, params)
+
+    lib = {name: search(expr) for name, expr in library}
+    full = base(lib)
+    print(f"基线：库里 {len(lib)} 条 + carry，搜索段净 Sharpe {full.result['sharpe']:.2f}", flush=True)
+    print("\n== 库里每条：拿掉它的方案，再加回去 ==", flush=True)
+    for name, f in lib.items():
+        g = scheme.gain(base({n: v for n, v in lib.items() if n != name}), name, f, params)["sharpe"]
+        print(f"  {name}: {g['base']:.2f} → {g['with']:.2f}（{g['gain']:+.2f}）", flush=True)
+    rng = np.random.default_rng(seed)
+    first = store.load(pool.symbols[0])
+    groups = {"库外候选": [(n, e) for e, n in candidates.items() if e not in {x for _, x in library}],
+              "随机因子": [(f"rand{i:03d}", str(random_expression(rng, first))) for i in range(randoms)]}
+    for label, items in groups.items():
+        print(f"\n== {label}：{len(items)} 条 ==", flush=True)
+        gains = []
+        for name, expr in items:
+            try:
+                f = search(expr)
+            except DslError as exc:
+                print(f"  {name}：解析不了，跳过（{exc}）", flush=True)
+                continue
+            gains.append(scheme.gain(full, name, f, params)["sharpe"]["gain"])
+            print(f"  {gains[-1]:+.3f}  {name}  {expr}", flush=True)
+        if gains:
+            q = np.quantile(gains, [0.5, 0.9, 0.95, 0.99])
+            print(f"  {label}增量：中位 {q[0]:+.3f}，90% {q[1]:+.3f}，95% {q[2]:+.3f}，99% {q[3]:+.3f}，"
+                  f"最大 {max(gains):+.3f}（{len(gains)} 条）", flush=True)
+
+
 # ========== 打印 ==========
 
 
-def table(evals: list[dict[str, Any]], primary: int) -> str:
+def table(evals: list[dict[str, Any]]) -> str:
+    """主档的数字"""
     head = (f"{'name':22s} " + " ".join(f"{g:>3s}" for g in GATE_IDS)
-            + f" {'IC12':>8s} {'ICIR':>7s} {'mono':>5s} {'spread':>8s} {'seg':>3s} {'perm':>6s} {'net':>8s}"
+            + f" {'IC':>8s} {'ICIR':>7s} {'mono':>5s} {'spread':>8s} {'seg':>3s} {'perm':>6s} {'net':>8s}"
             + f" {'turn':>5s} {'be':>6s} {'red':>5s}  verdict")
     lines = [head, "-" * len(head)]
     for ev in evals:
         gates = {g["id"]: g for g in ev["gates"]}
-        ic = ev["horizons"][primary]["ic"]
-        leg = ev["horizons"][primary]["leg"]
+        ic = ev["horizons"][ev["primary"]]["ic"]
+        leg = ev["horizons"][ev["primary"]]["leg"]
         red = ev["redundancy"]["maxAbs"]
         lines.append(
             f"{ev['name'][:22]:22s} " + " ".join(f"{'Y' if gates[g]['passed'] else '.':>3s}" for g in GATE_IDS)
@@ -213,10 +263,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", default="./data/alpha.sqlite", help="真数据模式读池子表的 SQLite")
     ap.add_argument("--skip-alpha158", action="store_true", help="只跑 5 个基线，不跑 Alpha158")
     ap.add_argument("--alpha158-windows", default="", help="只跑这些窗口的 Alpha158，逗号分隔；空 = 全部")
+    ap.add_argument("--g9", type=int, default=0, help="真数据：量 G9 阈值，随机因子这么多条；只跑这一项")
     args = ap.parse_args(argv)
 
     params, thresholds = EvalParams(), Thresholds()
     print(f"参数 {params}\n阈值 {thresholds}")
+    if args.g9:
+        g9(PanelStore(args.data_dir), args.db, params, args.g9, args.seed)
+        return 0
     # 合成币池落在临时目录，跑完删掉
     with tempfile.TemporaryDirectory(prefix="wiib-calibrate-") if args.synthetic else nullcontext(args.data_dir) as root:
         t0 = time.perf_counter()
@@ -241,16 +295,18 @@ def main(argv: list[str] | None = None) -> int:
         known = {e.canonical() for e in ref_exprs.values()}
         print(f"参照网格 {len(grid.names)} 条，{time.perf_counter() - t0:.1f}s", flush=True)
 
-        # 库是空的：G9 只看自己的组合 IC 是不是正的；参照集自己不查冗余、不做 BH：它们是尺子不是候选
-        empty = Combo.empty(pool.search, pool.symbols)
-        ref_evals = run("参照集", ref_exprs, pool, params, thresholds, reference.Grid.empty(), set(), empty)
+        # 库是空的：G9 的基线是只有基差 carry 的交易方案；参照集自己不查冗余、不做 BH：它们是尺子不是候选
+        vol, basis = pool.values(scheme.VOL).f, pool.values(scheme.CARRY).f
+        empty = scheme.Base.of(Combo.empty(pool.search, pool.symbols), basis[pool.in_search], vol[pool.in_search],
+                               params)
+        ref_evals = run("参照集", ref_exprs, pool, vol, params, thresholds, reference.Grid.empty(), set(), empty)
         baselines = [ev for ev in ref_evals if ev["name"] in handwritten]
         alpha = [ev for ev in ref_evals if ev["name"] not in handwritten]
 
         rng = np.random.default_rng(args.seed)
         first = store.load(pool.symbols[0])
         random_exprs = {f"rand{i:03d}": random_expression(rng, first) for i in range(args.random)}
-        random_evals = run("随机因子", random_exprs, pool, params, thresholds, grid, known, empty)
+        random_evals = run("随机因子", random_exprs, pool, vol, params, thresholds, grid, known, empty)
         single_passes = sum(ev["passed"] for ev in random_evals)
         # 同批 BH 按生产的 K 分批做，和一轮的候选数一样
         for start in range(0, len(random_evals), args.k):
@@ -259,33 +315,33 @@ def main(argv: list[str] | None = None) -> int:
         ops.OPERATORS["Lead"] = ops.Op("rolling", lambda x, n: x.shift(-n))
         try:
             leaky_exprs = {k: parse(v, FEATURE_COLUMNS) for k, v in LEAKY.items()}
-            leaky_evals = run("泄漏因子", leaky_exprs, pool, params, thresholds, grid, known, empty)
+            leaky_evals = run("泄漏因子", leaky_exprs, pool, vol, params, thresholds, grid, known, empty)
         finally:
             del ops.OPERATORS["Lead"]
         planted_evals = []
         if args.synthetic:
             planted_evals = run("植入因子", {k: parse(v, FEATURE_COLUMNS) for k, v in PLANTED.items()},
-                                pool, params, thresholds, grid, known, empty)
+                                pool, vol, params, thresholds, grid, known, empty)
 
     print("\n===== 基线与老效应 =====")
-    print(table(baselines, params.primary))
+    print(table(baselines))
     if alpha:
         print(f"\n===== Alpha158 参照集（{len(alpha)} 条）=====")
         print("各门通过数：" + gate_counts(alpha))
         survivors = [ev for ev in alpha if ev["passed"]]
         print(f"全过的 {len(survivors)} 条：" + ", ".join(ev["name"] for ev in survivors))
-        print(table(sorted(alpha, key=lambda e: -abs(e["horizons"][params.primary]["ic"]["mean"]))[:15], params.primary))
+        print(table(sorted(alpha, key=lambda e: -abs(e["horizons"][params.primary]["ic"]["mean"]))[:15]))
         print("（按主档 |IC| 排的前 15 条）")
     print("\n===== 随机因子 =====")
     print("各门通过数：" + gate_counts(random_evals))
-    print(table(random_evals, params.primary))
+    print(table(random_evals))
     for ev in random_evals:
         print(f"  {ev['name']}: {ev['expr']}")
     print("\n===== 泄漏因子 =====")
-    print(table(leaky_evals, params.primary))
+    print(table(leaky_evals))
     if planted_evals:
         print("\n===== 植入因子 =====")
-        print(table(planted_evals, params.primary))
+        print(table(planted_evals))
         for g in planted_evals[0]["gates"]:
             print(f"  {g['id']} {'过' if g['passed'] else '不过'}  {g['note']}")
 

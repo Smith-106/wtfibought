@@ -30,8 +30,11 @@ def oos(rows: pd.DataFrame, f: np.ndarray, bars: int,
     return p, cs_ic.series(p), wins, lo, hi
 
 
-def horizon(rows: pd.DataFrame, f: np.ndarray, bars: int, params: EvalParams, iterations: int) -> dict[str, Any]:
-    """rows 是骨架，f 与它对齐；iterations 是排列次数，0 = 不做"""
+def horizon(rows: pd.DataFrame, f: np.ndarray, vol: np.ndarray, bars: int, params: EvalParams,
+            iterations: int) -> dict[str, Any]:
+    """rows 是骨架，f、vol（按波动分仓用的 Std($ret, 672)）与它对齐；iterations 是排列次数，0 = 不做。
+    IC 用 f 有数的全部行，多空腿只用波动也有数的"""
     p, ic, wins, lo, hi = oos(rows, f, bars, params)
+    leg_p, leg_vol = cs_leg.sized(rows, f, vol, bars, params.min_names)
     return {"bars": bars, "ic": cs_ic.summary(p, ic, lo, hi, params),
-            "leg": cs_leg.simulate(p, ic, wins, bars, params, iterations)}
+            "leg": cs_leg.simulate(leg_p, leg_vol, ic, wins, bars, params, iterations)}

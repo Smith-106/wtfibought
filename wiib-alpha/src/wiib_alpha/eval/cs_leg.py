@@ -1,8 +1,9 @@
-"""多空腿：walk-forward 只学方向，样本外每个网格点按缓冲带持仓，等权、美元中性，持有到下一个网格点再调。
+"""多空腿：walk-forward 只学方向，样本外每个网格点按缓冲带持仓，每边按 1/波动分仓、美元中性，持有到下一个网格点再调。
 
 方向 = 训练窗里月度截面 IC 均值的符号。答案是对数收益，先 expm1 成算术收益，再减持有期内结算的资金费（多头付、空头收）。
 缓冲带：排进头部 leg_enter 才做多、掉出头部 leg_exit 才平，空头对称看尾部，中间的不动；
-方向换号、上一点没仓位或被跳过时从头建仓，本点不在样本里的币自动出场。
+方向换号、上一点没仓位或被跳过时从头建仓，本点不在样本里的币自动出场。交易员一天只算一期，用单步版 step（规则同 weights）；
+挖掘的腿和交易方案一样按波动分仓（inverse_vol），只用因子和波动都有数的行（sized）。
 成本按流动性分档：每次调仓每个名字付 |w_t − w_{t−1}| × 该币当月档的单边成本，名字不换不付；
 没仓位的网格点收益是 0，从有仓位变成没仓位那一点付平仓成本。毛收益 = 涨跌 + 资金费，扣交易成本之前；
 盈亏平衡成本 = Σ毛收益 / Σ换手量，折成单边 bps。
@@ -16,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .cs_ic import Points, ranks, trained
+from .cs_ic import Points, points, ranks, trained
 from .params import EvalParams, periods_per_year
 from .stats import annualized_sharpe, compound
 from .walkforward import Window
@@ -34,17 +35,22 @@ def directions(ic: np.ndarray, months: np.ndarray, wins: list[Window], min_point
     return out
 
 
-def weights(p: Points, direction: np.ndarray, enter: float, exit_: float) -> np.ndarray:
-    """每行的仓位：多头每个 +1/多头数，空头每个 −1/空头数；并列按币序号先后排"""
-    n = np.bincount(p.g, minlength=p.total)[p.g]
-    order = ranks(p.g, p.f, method="first")
-    d = direction[p.g]
+def _zones(n: np.ndarray, order: np.ndarray, d: np.ndarray, enter: float,
+           exit_: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """每行在不在多头进场区、多头留存区、空头进场区、空头留存区；n 是同一时刻的币数，order 是从 1 起的名次"""
     # 多头那头从 1 数起的名次：方向为正时因子大的在头部；空头那头是倒过来数
     head = np.where(d > 0, n - order + 1, order)
     tail = n + 1 - head
     trading = d != 0
-    enter_long, keep_long = trading & (head / n <= enter), trading & (head / n <= exit_)
-    enter_short, keep_short = trading & (tail / n <= enter), trading & (tail / n <= exit_)
+    return (trading & (head / n <= enter), trading & (head / n <= exit_),
+            trading & (tail / n <= enter), trading & (tail / n <= exit_))
+
+
+def weights(p: Points, direction: np.ndarray, enter: float, exit_: float) -> np.ndarray:
+    """每行的仓位：多头每个 +1/多头数，空头每个 −1/空头数；并列按币序号先后排"""
+    n = np.bincount(p.g, minlength=p.total)[p.g]
+    order = ranks(p.g, p.f, method="first")
+    enter_long, keep_long, enter_short, keep_short = _zones(n, order, direction[p.g], enter, exit_)
     long_, short = enter_long.copy(), enter_short.copy()
     # 上一点每个币是不是在多头 / 空头里，按币序号放
     held_long = np.zeros(int(p.sym.max(initial=-1)) + 1, dtype=bool)
@@ -66,6 +72,32 @@ def weights(p: Points, direction: np.ndarray, enter: float, exit_: float) -> np.
     longs = np.bincount(p.g, long_, p.total)[p.g]
     shorts = np.bincount(p.g, short, p.total)[p.g]
     return np.where(long_, 1 / np.maximum(longs, 1), 0.0) - np.where(short, 1 / np.maximum(shorts, 1), 0.0)
+
+
+def step(f: np.ndarray, sign: float, held_long: np.ndarray, held_short: np.ndarray, enter: float,
+         exit_: float) -> tuple[np.ndarray, np.ndarray]:
+    """weights 的单步版，给交易员一天算一次：一个时刻按币序号排好的因子、方向，上一期每个币在不在多头 / 空头里，
+    出这一期的多头、空头。上一期没仓位或方向换了号，held 传全 False，就是从头建仓"""
+    n = len(f)
+    order = ranks(np.zeros(n, dtype="int64"), f, method="first")
+    enter_long, keep_long, enter_short, keep_short = _zones(np.full(n, n), order, np.full(n, sign), enter, exit_)
+    return enter_long | (keep_long & held_long), enter_short | (keep_short & held_short)
+
+
+def sized(rows: pd.DataFrame, f: np.ndarray, vol: np.ndarray, bars: int, min_names: int) -> tuple[Points, np.ndarray]:
+    """多空腿的样本：f、vol 与 rows 对齐，两样都有数的行才进；出样本和与它逐行对齐的波动"""
+    p = points(rows, np.where(np.isfinite(vol), f, np.nan), bars, min_names)
+    return p, points(rows, np.where(np.isfinite(f), vol, np.nan), bars, min_names).f
+
+
+def inverse_vol(g: np.ndarray, w: np.ndarray, vol: np.ndarray, total: int) -> np.ndarray:
+    """按波动分仓：每个点多头每个币 ∝ 1/波动、加起来 1，空头同理加起来 −1；w 只看正负"""
+    inv = 1.0 / np.maximum(vol, 1e-6)
+    out = np.zeros(len(w))
+    for s in (1, -1):
+        m = np.sign(w) == s
+        out[m] = s * inv[m] / np.bincount(g[m], inv[m], total)[g[m]]
+    return out
 
 
 def rebalance(p: Points, w: np.ndarray, unit_costs: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray]:
@@ -105,16 +137,16 @@ def permutation(p: Points, w: np.ndarray, r: np.ndarray, iterations: int, seed: 
     return float(np.mean(totals < real))
 
 
-def simulate(p: Points, ic: np.ndarray, wins: list[Window], bars: int, params: EvalParams,
+def simulate(p: Points, vol: np.ndarray, ic: np.ndarray, wins: list[Window], bars: int, params: EvalParams,
              iterations: int) -> dict[str, Any]:
-    """样本外每个网格点一期；iterations = 0 不做排列检验"""
+    """p、vol 来自 sized；ic 是全部样本每个网格点的 IC，方向从它学。样本外每个网格点一期；iterations = 0 不做排列检验"""
     oos = np.zeros(p.total, dtype=bool)
     for win in wins:
         oos[win.test_start:win.test_end] = True
     if not oos.any():
         return {"periods": 0}
     direction = directions(ic, p.months, wins, params.min_points)
-    w = weights(p, direction, params.leg_enter, params.leg_exit)
+    w = inverse_vol(p.g, weights(p, direction, params.leg_enter, params.leg_exit), vol, p.total)
     # 一个币持有一期的收益：涨跌减资金费，空头仓位 w < 0 正好变成收费
     r = np.expm1(p.y) - p.fund
     gross = np.bincount(p.g, w * r, p.total)

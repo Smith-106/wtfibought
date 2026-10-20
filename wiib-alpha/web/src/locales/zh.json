@@ -8,7 +8,8 @@
     "observe": "观察区",
     "library": "因子库",
     "reference": "参照集",
-    "eval": "手填评估"
+    "eval": "手填评估",
+    "trader": "交易员"
   },
   "errors": {
     "http": "请求失败（HTTP {{status}}）"
@@ -278,14 +279,14 @@
     "turnover": "换手",
     "funding": "资金费 / 期",
     "breakEven": "盈亏平衡成本",
-    "gain": "组合 IC 增量",
+    "gain": "库组合 IC 增量（旧口径）",
     "redundancy": "冗余",
     "redundancyValue": "与 {{name}} 的截面 |ρ| = {{r}}",
     "noRedundancy": "没有参照因子",
     "gridNotReady": "参照网格还没算好",
     "neutral": "去老效应",
     "neutralValue": "回归掉 {{n}} 条老效应后主档 IC {{ic}}，剩原来的 {{kept}}，t {{t}}（标签，不是门）",
-    "gainSharpe": "组合净 Sharpe",
+    "gainSharpe": "G9 净 Sharpe（加进去前 → 后）",
     "se": "标准误",
     "complexity": "复杂度",
     "complexityValue": "节点 {{nodes}}，窗口 {{windows}}，常量 {{constants}}，截面算子 {{cross}}",
@@ -376,5 +377,145 @@
     "failed": "没过",
     "canonical": "规范形",
     "needAdmin": "要管理员登录"
+  },
+  "trader": {
+    "title": "交易员账户",
+    "hint": "模拟盘账户 quant-factor：每天用 UTC 0 点那根 15m 收盘出信号、00:15 整篮子调仓，一半资金做勾选因子的组合、一半做基差 carry，多空两边按波动分仓，4 倍全仓市价单，不挂止损。模拟盘偏乐观：手续费 0.04%、无滑点、低频币按标记价成交且价格一分钟一跳；回测是晚一根成交、单边 5 / 8 / 12 bps。",
+    "noAccount": "还没调过仓：账户在第一次调仓时建。",
+    "equity": "净值",
+    "balance": "余额",
+    "available": "可用",
+    "userId": "userId",
+    "totalReturn": "累计收益",
+    "totalReturnHint": "相对初始资金 {{initial}}",
+    "drawdown": "最大回撤",
+    "drawdownHint": "按每小时快照算",
+    "schedule": "每天 UTC 00:05 起补数据、00:15 下单；01:00 前没调成会再试，过了就跳过这一天",
+    "running": "调仓中：{{stage}}",
+    "stage": {
+      "prepare": "准备",
+      "account": "读账户",
+      "live": "补 live 尾巴",
+      "targets": "出目标",
+      "waiting": "等到 00:15 下单",
+      "orders": "下单"
+    },
+    "lastError": "上次调仓出错：{{msg}}",
+    "curve": "净值曲线",
+    "curveHint": "每小时一次快照；虚线是初始资金。",
+    "curveEmpty": "快照不到两个，还画不了。",
+    "initial": "初始 {{v}}",
+    "positions": "当前持仓",
+    "positionsHint": "两条腿各占多少：{{day}} 那次调仓给这个币的目标名义（带方向）。",
+    "positionsEmpty": "没有持仓。",
+    "col": {
+      "symbol": "币",
+      "side": "方向",
+      "quantity": "数量",
+      "notional": "名义",
+      "entry": "开仓价",
+      "mark": "标记价",
+      "pnl": "浮盈"
+    },
+    "side": {
+      "LONG": "多",
+      "SHORT": "空"
+    },
+    "leg": {
+      "combo": "组合腿",
+      "carry": "carry 腿"
+    },
+    "runs": "调仓记录",
+    "runsHint": "点一行看当天详情：目标 vs 实际成交、失败原因。",
+    "runsEmpty": "还没有调仓记录。",
+    "runCol": {
+      "day": "日期（UTC）",
+      "status": "状态",
+      "factors": "因子",
+      "equity": "净值 前 → 后",
+      "orders": "下单"
+    },
+    "status": {
+      "done": "完成",
+      "partial": "部分失败",
+      "failed": "失败"
+    },
+    "orderCount": "{{n}} 笔",
+    "orderFailed": "失败 {{n}}",
+    "signalAt": "信号：{{time}} UTC 收盘的那根",
+    "ranAt": "{{start}} 开始，{{end}} 结束",
+    "usedFactors": "用到的因子与组合权重",
+    "noFactors": "没勾因子，组合腿空仓",
+    "long": "多",
+    "short": "空",
+    "targets": "每币目标 vs 现有",
+    "coinCol": {
+      "weight": "净权重",
+      "notional": "目标名义",
+      "current": "现有数量",
+      "target": "目标数量",
+      "price": "标记价",
+      "ref": "00:15 收盘",
+      "note": "备注"
+    },
+    "orders": "下单与结果",
+    "ordersEmpty": "这次没有要下的单。",
+    "orderCol": {
+      "action": "动作",
+      "quantity": "数量",
+      "fill": "成交价",
+      "result": "结果"
+    },
+    "action": {
+      "open": "开 / 加",
+      "close": "平 / 减"
+    },
+    "closeAll": "全平",
+    "filled": "成交",
+    "notTrading": "不在交易、没出目标：",
+    "signals": "各腿信号明细（核对用）",
+    "signalCol": {
+      "rank": "名次",
+      "signal": "信号",
+      "vol": "波动",
+      "weight": "腿内权重"
+    },
+    "factors": "交易因子",
+    "factorsHint": "勾上的才参与组合腿，下一次调仓起生效；入库不等于进交易。对比按交易方案在搜索段比\"当前勾选\"和\"加上 / 去掉这条\"，搜索段更好才给 holdout，免得按 holdout 挑；勾不勾你定。",
+    "factorsEmpty": "库里还没有因子。",
+    "selected": "已勾选",
+    "unselected": "没勾",
+    "missing": "live 尾巴补不出 {{cols}}，不能勾",
+    "compare": "对比",
+    "comparing": "对比 {{name}}：{{stage}}",
+    "compareStage": {
+      "library": "算库因子",
+      "inputs": "准备骨架与 carry 输入",
+      "search": "搜索段回测",
+      "holdout": "holdout 回测"
+    },
+    "compareTitle": "{{action}} {{name}} 的对比",
+    "compareAction": {
+      "add": "加上",
+      "remove": "去掉"
+    },
+    "compareAt": "{{time}} 算完",
+    "compareBase": "当前勾选",
+    "compareAlt": "{{action}}之后",
+    "compareSets": "当前勾选：{{base}}；{{action}}之后：{{alt}}",
+    "search": "搜索段",
+    "holdout": "holdout",
+    "betterYes": "搜索段 Sharpe 更高，holdout 一并给出（只看这一次）。",
+    "betterNo": "搜索段没有更好，不给 holdout。",
+    "compareError": "对比失败：{{msg}}",
+    "noneFactors": "（无）",
+    "metric": {
+      "netReturn": "净收益",
+      "sharpe": "Sharpe",
+      "maxDrawdown": "最大回撤",
+      "turnover": "换手 / 期",
+      "carryFundingBps": "carry 资金费 / 期",
+      "periods": "期数"
+    }
   }
 }

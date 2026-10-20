@@ -239,8 +239,10 @@ export interface TimeseriesBrief {
   bySymbol: Record<string, number | null>;
 }
 
-/** prompts.eval_brief：算过增量的带 gain，算过 holdout 的带 holdout，有产品币面板的带时序报告 */
+/** prompts.eval_brief：算过增量的带 gainSharpe，算过 holdout 的带 holdout，有产品币面板的带时序报告 */
 export interface EvalBrief {
+  /** 判门用的那一档（6h/12h/24h）；之前落库的老结果没有，是 12h */
+  primary?: string;
   horizons: Record<string, HorizonBrief>;
   /** ready = false 是参照网格还没算好 */
   redundancy: { maxAbs: number | null; with: string | null; ready: boolean };
@@ -248,8 +250,9 @@ export interface EvalBrief {
   gates: GateBrief[];
   /** 去老效应标签（不是门）：回归掉 against 条老效应后的主档 IC、占原 IC 的比例、t；网格没算好或老结果没有 */
   neutral?: { meanIc: number | null; icir: number | null; t: number | null; retained: number | null; against: number };
+  /** 老结果的 G9：加进库组合后三档 IC 的变化；现在的结果没有 */
   gain?: Record<string, number | null>;
-  /** 主档组合多空腿扣成本和资金费的年化净 Sharpe：加进组合前、后、增量；之前入库的老结果没有 */
+  /** G9：交易方案（库里因子的组合 + 基差 carry）搜索段的年化净 Sharpe，加进去前、后、增量；老结果是库组合多空腿的 */
   gainSharpe?: { base: number | null; with: number | null; gain: number | null };
   holdout?: HoldoutBrief;
   /** 复评时才有：发现它的那一轮切点比现在的 holdout 切点早，从那个切点起它都没见过 */
@@ -368,7 +371,7 @@ export interface FactorDetail extends Factor {
 
 /** 库里全部因子的组合（main.build_library 的 report） */
 export interface ComboReport {
-  brief: { horizons: Record<string, HorizonBrief>; holdout: HoldoutBrief };
+  brief: { primary?: string; horizons: Record<string, HorizonBrief>; holdout: HoldoutBrief };
   /** latest 对应的时刻：最后一个 6h 网格点 */
   asOf: number;
   weights: { name: string; weight: number }[];
@@ -460,6 +463,166 @@ export interface ModelSave {
 }
 
 export type Models = Record<ModelRole, ModelView | null>;
+
+// ========== 交易员：对着 main.py 的 /trader 接口与 trade/ 下的模块写 ==========
+
+/** 调仓任务的进度（scheduler.rebalance）；live 阶段 done/total/symbol 是补尾巴的进度 */
+export interface TraderJob {
+  running: boolean;
+  startedAt?: number;
+  finishedAt?: number | null;
+  /** 这次调仓的 UTC 日期 */
+  day?: string;
+  stage?: 'prepare' | 'account' | 'live' | 'targets' | 'orders' | null;
+  total?: number;
+  done?: number;
+  symbol?: string | null;
+  error?: string | null;
+}
+
+/** 账户概况；还没调过仓（还没建账户）的都是 null */
+export interface TraderAccount {
+  userId: number | null;
+  /** 全仓净值 = 余额 + Σ浮盈亏 */
+  equity: number | null;
+  balance: number | null;
+  /** 全仓可用 = 净值 − 占用保证金 − 挂单占用 */
+  available: number | null;
+  initialBalance: number;
+  job: TraderJob;
+}
+
+export type TradeLeg = 'combo' | 'carry';
+export const TRADE_LEGS: TradeLeg[] = ['combo', 'carry'];
+
+export interface TraderPosition {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  quantity: number;
+  /** 数量 × 标记价 */
+  notional: number;
+  entryPrice: number;
+  markPrice: number;
+  unrealizedPnl: number;
+  /** 最近一次出了目标的调仓里两条腿各给这个币的目标名义（带正负）；那次没这个币是 null */
+  legs: Record<TradeLeg, number> | null;
+}
+
+/** 每小时一次的净值快照；long/short 是多空持仓名义 */
+export interface EquityPoint {
+  ts: number;
+  equity: number;
+  balance: number;
+  long: number;
+  short: number;
+}
+
+/** done 全成；partial 有币失败或停在半路但有成交；failed 一笔没成 */
+export type TradeStatus = 'done' | 'partial' | 'failed';
+
+export interface TradeRunBrief {
+  day: string;
+  status: TradeStatus;
+  /** 出信号那根（UTC 0 点那根 15m）的收盘时刻 */
+  signalMs: number;
+  startedAt: number;
+  finishedAt: number;
+  equityBefore: number | null;
+  equityAfter: number | null;
+  error: string | null;
+  factorNames: string[];
+  orderCount: number;
+  failedCount: number;
+}
+
+/** 一个币的目标与现有（executor.plan 的明细）：数量带正负，多是正 */
+export interface TradeCoin {
+  symbol: string;
+  /** 净权重 = combo + carry，乘净值是目标名义 */
+  weight: number;
+  combo: number;
+  carry: number;
+  notional: number;
+  price: number | null;
+  /** 00:15 那根的收盘价：回测按它成交 */
+  refPrice: number | null;
+  current: number;
+  target: number | null;
+  /** 没下单的原因：差额太小、要加的量太小、缺价格 */
+  note: string | null;
+  failed: boolean;
+}
+
+/** 一条腿里一个币这一期的信号、名次（信号从大到小数）、波动、腿内权重 */
+export interface LegSignal {
+  symbol: string;
+  signal: number;
+  rank: number;
+  vol: number;
+  weight: number;
+}
+
+export interface TradeOrder {
+  symbol: string;
+  action: 'open' | 'close';
+  side: 'LONG' | 'SHORT';
+  /** null 是全平 */
+  quantity: number | null;
+  requestId: string;
+  ok: boolean;
+  orderId?: number;
+  filled?: number;
+  price?: number;
+  commission?: number;
+  error?: string;
+}
+
+export interface TradeRunDetail extends TradeRunBrief {
+  userId: number | null;
+  factors: { id: string; name: string; expr: string; weight: number }[];
+  legs: Record<TradeLeg, { long: string[]; short: string[] }> | null;
+  targets: { coins: TradeCoin[]; signals: Record<TradeLeg, LegSignal[]>; notTrading: string[] } | null;
+  orders: TradeOrder[];
+}
+
+/** 库里的因子与交易员的勾选；missing 是 live 尾巴补不出来的列，有就不能勾 */
+export interface TraderFactor {
+  id: string;
+  name: string;
+  expr: string;
+  selected: boolean;
+  missing: string[];
+}
+
+/** 交易方案回测（scheme.backtest） */
+export interface SchemeResult {
+  periods: number;
+  netReturn: number | null;
+  sharpe: number | null;
+  maxDrawdown: number | null;
+  /** 每期 Σ|Δw| / 4：两条腿各自整个换掉是 1 */
+  turnover: number | null;
+  /** carry 腿每期平均资金费 bps，正数是收 */
+  carryFundingBps: number | null;
+}
+
+export interface CompareSide {
+  factors: string[];
+  search: SchemeResult;
+  /** 加减之后搜索段更好才有 */
+  holdout?: SchemeResult;
+}
+
+export interface CompareJob {
+  running: boolean;
+  startedAt?: number;
+  finishedAt?: number | null;
+  factorId?: string;
+  name?: string;
+  stage?: 'library' | 'inputs' | 'search' | 'holdout' | null;
+  error?: string | null;
+  result?: { action: 'add' | 'remove'; better: boolean; base: CompareSide; alt: CompareSide } | null;
+}
 
 // ========== 鉴权 ==========
 
@@ -597,6 +760,18 @@ export const alpha = {
   /** 真发一句话，回答与耗时；上游报错会以 400 带回来 */
   testModel: (role: ModelRole, body: ModelSave) =>
     call<{ reply: string; ms: number }>('POST', `${ALPHA}/models/${role}/test`, body),
+  /** 交易员：sim 不通时账户和持仓是 502 */
+  traderAccount: () => call<TraderAccount>('GET', `${ALPHA}/trader/account`),
+  traderPositions: () => call<{ items: TraderPosition[]; day: string | null }>('GET', `${ALPHA}/trader/positions`),
+  traderEquity: () => call<{ initialBalance: number; items: EquityPoint[] }>('GET', `${ALPHA}/trader/equity`),
+  traderRuns: () => call<{ items: TradeRunBrief[]; job: TraderJob }>('GET', `${ALPHA}/trader/runs`),
+  traderRun: (day: string) => call<TradeRunDetail>('GET', `${ALPHA}/trader/runs/${day}`),
+  traderFactors: () => call<{ items: TraderFactor[]; compare: CompareJob }>('GET', `${ALPHA}/trader/factors`),
+  /** 勾上或取消，下一次调仓起生效；live 补不出来的列是 409 */
+  selectTraderFactor: (id: string, selected: boolean) =>
+    call<{ id: string; selected: boolean }>('PUT', `${ALPHA}/trader/factors/${id}`, { selected }),
+  /** 后台比"当前勾选"和"加上 / 去掉这条"，进度看 traderFactors().compare */
+  compareTraderFactor: (id: string) => call<{ started: boolean }>('POST', `${ALPHA}/trader/compare/${id}`),
 };
 
 /** sim 的登录接口，返回体同形，data 就是 token */

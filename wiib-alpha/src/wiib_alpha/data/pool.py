@@ -2,6 +2,7 @@
 
 装载时按 universe 表与每币面板的在池掩码，建好基础网格（6h）上每个在池 (时刻, 币) 一行的骨架 rows，
 每行带三档答案（持有 h 根的涨跌，持有期里下架的按下架前最后一根结算）和持有期内要结算的资金费（从 raw/funding 的结算记录算，多空腿扣它）；
+挖掘、交易方案都按晚 DELAY 根成交（信号那根收盘后再过一根建仓，资金费从建仓起算）；
 一次评估按表达式用到的列逐币读 parquet、求值、只留骨架那几行，拼成与 rows 对齐的因子值，不把全池面板同时留在内存。
 截面算子要同一时刻全部在池币的值：先逐币算出它的输入、只留在池的根拼成长表按时刻算好，再逐币算外层。
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -18,7 +20,7 @@ import pandas as pd
 from .. import ops
 from ..dsl import Call, Cross, Expr
 from .binance import BAR_MS
-from .panel import HORIZON_BARS, POOL_COLUMN, PanelStore
+from .panel import DELAY, HORIZON_BARS, POOL_COLUMN, PanelStore
 
 # 基础网格 6h 一个点；12h、24h 的网格是它的子集
 BASE_BARS = min(HORIZON_BARS.values())
@@ -65,11 +67,12 @@ def forward_funding(t: np.ndarray, funding: pd.DataFrame | None, bars: int) -> n
     return total[hi] - total[lo]
 
 
-def forward_return(t: np.ndarray, close: np.ndarray, at: np.ndarray, bars: int) -> np.ndarray:
-    """at 选中的那几根收盘建仓、持有 bars 根的对数涨跌，按 t + bars 根及之前最后一根的收盘价平。
-    平常就是第 bars 根；持有期里断了的（下架，或下架后隔几个月重新上）按断之前最后一根结算，不把这一期扔掉"""
-    last = np.searchsorted(t, t[at] + bars * BAR_MS, side="right") - 1
-    return np.log(close[last] / close[at])
+def forward_return(t: np.ndarray, close: np.ndarray, at: np.ndarray, bars: int, delay: int = 0) -> np.ndarray:
+    """at 选中的那几根出信号、再过 delay 根收盘建仓、持有 bars 根的对数涨跌，建仓、平仓都取那一刻及之前最后一根的收盘价。
+    平常就是第 delay 根、第 delay + bars 根；持有期里断了的（下架，或下架后隔几个月重新上）按断之前最后一根结算，不把这一期扔掉"""
+    entry = np.searchsorted(t, t[at] + delay * BAR_MS, side="right") - 1
+    last = np.searchsorted(t, t[at] + (delay + bars) * BAR_MS, side="right") - 1
+    return np.log(close[last] / close[entry])
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,7 @@ class Values:
     cross: dict[Call, dict[str, pd.Series]] = field(default_factory=dict)
 
     def at(self, symbol: str) -> Cross:
-        return _at(self.cross, symbol)
+        return cross_at(self.cross, symbol)
 
 
 @dataclass
@@ -97,8 +100,8 @@ class Pool:
     search: pd.DataFrame
 
     @classmethod
-    def load(cls, store: PanelStore, universe: pd.DataFrame, cut_ms: int) -> "Pool":
-        """universe 列 month（YYYY-MM）、symbol、rank"""
+    def load(cls, store: PanelStore, universe: pd.DataFrame, cut_ms: int, delay: int = DELAY) -> "Pool":
+        """universe 列 month（YYYY-MM）、symbol、rank；delay 是晚几根成交：信号那根收盘后再过 delay 根才建仓，资金费从建仓起算"""
         ranks = universe.assign(m=np.array(universe["month"], dtype="datetime64[M]").astype("int64"))
         by_symbol = {s: dict(zip(g["m"], tier_of(g["rank"].to_numpy()))) for s, g in ranks.groupby("symbol")}
         symbols = tuple(s for s in sorted(by_symbol) if store.has(s))
@@ -117,14 +120,14 @@ class Pool:
                     "tier": pd.Series(m).map(by_symbol[s]).to_numpy(dtype="int8")}
             funding = store.load_raw("funding", s)
             for bars in HORIZON_BARS.values():
-                part[f"y{bars}"] = forward_return(every, close, keep, bars)
-                part[f"fund{bars}"] = forward_funding(t, funding, bars)
+                part[f"y{bars}"] = forward_return(every, close, keep, bars, delay)
+                part[f"fund{bars}"] = forward_funding(t + delay * BAR_MS, funding, bars)
             parts.append(pd.DataFrame(part))
         rows = pd.concat(parts, ignore_index=True)
-        _blank_after(rows, end)
+        _blank_after(rows, end, delay)
         in_search = rows["t"].to_numpy() <= cut_ms
         search = rows[in_search].reset_index(drop=True)
-        _blank_after(search, cut_ms)
+        _blank_after(search, cut_ms, delay)
         return cls(store, symbols, rows, cut_ms, in_search, search)
 
     def frame(self, symbol: str, columns: list[str]) -> pd.DataFrame:
@@ -135,27 +138,14 @@ class Pool:
         columns = sorted(expr.columns())
         cross: dict[Call, dict[str, pd.Series]] = {}
         for node in expr.cross_nodes():
-            cross[node] = self._cross(node, columns, cross)
+            cross[node] = cross_values(node, ((s, self.frame(s, columns)) for s in self.symbols), cross)
         parts = []
         for s in self.symbols:
             df = self.frame(s, columns)
-            parts.append(expr.evaluate(df, _at(cross, s)).to_numpy(dtype="float64")[_keep(df)])
+            parts.append(expr.evaluate(df, cross_at(cross, s)).to_numpy(dtype="float64")[_keep(df)])
         out = Values(np.concatenate(parts), cross)
         release_memory()
         return out
-
-    def _cross(self, node: Call, columns: list[str], inner: dict[Call, dict[str, pd.Series]]) -> dict[str, pd.Series]:
-        """截面节点：每币算出输入、只留在池的根，拼成长表按时刻算，再拆回每币"""
-        child = Expr(node.args[0])
-        times, values = [], []
-        for s in self.symbols:
-            df = self.frame(s, columns)
-            inside = df[POOL_COLUMN].to_numpy() == 1.0
-            times.append(df.index.to_numpy(dtype="int64")[inside])
-            values.append(child.evaluate(df, _at(inner, s)).to_numpy(dtype="float64")[inside])
-        out = ops.OPERATORS[node.name].fn(pd.Series(np.concatenate(values)), np.concatenate(times)).to_numpy()
-        ends = np.cumsum([len(t) for t in times])
-        return {s: pd.Series(out[end - len(t):end], index=t) for s, t, end in zip(self.symbols, times, ends)}
 
     def describe(self) -> dict[str, int]:
         t = self.rows["t"].to_numpy()
@@ -163,15 +153,30 @@ class Pool:
                 "gridPoints": int(len(np.unique(t))), "rows": int(len(self.rows))}
 
 
-def _at(cross: dict[Call, dict[str, pd.Series]], symbol: str) -> Cross:
+def cross_values(node: Call, frames: Iterable[tuple[str, pd.DataFrame]],
+                 inner: dict[Call, dict[str, pd.Series]]) -> dict[str, pd.Series]:
+    """截面节点：每币（面板带在池掩码）算出输入、只留在池的根，拼成长表按时刻算，再拆回每币；inner 是里层已算好的截面节点"""
+    child = Expr(node.args[0])
+    symbols, times, values = [], [], []
+    for s, df in frames:
+        inside = df[POOL_COLUMN].to_numpy() == 1.0
+        symbols.append(s)
+        times.append(df.index.to_numpy(dtype="int64")[inside])
+        values.append(child.evaluate(df, cross_at(inner, s)).to_numpy(dtype="float64")[inside])
+    out = ops.OPERATORS[node.name].fn(pd.Series(np.concatenate(values)), np.concatenate(times)).to_numpy()
+    ends = np.cumsum([len(t) for t in times])
+    return {s: pd.Series(out[end - len(t):end], index=t) for s, t, end in zip(symbols, times, ends)}
+
+
+def cross_at(cross: dict[Call, dict[str, pd.Series]], symbol: str) -> Cross:
     """一个币的截面节点值；没进过池的币是空的，求值出来全 NaN"""
     return {node: by.get(symbol, _EMPTY) for node, by in cross.items()}
 
 
-def _blank_after(rows: pd.DataFrame, until: int) -> None:
-    """持有期够到 until 之后的答案和资金费记 NaN：那时候还不知道"""
+def _blank_after(rows: pd.DataFrame, until: int, delay: int) -> None:
+    """持有期（晚 delay 根建仓）够到 until 之后的答案和资金费记 NaN：那时候还不知道"""
     for bars in HORIZON_BARS.values():
-        late = rows["t"].to_numpy() + bars * BAR_MS > until
+        late = rows["t"].to_numpy() + (delay + bars) * BAR_MS > until
         rows.loc[late, [f"y{bars}", f"fund{bars}"]] = np.nan
 
 

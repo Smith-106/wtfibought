@@ -2,7 +2,10 @@ package com.mawai.wiibsim.controller;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.mawai.wiibcommon.annotation.CurrentUserId;
+import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibcommon.dto.*;
+import com.mawai.wiibcommon.enums.ErrorCode;
+import com.mawai.wiibcommon.exception.BizException;
 import com.mawai.wiibcommon.util.Result;
 import com.mawai.wiibcommon.entity.ForceOrder;
 import com.mawai.wiibsim.config.FuturesLeverageBracketRegistry;
@@ -37,10 +40,14 @@ public class FuturesController {
     private final TradeFilterRegistry tradeFilterRegistry;
     private final PositionHistoryService positionHistoryService;
     private final FundingRateService fundingRateService;
+    private final BinanceProperties binanceProperties;
 
-    /** 开仓 */
+    /** 开仓：用户只能开 feed 订阅的币，低频币只给内部接口 */
     @PostMapping("/open")
     public Result<FuturesOrderResponse> open(@CurrentUserId Long userId, @RequestBody FuturesOpenRequest request) {
+        if (!binanceProperties.getAllFuturesSymbols().contains(request.getSymbol())) {
+            throw new BizException(ErrorCode.CRYPTO_SYMBOL_INVALID);
+        }
         return Result.ok(futuresTradingService.openPosition(userId, request));
     }
 

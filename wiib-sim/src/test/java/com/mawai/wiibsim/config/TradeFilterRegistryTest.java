@@ -22,7 +22,7 @@ import static org.mockito.Mockito.when;
  * <ol>
  *   <li>开仓校验三连：低于minQty拒、步长不整拒、名义额不足拒，合规放行</li>
  *   <li>reduce-only 豁免：平仓/卖出不查名义额；全量平出连步长都豁免（存量尘埃仓能清干净）</li>
- *   <li>官方刷新：正常响应按 symbol 覆盖默认；地理拦截/挂掉沿用默认快照，未配置 symbol 不混入</li>
+ *   <li>官方刷新：正常响应按 symbol 覆盖默认；地理拦截/挂掉沿用默认快照；合约收全部 USDT 永续，交割合约和非 USDT 不收</li>
  *   <li>bStock 走现货下单，同样受现货过滤器约束；现货未配置的 symbol 买入直接拒</li>
  * </ol>
  */
@@ -92,7 +92,7 @@ class TradeFilterRegistryTest {
     @Test
     void 官方刷新_正常覆盖_异常响应沿用默认() {
         BinanceRestClient client = mock(BinanceRestClient.class);
-        // 构造官方响应：BTC 步长改 0.01、minNotional 改 100；夹带未配置的 PEPE 不得混入
+        // 构造官方响应：BTC 步长改 0.01、minNotional 改 100；低频币 PEPE 收进来，交割合约和 USDC 永续不收
         when(client.getFuturesExchangeInfo()).thenReturn("""
                 {"symbols":[
                   {"symbol":"BTCUSDT","filters":[
@@ -100,6 +100,12 @@ class TradeFilterRegistryTest {
                     {"filterType":"MIN_NOTIONAL","notional":"100"}]},
                   {"symbol":"PEPEUSDT","filters":[
                     {"filterType":"LOT_SIZE","stepSize":"1","minQty":"1"},
+                    {"filterType":"MIN_NOTIONAL","notional":"5"}]},
+                  {"symbol":"BTCUSDT_261225","filters":[
+                    {"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},
+                    {"filterType":"MIN_NOTIONAL","notional":"5"}]},
+                  {"symbol":"BTCUSDC","filters":[
+                    {"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},
                     {"filterType":"MIN_NOTIONAL","notional":"5"}]}
                 ]}""");
         // 现货侧模拟地理拦截响应（无 symbols 字段）→ 沿用默认
@@ -110,9 +116,13 @@ class TradeFilterRegistryTest {
 
         assertThat(reg.allFutures().get("BTCUSDT").stepSize()).isEqualByComparingTo("0.01");
         assertThat(reg.allFutures().get("BTCUSDT").minNotional()).isEqualByComparingTo("100");
-        // 未返回的 symbol 保留默认；未配置的 symbol 不混入
+        // 未返回的 symbol 保留默认
         assertThat(reg.allFutures().get("ETHUSDT").minNotional()).isEqualByComparingTo("20");
-        assertThat(reg.allFutures()).doesNotContainKey("PEPEUSDT");
+        // 低频币按官方规则校验：PEPE 步长 1
+        assertThatThrownBy(() -> reg.validateFuturesOrder("PEPEUSDT", new BigDecimal("1.5"), new BigDecimal("10")))
+                .isInstanceOf(BizException.class)
+                .extracting("code").isEqualTo(ErrorCode.TRADE_STEP_INVALID.getCode());
+        assertThat(reg.allFutures()).doesNotContainKeys("BTCUSDT_261225", "BTCUSDC");
         // 现货整体失败 → 默认快照原样
         assertThat(reg.allSpot().get("SOLUSDT").stepSize()).isEqualByComparingTo("0.001");
         assertThat(reg.allSpot().get("DOGEUSDT").minNotional()).isEqualByComparingTo("1");

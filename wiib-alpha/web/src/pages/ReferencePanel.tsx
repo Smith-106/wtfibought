@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, Play, Ruler, Search, TriangleAlert, X } from 'lucide-react';
 import { alpha, type ReferenceItem, type ReferenceList } from '../api';
-import { cx, localTime, num, PRIMARY } from '../format';
+import { cx, localTime, num, primaryOf } from '../format';
 import { usePoll } from '../poll';
 import { useSort } from '../sort';
 import { useFail } from '../toast';
@@ -19,11 +19,11 @@ const REF_VALUES: Record<RefKey, (r: ReferenceItem) => string | number | null | 
   passed: r => (r.passed ? 1 : 0),
   // 主档 IC 按绝对值排：尺子看的是强度
   ic: r => {
-    const v = r.brief.horizons[PRIMARY]?.meanIc;
+    const v = r.brief.horizons[primaryOf(r.brief)]?.meanIc;
     return v == null ? v : Math.abs(v);
   },
-  icir: r => r.brief.horizons[PRIMARY]?.icir,
-  monotonic: r => r.brief.horizons[PRIMARY]?.monotonic,
+  icir: r => r.brief.horizons[primaryOf(r.brief)]?.icir,
+  monotonic: r => r.brief.horizons[primaryOf(r.brief)]?.monotonic,
   updatedAt: r => r.updatedAt,
 };
 
@@ -149,7 +149,7 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
                 </thead>
                 <tbody>
                   {sorted.map(item => {
-                    const h = item.brief.horizons[PRIMARY];
+                    const h = item.brief.horizons[primaryOf(item.brief)];
                     const open = openName === item.name;
                     return (
                       <Fragment key={item.name}>

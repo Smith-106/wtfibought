@@ -1,6 +1,7 @@
 """硬门：拿 evaluate 的结果逐门判，每门给数字、阈值、过没过、一句原因。门全按截面口径，时序报告不做门。
 
 G5 的 BH-FDR 是同批候选一起判的，单条先按原始排列分位判，批次汇总时 apply_fdr 再改判。
+单条多空腿扣完成本赚不赚只做标签（G5 的数字里）：能不能交易看 G9，加进交易方案后搜索段净 Sharpe 升不升。
 """
 
 from __future__ import annotations
@@ -14,9 +15,10 @@ from .params import Thresholds
 from .stats import bh_reject
 
 
-def judge(ev: dict[str, Any], t: Thresholds, primary: int = 48,
-          known_canonicals: Iterable[str] = (), direction: int | None = None) -> list[dict[str, Any]]:
+def judge(ev: dict[str, Any], t: Thresholds, known_canonicals: Iterable[str] = (),
+          direction: int | None = None) -> list[dict[str, Any]]:
     """direction 是候选按假设声明的方向（1 越大越强、-1 越弱）；手填评估、参照集没有假设，给 None"""
+    primary = ev["primary"]
     h = ev["horizons"]
     main = h[primary]["ic"]
     mean_ic = main["mean"]
@@ -60,12 +62,12 @@ def judge(ev: dict[str, Any], t: Thresholds, primary: int = 48,
         _gate("G4", "衰减", bool(same_sign_h) and all(same_sign_h),
               {b: h[b]["ic"]["mean"] for b in h}, "三档同号",
               "三档 IC " + "、".join(f"{b}:{fmt(h[b]['ic']['mean'])}" for b in h)),
-        _gate("G5", "可交易", _finite(net) and net > 0 and perm >= t.perm_pct,
-              {"netReturn": net, "permPct": perm, "hitRate": leg.get("hitRate"), "periods": leg.get("periods"),
+        _gate("G5", "排列检验", perm >= t.perm_pct,
+              {"permPct": perm, "netReturn": net, "hitRate": leg.get("hitRate"), "periods": leg.get("periods"),
                "turnover": leg.get("turnover"), "breakEvenBps": even},
-              {"netReturn": "> 0", "permPct": t.perm_pct, "fdrQ": t.fdr_q},
-              f"主档多空腿分档扣成本后净收益 {fmt(net)}，截面排列分位 {fmt(perm)}，"
-              f"盈亏平衡单边成本 {fmt(even, 1)} bps"),
+              {"permPct": t.perm_pct, "fdrQ": t.fdr_q},
+              f"主档多空腿（按波动分仓）截面排列分位 {fmt(perm)}；"
+              f"扣成本和资金费后净收益 {fmt(net)}、盈亏平衡单边成本 {fmt(even, 1)} bps（只报不判）"),
         redundancy_gate(red, t),
         _gate("G7", "复杂度",
               cx["nodes"] <= t.max_nodes and cx["windows"] <= t.max_windows and cx["constants"] <= t.max_constants
@@ -73,7 +75,7 @@ def judge(ev: dict[str, Any], t: Thresholds, primary: int = 48,
               cx, {"nodes": t.max_nodes, "windows": t.max_windows, "constants": t.max_constants, "cross": t.max_cross},
               f"节点 {cx['nodes']}，窗口 {cx['windows']}，常量 {cx['constants']}，截面算子 {cx['cross']}"),
         origin_gate(ev["canonical"], known_canonicals),
-        gain_gate(ev["gain"], primary),
+        gain_gate(ev["gain"], t),
         direction_gate(direction, mean_ic),
     ]
     return gates
@@ -103,18 +105,16 @@ def origin_gate(canonical: str, known: Iterable[str]) -> dict[str, Any]:
     return _gate("G8", "结构原创", not seen, canonical, "不与已知重合", "规范形与已知因子重合" if seen else "规范形是新的")
 
 
-def gain_gate(gain: dict[str, Any] | None, primary: int) -> dict[str, Any]:
-    """G9：加进组合后，主档组合多空腿扣成本和资金费的年化净 Sharpe 要提升，主档 OOS IC 不能降。
-    同批阶段排在别的候选后面会重算一次写进备注。落过库的键是字符串，先归一"""
-    threshold = {"sharpeGain": "> 0", "icGain": ">= 0"}
+def gain_gate(gain: dict[str, Any] | None, t: Thresholds) -> dict[str, Any]:
+    """G9：加进交易方案（库里因子的组合 + 基差 carry，24h、按波动）的组合腿后，搜索段年化净 Sharpe 要升过阈值。
+    同批阶段排在别的候选后面会重算一次写进备注"""
+    threshold = {"sharpeGain": f"> {t.sharpe_gain_min:g}"}
     if gain is None:
-        return _gate("G9", "增量", True, None, threshold, "没算对组合的增量")
-    g, s = {int(k): v for k, v in gain["horizons"].items()}[primary], gain["sharpe"]
-    ok = _finite(s["gain"]) and s["gain"] > 0 and _finite(g["gain"]) and g["gain"] >= 0
-    return _gate("G9", "增量", ok, gain, threshold,
-                 f"加进组合后主档多空腿净 Sharpe {fmt(s['base'], 2)} → {fmt(s['with'], 2)}（增量 {fmt(s['gain'], 2)}），"
-                 f"OOS IC {fmt(g['base'])} → {fmt(g['with'])}（增量 {fmt(g['gain'])}），"
-                 f"{gain['months']} 个月里 {gain['monthsBetter']} 个月 IC 更好")
+        return _gate("G9", "增量", True, None, threshold, "没算对交易方案的增量")
+    s, net = gain["sharpe"], gain["netReturn"]
+    return _gate("G9", "增量", _finite(s["gain"]) and s["gain"] > t.sharpe_gain_min, gain, threshold,
+                 f"加进交易方案后搜索段净 Sharpe {fmt(s['base'], 2)} → {fmt(s['with'], 2)}（增量 {fmt(s['gain'], 2)}），"
+                 f"净收益 {fmt(net['base'])} → {fmt(net['with'])}")
 
 
 def apply_fdr(evals: list[dict[str, Any]], q: float, iterations: int, extra_tests: int = 0) -> None:

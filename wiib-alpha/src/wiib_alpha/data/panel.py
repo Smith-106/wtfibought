@@ -1,7 +1,7 @@
 """一币一张表：K 线 + 资金费率 + BTC 基准 + 强平桶 + 基差 + metrics + 标准答案 + 池子掩码。
 
 index 是 bar 收盘时刻（ms），全部特征列在那一刻都已知；标准答案 fwd_ret_* 看未来，DSL 不许引用。
-in_pool 是评估用的掩码，不是 DSL 列。raw/ 按数据集分目录放原始数据，都是 parquet。
+in_pool 是评估用的掩码，不是 DSL 列。raw/ 按数据集分目录放原始数据，都是 parquet；live/ 是交易员补的归档之后的尾巴，刷新不碰。
 装配好的面板一次刷新一版目录（panel-时间戳/，最早那版就叫 panel/），panel.current 记着当前是哪版：
 刷新写新的一版，全部写完才换过去；装载好的数据只读自己那版，刷新写到一半、失败了都碰不到它。
 """
@@ -25,6 +25,8 @@ BENCHMARK = "BTCUSDT"
 DAY_MS = 86_400_000
 # 标准答案三档：h 小时 → 根 15m bar
 HORIZON_BARS = {6: 24, 12: 48, 24: 96}
+# 晚几根成交：信号那根收盘后再过这么多根才建仓，挖掘、交易方案、交易员都按它
+DELAY = 1
 LIQ_COLUMNS = ["liq_long", "liq_short", "liq_count"]
 METRIC_FEATURES = METRICS_COLUMNS[1:]
 # 费率 8 小时结算一次，一个半周期没新结算就当断了
@@ -83,9 +85,10 @@ def assemble(klines: pd.DataFrame, funding: pd.DataFrame, btc_klines: pd.DataFra
 
 
 def add_targets(df: pd.DataFrame) -> None:
-    """标准答案三档：t 之后 h 根的对数涨跌幅，末尾不够 h 根或中间跨了缺口的是 NaN"""
+    """标准答案三档：t 之后第 DELAY 根收盘建仓、持有 h 根的对数涨跌幅，末尾不够或中间跨了缺口的是 NaN"""
     for bars in HORIZON_BARS.values():
-        df[f"fwd_ret_{bars}"] = np.log(df["close"].shift(-bars) / df["close"]).where(_spaced(df.index, bars))
+        df[f"fwd_ret_{bars}"] = (np.log(df["close"].shift(-(DELAY + bars)) / df["close"].shift(-DELAY))
+                                 .where(_spaced(df.index, DELAY + bars)))
 
 
 def _dead(trades: np.ndarray) -> np.ndarray:
@@ -126,15 +129,16 @@ def _exact(index: pd.Index, source: pd.DataFrame | None, time_col: str, value_co
 
 
 def _metrics_columns(df: pd.DataFrame, metrics: pd.DataFrame | None) -> None:
-    """收盘时刻之前最近一条；一小时没新的记 NaN"""
+    """每列取收盘时刻之前最近一条有效值，一小时没新的记 NaN；≤ 0 当没有：持仓量、多空比不会是 0，归档里成片的 0 是坏数"""
     if metrics is None or metrics.empty:
         for c in METRIC_FEATURES:
             df[c] = np.nan
         return
-    seen = _asof(df.index, metrics, "time", "time")
-    stale = df.index.to_numpy(dtype="int64") - seen > METRICS_STALE_MS
+    times = df.index.to_numpy(dtype="int64")
     for c in METRIC_FEATURES:
-        df[c] = np.where(stale, np.nan, _asof(df.index, metrics, "time", c))
+        valid = metrics[metrics[c] > 0]
+        seen = _asof(df.index, valid, "time", "time")
+        df[c] = np.where(times - seen > METRICS_STALE_MS, np.nan, _asof(df.index, valid, "time", c))
 
 
 def _liq_columns(df: pd.DataFrame, liq: pd.DataFrame | None, liq_start: int | None,
@@ -193,6 +197,7 @@ class PanelStore:
         """version 不给就是当前那版；raw/ 各版共用"""
         self.root = Path(data_dir)
         self.raw = self.root / "raw"
+        self.live = self.root / "live"
         current = self.root / CURRENT
         if version is None:
             version = current.read_text(encoding="utf-8").strip() if current.exists() else FIRST_VERSION
@@ -229,13 +234,24 @@ class PanelStore:
         self.save_raw(dataset, symbol, df)
         return df
 
-    def load_raw(self, dataset: str, symbol: str) -> pd.DataFrame | None:
-        """原始数据，按时间排好；没拉过是 None"""
+    def load_raw(self, dataset: str, symbol: str, since: int | None = None) -> pd.DataFrame | None:
+        """原始数据，按时间排好；since 给了只要这之后的（含）；没拉过是 None"""
         path = self.raw / dataset / f"{symbol}.parquet"
-        return pd.read_parquet(path) if path.exists() else None
+        if not path.exists():
+            return None
+        return pd.read_parquet(path, filters=None if since is None else [(RAW_DATASETS[dataset], ">=", since)])
 
     def save_raw(self, dataset: str, symbol: str, df: pd.DataFrame) -> None:
         _write(df, self.raw / dataset / f"{symbol}.parquet")
+
+    def load_live(self, dataset: str, symbol: str) -> pd.DataFrame | None:
+        """live 尾巴，时间列同 raw；没补过是 None"""
+        path = self.live / dataset / f"{symbol}.parquet"
+        return pd.read_parquet(path) if path.exists() else None
+
+    def save_live(self, dataset: str, symbol: str, df: pd.DataFrame) -> None:
+        (self.live / dataset).mkdir(parents=True, exist_ok=True)
+        _write(df, self.live / dataset / f"{symbol}.parquet")
 
     def save_panel(self, symbol: str, panel: pd.DataFrame) -> None:
         _write(panel, self.panels / f"{symbol}.parquet")

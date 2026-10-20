@@ -1,6 +1,7 @@
 package com.mawai.wiibsim.service.impl;
 
 import com.mawai.wiibcommon.cache.CacheService;
+import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibcommon.entity.CryptoOrder;
 import com.mawai.wiibcommon.entity.FuturesOrder;
 import com.mawai.wiibcommon.market.KlineBar;
@@ -85,7 +86,7 @@ class LimitOrderRecoverGapTest {
                 mock(FuturesLeverageBracketRegistry.class), cacheService, mock(FuturesPositionIndexService.class),
                 mock(FuturesRiskService.class), mock(CrossMarginService.class), mock(CrossLiquidationService.class),
                 mock(FairLockRegistry.class), mock(FundingRateService.class),
-                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))));
+                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))), new BinanceProperties());
     }
 
     private FuturesOrder futuresOrder(long createdAtMs) {

@@ -1,4 +1,4 @@
-"""FastAPI：鉴权、数据、campaign 与轮次、SSE、观察区、因子库、参照集、手填评估。
+"""FastAPI：鉴权、数据、campaign 与轮次、SSE、观察区、因子库、参照集、手填评估、因子交易员。
 
 图跑在服务端后台任务里，不绑定 HTTP 连接：关页面不会杀掉一轮。一轮跑完由驱动器查 campaign 的停止条件，没到就起下一轮。
 事件先落库再推给在线订阅者，刷新页从库里回放。
@@ -46,8 +46,14 @@ from .llm import LlmError, build_chat_model
 from .prompts import eval_brief, holdout_brief, horizons_brief
 from .reference import Grid
 from .store import Store, clean, now_ms
+from .trade import executor, live, scheduler, scheme
 
 logger = logging.getLogger(__name__)
+# 包里的 info 日志（刷新进度、fapi 已用权重、调仓）打到容器日志；根 logger 没有 handler
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger("wiib_alpha").addHandler(_handler)
+logging.getLogger("wiib_alpha").setLevel(logging.INFO)
 
 MAX_K = 10
 MAX_ROUNDS = 50
@@ -75,6 +81,9 @@ class Data:
     # 产品币面板的 describe，装载时算一次；数据状态接口每 3 秒被轮询，不能每次现算
     status: dict[str, dict[str, Any]]
     loaded_at: int
+    # 全量骨架上的 Std($ret, 672) 和 basis_7d：多空腿按波动分仓、交易方案的 carry 腿用
+    vol: np.ndarray
+    basis: np.ndarray
 
 
 def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -> Data | None:
@@ -98,17 +107,21 @@ def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -
         facts=_facts(described, cut_ms, params, len(pool.symbols), cfg.universe_size),
         status=described,
         loaded_at=now_ms(),
+        vol=pool.values(scheme.VOL).f,
+        basis=pool.values(scheme.CARRY).f,
     )
 
 
 @dataclass
 class Library:
-    """库里的因子在当前数据上的派生物：已知规范形、搜索段上的组合（G9 的基线，也是 G6 的库因子对比集）、组合报告"""
+    """库里的因子在当前数据上的派生物：已知规范形、G9 的基线（库里因子 + 基差 carry 的交易方案，组合也是 G6 的库因子对比集）、组合报告"""
     factors: list[dict[str, Any]]
     known: set[str]
-    combo: combo.Combo
+    base: scheme.Base
     # 组合在搜索段、holdout、最后一个网格时刻上的表现；库空时 None
     report: dict[str, Any] | None
+    # 全量骨架上的值，列与 factors 同序：交易员学组合权重、因子对比用
+    full: combo.Combo
 
 
 def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams) -> Library:
@@ -117,16 +130,19 @@ def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams)
     full = combo.Combo.empty(pool.rows, pool.symbols)
     for f in factors:
         full = full.plus(f["name"], pool.values(parse(f["expr"], FEATURE_COLUMNS)).f)
-    base = combo.Combo(pool.search, pool.symbols, full.names, full.values[pool.in_search])
+    search = combo.Combo(pool.search, pool.symbols, full.names, full.values[pool.in_search])
+    vol = data.vol[pool.in_search]
     report = None
     if factors:
         report = {
-            "brief": {"horizons": horizons_brief(combo.evaluate(base, params)),
+            "brief": {"primary": prompts.hours(params.primary),
+                      "horizons": horizons_brief(combo.evaluate(search, vol, params)),
                       "holdout": holdout_brief(combo.holdout(full, data.cut_ms, params))},
             **combo.latest(full, params),
         }
     known = data.reference_canonicals | {f["canonical"] for f in factors}
-    return Library(factors, known, base, report)
+    base = scheme.Base.of(search, data.basis[pool.in_search], vol, params)
+    return Library(factors, known, base, report, full)
 
 
 def _facts(described: dict[str, dict[str, Any]], cut_ms: int, params: EvalParams, pool_symbols: int,
@@ -176,9 +192,11 @@ class Runs:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task] = {}
         self.subscribers: dict[str, set[asyncio.Queue]] = {}
-        # grid 是启动时补算参照网格（刷新收尾那次算在 refresh 的进度里）；reeval 是观察区复评
+        # grid 是启动时补算参照网格（刷新收尾那次算在 refresh 的进度里）；reeval 是观察区复评；
+        # trader 是交易员调仓，compare 是交易员的因子对比
         self.jobs: dict[str, dict[str, Any]] = {"refresh": {"running": False}, "reference": {"running": False},
-                                                "grid": {"running": False}, "reeval": {"running": False}}
+                                                "grid": {"running": False}, "reeval": {"running": False},
+                                                "trader": {"running": False}, "compare": {"running": False}}
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_LIMIT)
@@ -288,8 +306,9 @@ async def _graph(app: FastAPI):
                for f in lib.factors]
     # 观察区里还没入库的也算已知：前几轮留下的，下一轮换个窗口再交一遍按 G8 拒，换个写法高度相关按 G6 拒
     observing = {c["canonical"] for c in await app.state.store.observing()}
-    ctx = Context(gen=gen, review=review, pool=data.pool, products=data.products, reference_grid=data.reference_grid,
-                  combo=lib.combo, observing=await _observing(app), known=lib.known | observing, library=library,
+    ctx = Context(gen=gen, review=review, pool=data.pool, vol=data.vol, products=data.products,
+                  reference_grid=data.reference_grid, base=lib.base, observing=await _observing(app),
+                  known=lib.known | observing, library=library,
                   facts=data.facts, store=app.state.store, params=app.state.params, thresholds=app.state.thresholds)
     return build_graph(ctx)
 
@@ -464,7 +483,8 @@ async def data_refresh(request: Request):
     if await app.state.store.active_campaign() is not None:
         raise HTTPException(409, "有 campaign 在跑，停了再刷新")
     # 后台任务可能还在读上一版面板，刷新开头要把上一版删掉
-    for name, label in (("grid", "参照网格还在补算"), ("reeval", "观察区还在复评"), ("reference", "参照集还在跑")):
+    for name, label in (("grid", "参照网格还在补算"), ("reeval", "观察区还在复评"), ("reference", "参照集还在跑"),
+                        ("trader", "交易员在调仓"), ("compare", "交易员的因子对比还在算")):
         if app.state.runs.jobs[name].get("running"):
             raise HTTPException(409, f"{label}，等它算完再刷新")
     # 上一轮留下的阶段、进度、币数全清掉，页面不会先看到旧值
@@ -598,7 +618,7 @@ def _reeval_view(r: dict[str, Any] | None) -> dict[str, Any] | None:
     return {"at": r["at"], "direction": r["direction"], "asked": r["asked"], "passed": r["passed"],
             "reason": r["reason"], "peers": r["peers"],
             "gates": [{"id": g["id"], "name": g["name"], "passed": g["passed"], "note": g["note"]} for g in r["gates"]],
-            "brief": eval_brief(r["eval"], r["gates"], _primary_of(r["eval"]))}
+            "brief": eval_brief(r["eval"], r["gates"])}
 
 
 @router.post("/observation/reeval")
@@ -648,9 +668,9 @@ async def _reeval(app: FastAPI, data: Data, rows: list[dict[str, Any]], job: dic
         asked = c["direction"] is None
         direction = await _declare(app, data, c, lang) if asked else c["direction"]
         expr = parse(c["expr"], FEATURE_COLUMNS)
-        ev = await asyncio.to_thread(evaluate, expr, data.pool, params, data.reference_grid, lib.combo,
+        ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, params, data.reference_grid, lib.base,
                                      data.products, True)
-        gates = judge(ev, thresholds, params.primary, lib.known, direction)
+        gates = judge(ev, thresholds, lib.known, direction)
         full[c["id"]] = (await asyncio.to_thread(data.pool.values, expr)).f
         # 发现它的那一轮切点比现在早：从那个切点到现在都是它没见过的，比当前 holdout 长
         seen = c["run_cut_ms"]
@@ -663,7 +683,7 @@ async def _reeval(app: FastAPI, data: Data, rows: list[dict[str, Any]], job: dic
                       "reason": "；".join(f"{g['id']} {g['note']}" for g in failed) or None})
         job["done"] += 1
     job["current"] = None
-    await asyncio.to_thread(screen_batch, [x for x in items if x["status"] == "passed"], full, data.pool, lib.combo,
+    await asyncio.to_thread(screen_batch, [x for x in items if x["status"] == "passed"], full, data.pool, lib.base,
                             params, thresholds)
     everyone = combo.Combo.empty(data.pool.search, data.pool.symbols)
     for x in items:
@@ -796,16 +816,11 @@ async def library_item(factor_id: str, request: Request):
 def _factor_view(f: dict[str, Any], full: bool) -> dict[str, Any]:
     out = {k: f.get(k) for k in ("id", "name", "hypothesis", "expr", "canonical", "columns", "approved_at",
                                   "run_id", "review", "recheck")}
-    out["brief"] = eval_brief(f["eval"], f["gates"], _primary_of(f["eval"]))
+    out["brief"] = eval_brief(f["eval"], f["gates"])
     if full:
         out["eval"] = f["eval"]
         out["gates"] = f["gates"]
     return out
-
-
-def _primary_of(ev: dict[str, Any]) -> int:
-    keys = [int(k) for k in ev["horizons"]]
-    return 48 if 48 in keys else keys[0]
 
 
 @router.post("/library/{factor_id}/recheck")
@@ -829,11 +844,11 @@ async def eval_expression(body: EvalBody, request: Request):
     data = _data(app)
     expr = parse(body.expr, FEATURE_COLUMNS)
     lib = await _library(app)
-    ev = await asyncio.to_thread(evaluate, expr, data.pool, app.state.params, data.reference_grid, lib.combo,
+    ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, app.state.params, data.reference_grid, lib.base,
                                  data.products, True, await _observing(app))
-    gates = judge(ev, app.state.thresholds, app.state.params.primary, lib.known)
+    gates = judge(ev, app.state.thresholds, lib.known)
     return _ok({"expr": str(expr), "canonical": expr.canonical(), "passed": passed(gates),
-                "brief": eval_brief(ev, gates, app.state.params.primary), "gates": gates, "eval": ev})
+                "brief": eval_brief(ev, gates), "gates": gates, "eval": ev})
 
 
 @public.get("/reference")
@@ -842,7 +857,7 @@ async def reference_list(request: Request):
     return _ok({
         "job": request.app.state.runs.jobs["reference"],
         "items": [{"name": r["name"], "expr": r["expr"], "passed": bool(r["passed"]), "updatedAt": r["updated_at"],
-                   "brief": eval_brief(r["eval"], r["gates"], _primary_of(r["eval"]))} for r in rows],
+                   "brief": eval_brief(r["eval"], r["gates"])} for r in rows],
     })
 
 
@@ -920,9 +935,9 @@ async def reference_run(body: ReferenceRun, request: Request):
     async def work() -> None:
         try:
             for name, expr in exprs.items():
-                ev = await asyncio.to_thread(evaluate, expr, data.pool, app.state.params, Grid.empty(), None,
+                ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, app.state.params, Grid.empty(), None,
                                              data.products)
-                gates = judge(ev, app.state.thresholds, app.state.params.primary, set())
+                gates = judge(ev, app.state.thresholds, set())
                 await app.state.store.set_reference_eval(name, str(expr), ev, gates, passed(gates))
                 job["done"] += 1
             job.update(finishedAt=now_ms())
@@ -938,6 +953,174 @@ async def reference_run(body: ReferenceRun, request: Request):
 
 def _window_of(name: str) -> str:
     return name[len(name.rstrip("0123456789")):]
+
+
+# ========== 交易员 ==========
+
+
+class TraderFactor(BaseModel):
+    selected: bool
+
+
+async def _sim(fn, *args):
+    """在线程里调 sim；不通、返回不对给 502"""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except executor.SimError as exc:
+        raise UpstreamError(str(exc)) from exc
+
+
+@router.get("/trader/account")
+async def trader_account(request: Request):
+    """账户概况：userId、净值、余额、可用；还没调过仓（还没建账户）的都是 null。job 是调仓任务的进度"""
+    app = request.app
+    user_id = await app.state.store.trade_user()
+    out = {"userId": user_id, "equity": None, "balance": None, "available": None,
+           "initialBalance": executor.INITIAL_BALANCE, "job": app.state.runs.jobs["trader"]}
+    if user_id is not None:
+        balance, positions = await _sim(scheduler.account, app.state.sim, user_id)
+        out.update(equity=executor.equity(balance, positions), balance=float(balance["balance"]),
+                   available=float(balance["available"]))
+    return _ok(out)
+
+
+@router.get("/trader/positions")
+async def trader_positions(request: Request):
+    """当前持仓：每币方向、数量、名义（数量 × 标记价）、浮盈；legs 是最近一次出了目标的调仓里两条腿各给这个币的目标名义"""
+    app = request.app
+    store: Store = app.state.store
+    user_id = await store.trade_user()
+    if user_id is None:
+        return _ok({"items": [], "day": None})
+    positions = await _sim(app.state.sim.positions, user_id)
+    last = next((r for r in await store.trade_runs(30) if r["targets"]), None)
+    legs = {}
+    if last:
+        legs = {c["symbol"]: {k: c[k] * last["equity_before"] for k in ("combo", "carry")} for c in last["targets"]["coins"]}
+    items = [{"symbol": p["symbol"], "side": p["side"], "quantity": p["quantity"], "notional": p["positionValue"],
+              "entryPrice": p["entryPrice"], "markPrice": p["markPrice"], "unrealizedPnl": p["unrealizedPnl"],
+              "legs": legs.get(p["symbol"])} for p in positions]
+    return _ok({"items": items, "day": last["day"] if last else None})
+
+
+@router.get("/trader/equity")
+async def trader_equity(request: Request):
+    """每小时一次的净值快照，旧的在前"""
+    rows = await request.app.state.store.trade_equity()
+    return _ok({"initialBalance": executor.INITIAL_BALANCE,
+                "items": [{"ts": r["ts"], "equity": r["equity"], "balance": r["balance"], "long": r["long_notional"],
+                           "short": r["short_notional"]} for r in rows]})
+
+
+@router.get("/trader/runs")
+async def trader_runs(request: Request):
+    """调仓记录，新的在前，只带概要；job 是调仓任务的进度"""
+    app = request.app
+    return _ok({"items": [_trade_brief(r) for r in await app.state.store.trade_runs()],
+                "job": app.state.runs.jobs["trader"]})
+
+
+@router.get("/trader/runs/{day}")
+async def trader_run(day: str, request: Request):
+    """一天的详情：用的因子与权重、每条腿的多空、每币目标与现有、下单与结果"""
+    r = await request.app.state.store.trade_run(day)
+    if r is None:
+        raise HTTPException(404, "这天没有调仓记录")
+    return _ok({**_trade_brief(r), "userId": r["user_id"], "factors": r["factors"] or [], "legs": r["legs"],
+                "targets": r["targets"], "orders": r["orders"] or []})
+
+
+def _trade_brief(r: dict[str, Any]) -> dict[str, Any]:
+    orders = r["orders"] or []
+    return {"day": r["day"], "status": r["status"], "signalMs": r["signal_ms"], "startedAt": r["started_at"],
+            "finishedAt": r["finished_at"], "equityBefore": r["equity_before"], "equityAfter": r["equity_after"],
+            "error": r["error"], "factorNames": [f["name"] for f in r["factors"] or []], "orderCount": len(orders),
+            "failedCount": sum(1 for o in orders if not o["ok"])}
+
+
+@router.get("/trader/factors")
+async def trader_factors(request: Request):
+    """库里的因子与交易员的勾选，调仓用"勾选且还在库里"的；missing 是 live 尾巴补不出来的列，有就不能勾。
+    compare 是因子对比任务的进度与结果"""
+    app = request.app
+    store: Store = app.state.store
+    chosen = await store.trade_factor_ids()
+    items = [{"id": f["id"], "name": f["name"], "expr": f["expr"], "selected": f["id"] in chosen,
+              "missing": sorted(set(f["columns"]) - live.COLUMNS)} for f in await store.factors()]
+    return _ok({"items": items, "compare": app.state.runs.jobs["compare"]})
+
+
+@router.put("/trader/factors/{factor_id}")
+async def trader_select(factor_id: str, body: TraderFactor, request: Request):
+    """勾上或取消，从下一次调仓起生效"""
+    store: Store = request.app.state.store
+    f = await store.factor(factor_id)
+    if f is None:
+        raise HTTPException(404, "没有这个因子")
+    missing = sorted(set(f["columns"]) - live.COLUMNS)
+    if body.selected and missing:
+        raise HTTPException(409, f"用到 live 尾巴补不出来的列：{'、'.join('$' + c for c in missing)}")
+    await store.set_trade_factor(factor_id, body.selected)
+    return _ok({"id": factor_id, "selected": body.selected})
+
+
+@router.post("/trader/compare/{factor_id}")
+async def trader_compare(factor_id: str, request: Request):
+    """按交易方案在搜索段比"当前勾选"和"加上 / 去掉这一条"；后者搜索段 Sharpe 更高才算两组的 holdout，免得按 holdout 挑"""
+    app = request.app
+    _data(app)
+    job = app.state.runs.jobs["compare"]
+    if job.get("running"):
+        raise HTTPException(409, "已经在对比了")
+    _not_refreshing(app)
+    factor = await app.state.store.factor(factor_id)
+    if factor is None:
+        raise HTTPException(404, "没有这个因子")
+    job.clear()
+    job.update(running=True, startedAt=now_ms(), factorId=factor_id, name=factor["name"], stage="library", error=None,
+               finishedAt=None, result=None)
+
+    async def work() -> None:
+        try:
+            job["result"] = clean(await _compare(app, factor_id, job))
+            job.update(finishedAt=now_ms())
+        except Exception as exc:
+            logger.exception("因子对比失败")
+            job.update(error=str(exc)[:300])
+        finally:
+            job.update(running=False, stage=None)
+
+    asyncio.create_task(work())
+    return _ok({"started": True})
+
+
+async def _compare(app: FastAPI, factor_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    params: EvalParams = app.state.params
+    lib = await _library(app)
+    job["stage"] = "inputs"
+    data = app.state.data
+    pool, basis, vol = data.pool, data.basis, data.vol
+    chosen = await app.state.store.trade_factor_ids()
+    index = {f["id"]: j for j, f in enumerate(lib.factors)}
+    base = [f["id"] for f in lib.factors if f["id"] in chosen]
+    adding = factor_id not in base
+    alt = [*base, factor_id] if adding else [i for i in base if i != factor_id]
+
+    async def run(ids: list[str], holdout: bool) -> dict[str, Any]:
+        values = [lib.full.values[:, index[i]] for i in ids]
+        return await asyncio.to_thread(scheme.backtest, pool, values, basis, vol, params, holdout)
+
+    job["stage"] = "search"
+    out: dict[str, Any] = {"action": "add" if adding else "remove",
+                           "base": {"factors": [lib.factors[index[i]]["name"] for i in base], "search": await run(base, False)},
+                           "alt": {"factors": [lib.factors[index[i]]["name"] for i in alt], "search": await run(alt, False)}}
+    sharpe = lambda side: float(np.nan_to_num(out[side]["search"]["sharpe"], nan=-np.inf))
+    out["better"] = sharpe("alt") > sharpe("base")
+    if out["better"]:
+        job["stage"] = "holdout"
+        out["base"]["holdout"] = await run(base, True)
+        out["alt"]["holdout"] = await run(alt, True)
+    return out
 
 
 # ========== 应用 ==========
@@ -957,7 +1140,14 @@ async def lifespan(app: FastAPI):
     app.state.observing_lock = asyncio.Lock()
     app.state.runs = Runs()
     app.state.authenticator = getattr(app.state, "authenticator", None) or Authenticator(cfg.sim_base_url)
+    # 交易员用的 fapi 实时接口和 sim 内部接口
+    app.state.fapi = getattr(app.state, "fapi", None) or Binance(
+        cfg.binance_vision_url, fapi_url=cfg.binance_fapi_url, list_url=cfg.binance_vision_list_url)
+    app.state.sim = getattr(app.state, "sim", None) or executor.Sim(cfg.sim_base_url, cfg.internal_api_token)
+    # 交易员的缓存：组合权重，数据重新装载就作废
+    app.state.trade_cache = {}
     store = app.state.store = await Store.open(cfg.db_path)
+    trader: asyncio.Task | None = None
     # 启动中途出错也要把 store 关掉，aiosqlite 的线程不是 daemon，不关进程退不出去
     try:
         # 上次进程死在半路的轮次没法续，明说；它所在的 campaign 也停在那
@@ -968,8 +1158,12 @@ async def lifespan(app: FastAPI):
         if active is not None:
             await store.update_campaign(active["id"], status="stopped", stop_reason="服务重启")
         await _load(app, cfg)
+        # 交易员的后台循环：整点记净值，每天 UTC 00:05 起补尾巴、00:15 下单
+        trader = asyncio.create_task(scheduler.loop(app, _library))
         yield
     finally:
+        if trader is not None:
+            trader.cancel()
         for task in list(app.state.runs.tasks.values()):
             task.cancel()
         await store.close()

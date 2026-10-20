@@ -30,18 +30,20 @@ def panel(seed: int, in_pool: np.ndarray) -> pd.DataFrame:
     return df
 
 
+UNIVERSE = pd.DataFrame([("2026-01", "A", 1, 9.0), ("2026-01", "B", 30, 8.0),
+                         ("2026-02", "A", 1, 9.0), ("2026-02", "B", 30, 8.0), ("2026-02", "C", 60, 7.0),
+                         ("2026-02", "GONE", 2, 9.0)], columns=["month", "symbol", "rank", "avg_quote_volume"])
+
+
 @pytest.fixture
 def pool(tmp_path):
-    """A 全程在池排第 1；B 全程在池排第 30；C 只有 2 月在池排第 60"""
+    """A 全程在池排第 1；B 全程在池排第 30；C 只有 2 月在池排第 60。按信号那根收盘成交，晚一根的见最后一条"""
     store = PanelStore(tmp_path)
     feb = np.array([pd.Timestamp(close_time(k), unit="ms").month == 2 for k in range(N)], dtype="float64")
     for i, (s, mask) in enumerate((("A", np.ones(N)), ("B", np.ones(N)), ("C", feb))):
         store.save_panel(s, panel(i, mask))
     store.save_raw("funding", "A", FUNDING_A)
-    universe = pd.DataFrame([("2026-01", "A", 1, 9.0), ("2026-01", "B", 30, 8.0),
-                             ("2026-02", "A", 1, 9.0), ("2026-02", "B", 30, 8.0), ("2026-02", "C", 60, 7.0),
-                             ("2026-02", "GONE", 2, 9.0)], columns=["month", "symbol", "rank", "avg_quote_volume"])
-    return Pool.load(store, universe, cut_ms=close_time(3 * 96 - 1))
+    return Pool.load(store, UNIVERSE, cut_ms=close_time(3 * 96 - 1), delay=0)
 
 
 def test_grid_month_and_tier_helpers():
@@ -110,7 +112,7 @@ def test_answers_settle_at_the_last_close_when_a_coin_stops(tmp_path):
     store.save_panel("D", d)
     universe = pd.DataFrame([(m, s, r, 9.0) for m in ("2026-01", "2026-02") for s, r in (("A", 1), ("D", 2))],
                             columns=["month", "symbol", "rank", "avg_quote_volume"])
-    rows = Pool.load(store, universe, cut_ms=close_time(N - 1)).rows
+    rows = Pool.load(store, universe, cut_ms=close_time(N - 1), delay=0).rows
     ys = ["y24", "y48", "y96"]
     got = rows[rows["sym"] == 1].set_index("t")[ys]
     log = lambda frame, k, at: np.log(frame["close"].loc[close_time(k)] / frame["close"].loc[close_time(at)])
@@ -121,6 +123,25 @@ def test_answers_settle_at_the_last_close_when_a_coin_stops(tmp_path):
     # 够到全部数据最后一根之后的还没发生，照样是 NaN
     last = rows[rows["sym"] == 0].set_index("t").loc[close_time(359)]
     assert last["y24"] == pytest.approx(log(a, N - 1, 359)) and last[["y48", "y96", "fund48"]].isna().all()
+
+
+def test_default_is_one_bar_late_moving_answers_and_funding(pool):
+    late = Pool.load(pool.store, UNIVERSE, pool.cut_ms)
+    # 同币同行，只换答案和资金费
+    assert late.symbols == pool.symbols and late.rows[["t", "sym", "tier"]].equals(pool.rows[["t", "sym", "tier"]])
+    close = pool.store.load("A")["close"].to_numpy()
+    first = late.rows[late.rows["sym"] == 0].iloc[0]
+    # 6 点前那根出信号、6:15 那根收盘建仓：持有 24 根到第 48 根
+    assert first["t"] == close_time(23) and first["y24"] == pytest.approx(np.log(close[48] / close[24]))
+    # 资金费从建仓那刻起：(6:15, 12:15] 碰上 8 点那次，晚一根不改变这里的结果
+    assert (first["fund24"], first["fund48"]) == pytest.approx((0.001, 0.003))
+    # 持有期往后挪了一根：不晚的时候刚好收在数据末尾的那一期，晚一根就够不到了
+    t = close_time(N - 25)
+    assert pool.rows.loc[(pool.rows["sym"] == 0) & (pool.rows["t"] == t), "y24"].notna().all()
+    assert late.rows.loc[(late.rows["sym"] == 0) & (late.rows["t"] == t), ["y24", "fund24"]].isna().all().all()
+    # 搜索段同样按晚一根的持有期判有没有够到切点之后
+    t = close_time(3 * 96 - 25)
+    assert pool.search.loc[pool.search["t"] == t, "y24"].notna().all() and late.search.loc[late.search["t"] == t, "y24"].isna().all()
 
 
 def test_values_are_aligned_with_rows(pool):

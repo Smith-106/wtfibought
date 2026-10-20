@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Database, Eye, FlaskConical, Languages, Library, LogOut, Pickaxe, RefreshCw, Ruler, ShieldCheck, SquareFunction,
-  TriangleAlert,
+  Bot, Database, Eye, FlaskConical, Languages, Library, Lock, LogOut, Pickaxe, RefreshCw, Ruler, ShieldCheck,
+  SquareFunction, TriangleAlert,
 } from 'lucide-react';
 import { alpha, ApiError, clearToken, getToken, type DataStatus } from './api';
 import i18n, { currentLang, setLang } from './i18n';
@@ -11,7 +11,7 @@ import { usePoll } from './poll';
 import { AuthErrorContext, useFail, useToast } from './toast';
 import { AdminLogin } from './components/AdminLogin';
 import { Connecting } from './components/Connecting';
-import { Badge, Button } from './components/ui';
+import { Badge, Button, Card } from './components/ui';
 import { DataPanel } from './pages/DataPanel';
 import { MinePanel } from './pages/MinePanel';
 import { ObservationPanel } from './pages/ObservationPanel';
@@ -19,6 +19,7 @@ import { GuestLibrary, GuestMine, GuestObservation } from './pages/Overview';
 import { LibraryPanel } from './pages/LibraryPanel';
 import { ReferencePanel } from './pages/ReferencePanel';
 import { EvalPanel } from './pages/EvalPanel';
+import { TraderPanel } from './pages/TraderPanel';
 
 const TABS = [
   { id: 'data', icon: Database },
@@ -27,6 +28,7 @@ const TABS = [
   { id: 'library', icon: Library },
   { id: 'reference', icon: Ruler },
   { id: 'eval', icon: SquareFunction },
+  { id: 'trader', icon: Bot },
 ] as const;
 
 type Tab = (typeof TABS)[number]['id'];
@@ -127,7 +129,7 @@ export function App() {
           </div>
         </header>
 
-        {/* 六块都常驻，切走只是藏起来：挖掘那块的事件流不断。
+        {/* 七块都常驻，切走只是藏起来：挖掘那块的事件流不断。
             挖掘、观察区、因子库两种模式是两套组件，切模式就整块换掉重拉，不留另一种模式的内容 */}
         <main className="mx-auto max-w-[1440px] px-4 py-5 md:px-6">
           <div hidden={tab !== 'data'}><DataPanel status={status} admin={admin} onReload={loadStatus} /></div>
@@ -142,6 +144,16 @@ export function App() {
           </div>
           <div hidden={tab !== 'reference'}><ReferencePanel active={tab === 'reference'} admin={admin} loaded={status.loaded} /></div>
           <div hidden={tab !== 'eval'}><EvalPanel key={String(admin)} admin={admin} loaded={status.loaded} /></div>
+          {/* 交易员整块只给管理员 */}
+          <div hidden={tab !== 'trader'}>
+            {admin ? <TraderPanel active={tab === 'trader'} loaded={status.loaded} /> : (
+              <Card>
+                <p className="flex items-center gap-1.5 text-[11.5px] text-muted">
+                  <Lock className="w-3 h-3 inline-flex" />{t('overview.adminOnly')}
+                </p>
+              </Card>
+            )}
+          </div>
         </main>
       </div>
     </AuthErrorContext.Provider>

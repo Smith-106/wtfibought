@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from wiib_alpha.config import ModelSpec
-from wiib_alpha.store import Store, clean, dumps
+from wiib_alpha.store import SCHEMA, Store, clean, dumps
 
 
 @pytest.fixture
@@ -115,6 +115,37 @@ async def test_open_adds_campaign_id_to_an_old_run_table(tmp_path):
     s = await Store.open(str(path))
     await s.create_run("new", 1, "", "zh", "c1")
     assert (await s.run("new"))["campaign_id"] == "c1" and await s.campaigns() == []
+    await s.close()
+
+
+async def test_trader_factor_selection_starts_as_the_whole_library_only_once(tmp_path):
+    """交易员的勾选表第一次建出来时默认勾上库里现有的全部；之后取消的不会再被勾回去"""
+    path = str(tmp_path / "old.sqlite")
+    conn = sqlite3.connect(path)
+    for statement in SCHEMA:
+        if "trade_factor" not in statement:
+            conn.execute(statement)
+    for fid in ("f1", "f2"):
+        conn.execute("INSERT INTO factor(id, name, hypothesis, expr, canonical, columns_json, eval_json, gates_json, "
+                     "approved_at, run_id) VALUES (?, 'x', 'h', '$ret', '$ret', '[]', '{}', '[]', 1, 'r')", (fid,))
+    conn.commit()
+    conn.close()
+    s = await Store.open(path)
+    assert await s.trade_factor_ids() == {"f1", "f2"}
+    await s.set_trade_factor("f2", False)
+    await s.set_trade_factor("f3", True)
+    await s.close()
+    s = await Store.open(path)
+    assert await s.trade_factor_ids() == {"f1", "f3"}
+    # 最近一次下过单的调仓才算上一期的多空集合；同一天再写就覆盖
+    run = {"signal_ms": 0, "started_at": 1, "finished_at": 2, "status": "done", "user_id": 42}
+    await s.add_trade_run({**run, "day": "2026-10-20", "legs": {"combo": {"long": ["A"]}}})
+    await s.add_trade_run({**run, "day": "2026-10-21", "status": "failed", "user_id": None, "error": "x"})
+    assert await s.last_trade_legs() == {"combo": {"long": ["A"]}} and await s.trade_user() == 42
+    await s.add_trade_run({**run, "day": "2026-10-21", "legs": {"combo": {"long": ["B"]}}, "orders": []})
+    assert await s.last_trade_legs() == {"combo": {"long": ["B"]}}
+    assert [(r["day"], r["status"], r["orders"]) for r in await s.trade_runs()] == [("2026-10-21", "done", []),
+                                                                                  ("2026-10-20", "done", None)]
     await s.close()
 
 

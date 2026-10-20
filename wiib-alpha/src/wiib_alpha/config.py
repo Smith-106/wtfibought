@@ -56,6 +56,8 @@ class Config:
     pg_db: str
     pg_user: str
     pg_password: str = field(repr=False)
+    # 调 sim /internal/** 的 X-Internal-Token，三个 Java 进程同一份
+    internal_api_token: str = field(repr=False)
 
     @property
     def pg_conninfo(self) -> dict[str, object]:
@@ -107,4 +109,5 @@ def config() -> Config:
         pg_db=os.getenv("PG_DB", "wiib"),
         pg_user=os.getenv("PG_USER", ""),
         pg_password=os.getenv("PG_PASSWORD", ""),
+        internal_api_token=os.getenv("INTERNAL_API_TOKEN", ""),
     )

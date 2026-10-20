@@ -1,6 +1,7 @@
 package com.mawai.wiibsim.service.impl;
 
 import com.mawai.wiibcommon.cache.CacheService;
+import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibcommon.entity.FuturesOrder;
 import com.mawai.wiibcommon.entity.FuturesPosition;
 import com.mawai.wiibcommon.entity.User;
@@ -93,7 +94,7 @@ class FuturesSettlementLockWaitTest {
                 new TradingConfig(), bracketRegistry, cacheService, positionIndexService,
                 riskService, crossMarginService,
                 crossLiquidationService, lockRegistry, mock(FundingRateService.class),
-                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))));
+                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))), new BinanceProperties());
     }
 
     private static FuturesPosition isolatedLong(long id) {

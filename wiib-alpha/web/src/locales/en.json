@@ -8,7 +8,8 @@
     "observe": "Observation",
     "library": "Library",
     "reference": "Reference",
-    "eval": "Evaluate"
+    "eval": "Evaluate",
+    "trader": "Trader"
   },
   "errors": {
     "http": "Request failed (HTTP {{status}})"
@@ -278,14 +279,14 @@
     "turnover": "Turnover",
     "funding": "Funding / period",
     "breakEven": "Break-even cost",
-    "gain": "Combined IC gain",
+    "gain": "Library combo IC gain (old)",
     "redundancy": "Redundancy",
     "redundancyValue": "cross-sectional |ρ| with {{name}} = {{r}}",
     "noRedundancy": "No reference factors",
     "gridNotReady": "Reference grid not built yet",
     "neutral": "Net of known effects",
     "neutralValue": "after regressing out {{n}} known effects: primary IC {{ic}}, {{kept}} of the original, t {{t}} (a label, not a gate)",
-    "gainSharpe": "Combo net Sharpe",
+    "gainSharpe": "G9 net Sharpe (before → after)",
     "se": "Std. error",
     "complexity": "Complexity",
     "complexityValue": "{{nodes}} nodes, {{windows}} windows, {{constants}} constants, {{cross}} cross-sectional",
@@ -376,5 +377,145 @@
     "failed": "did not pass",
     "canonical": "Canonical form",
     "needAdmin": "Admin sign-in required"
+  },
+  "trader": {
+    "title": "Trader account",
+    "hint": "Paper account quant-factor: every day it signals on the 15m bar closing at 00:00 UTC and rebalances the whole basket at 00:15 — half the capital on the combo of the selected factors, half on basis carry, both sides sized by inverse volatility, 4x cross market orders, no stops. The paper venue is optimistic: 0.04% fees, no slippage, low-volume coins fill at the mark price that updates once a minute; the backtest fills one bar later at 5 / 8 / 12 bps per side.",
+    "noAccount": "No rebalance yet: the account is created on the first one.",
+    "equity": "Equity",
+    "balance": "Balance",
+    "available": "Available",
+    "userId": "userId",
+    "totalReturn": "Total return",
+    "totalReturnHint": "vs the initial {{initial}}",
+    "drawdown": "Max drawdown",
+    "drawdownHint": "from hourly snapshots",
+    "schedule": "Fetches data from 00:05 UTC and trades at 00:15; retried until 01:00, after that the day is skipped",
+    "running": "Rebalancing: {{stage}}",
+    "stage": {
+      "prepare": "preparing",
+      "account": "reading the account",
+      "live": "fetching the live tail",
+      "targets": "computing targets",
+      "waiting": "waiting for 00:15",
+      "orders": "placing orders"
+    },
+    "lastError": "Last rebalance failed: {{msg}}",
+    "curve": "Equity curve",
+    "curveHint": "One snapshot per hour; the dashed line is the initial capital.",
+    "curveEmpty": "Fewer than two snapshots so far.",
+    "initial": "initial {{v}}",
+    "positions": "Open positions",
+    "positionsHint": "Leg split: target notional each leg gave this coin in the {{day}} rebalance (signed).",
+    "positionsEmpty": "No open positions.",
+    "col": {
+      "symbol": "Symbol",
+      "side": "Side",
+      "quantity": "Quantity",
+      "notional": "Notional",
+      "entry": "Entry",
+      "mark": "Mark",
+      "pnl": "Unrealized"
+    },
+    "side": {
+      "LONG": "Long",
+      "SHORT": "Short"
+    },
+    "leg": {
+      "combo": "Combo leg",
+      "carry": "Carry leg"
+    },
+    "runs": "Rebalances",
+    "runsHint": "Click a row for that day: targets vs fills, and why anything failed.",
+    "runsEmpty": "No rebalances yet.",
+    "runCol": {
+      "day": "Day (UTC)",
+      "status": "Status",
+      "factors": "Factors",
+      "equity": "Equity before → after",
+      "orders": "Orders"
+    },
+    "status": {
+      "done": "done",
+      "partial": "partial",
+      "failed": "failed"
+    },
+    "orderCount": "{{n}} orders",
+    "orderFailed": "{{n}} failed",
+    "signalAt": "Signal: bar closing at {{time}} UTC",
+    "ranAt": "started {{start}}, finished {{end}}",
+    "usedFactors": "Factors and combo weights used",
+    "noFactors": "No factor selected; the combo leg stays flat",
+    "long": "Long",
+    "short": "Short",
+    "targets": "Targets vs holdings",
+    "coinCol": {
+      "weight": "Net weight",
+      "notional": "Target notional",
+      "current": "Held qty",
+      "target": "Target qty",
+      "price": "Mark",
+      "ref": "00:15 close",
+      "note": "Note"
+    },
+    "orders": "Orders and results",
+    "ordersEmpty": "Nothing to trade this time.",
+    "orderCol": {
+      "action": "Action",
+      "quantity": "Quantity",
+      "fill": "Fill price",
+      "result": "Result"
+    },
+    "action": {
+      "open": "open / add",
+      "close": "close / reduce"
+    },
+    "closeAll": "all",
+    "filled": "filled",
+    "notTrading": "Not trading, no target: ",
+    "signals": "Per-leg signals (for checking)",
+    "signalCol": {
+      "rank": "Rank",
+      "signal": "Signal",
+      "vol": "Vol",
+      "weight": "Leg weight"
+    },
+    "factors": "Trading factors",
+    "factorsHint": "Only selected factors feed the combo leg, from the next rebalance on; being in the library does not mean being traded. Compare runs the trading scheme on the search span for the current selection and for it with this factor added or removed; holdout is shown only when the search span improves, so nobody picks by holdout. Selecting is your call.",
+    "factorsEmpty": "The library is empty.",
+    "selected": "selected",
+    "unselected": "not selected",
+    "missing": "The live tail cannot provide {{cols}}; cannot be selected",
+    "compare": "Compare",
+    "comparing": "Comparing {{name}}: {{stage}}",
+    "compareStage": {
+      "library": "evaluating library factors",
+      "inputs": "preparing the skeleton and carry inputs",
+      "search": "search-span backtest",
+      "holdout": "holdout backtest"
+    },
+    "compareTitle": "Compare: {{action}} {{name}}",
+    "compareAction": {
+      "add": "add",
+      "remove": "remove"
+    },
+    "compareAt": "finished {{time}}",
+    "compareBase": "Current selection",
+    "compareAlt": "After {{action}}",
+    "compareSets": "Current selection: {{base}}; after {{action}}: {{alt}}",
+    "search": "search",
+    "holdout": "holdout",
+    "betterYes": "Search-span Sharpe is higher, so holdout is shown too (look once).",
+    "betterNo": "Search span did not improve; no holdout.",
+    "compareError": "Compare failed: {{msg}}",
+    "noneFactors": "(none)",
+    "metric": {
+      "netReturn": "Net return",
+      "sharpe": "Sharpe",
+      "maxDrawdown": "Max drawdown",
+      "turnover": "Turnover / period",
+      "carryFundingBps": "Carry funding / period",
+      "periods": "Periods"
+    }
   }
 }

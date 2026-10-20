@@ -2,7 +2,7 @@
 
 每条因子在每个时刻跨币先转秩、再对秩做 z 分数，按扩张训练窗里的月度截面 IC 均值加权求和，再除以权重绝对值之和；
 切窗与单因子同一套（h 档网格点），信号只在 test 块有值，IC 和多空腿也与单因子一样算。
-候选的增量 = 把它加进组合后，主档组合多空腿扣成本和资金费的年化净 Sharpe、三档样本外 IC 的变化；G9 看主档的这两个。
+候选对交易方案的增量（G9）在 trade/scheme.py。
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import pandas as pd
 from ..data.panel import HORIZON_BARS
 from ..data.pool import on_grid
 from ..store import now_ms
-from . import cs_ic, cs_leg
-from .horizon import grid_windows, horizon, oos
+from . import cs_ic
+from .horizon import grid_windows, horizon
 from .params import EvalParams
 from .recheck import after
 from .walkforward import Window
@@ -95,44 +95,34 @@ def signal(combo: Combo, z: np.ndarray, bars: int, params: EvalParams) -> np.nda
     return _weighted(combo, z, bars, params, lambda p: grid_windows(p.total, bars, params))
 
 
-def ics(combo: Combo, params: EvalParams) -> dict[int, dict[str, Any]]:
-    """三档样本外 IC，口径与单因子一样；主档再带组合多空腿扣成本和资金费后的年化净 Sharpe（sharpe）。库空时全是 NaN"""
-    z = zscores(combo) if combo.names else None
-    out = {}
-    for bars in HORIZON_BARS.values():
-        s = signal(combo, z, bars, params) if combo.names else np.full(len(combo.rows), np.nan)
-        p, ic, wins, lo, hi = oos(combo.rows, s, bars, params)
-        out[bars] = cs_ic.summary(p, ic, lo, hi, params)
-        if bars == params.primary:
-            out[bars]["sharpe"] = cs_leg.simulate(p, ic, wins, bars, params, 0).get("sharpe", np.nan)
-    return out
+def holdout_signal(combo: Combo, z: np.ndarray, bars: int, cut_ms: int, params: EvalParams) -> np.ndarray:
+    """combo 是全量骨架：搜索段整段当训练窗定权重，只在 cut 之后出信号"""
+    def block(p: cs_ic.Points) -> list[Window]:
+        start = int(np.searchsorted(p.times, cut_ms, side="right"))
+        # 训练窗最后一个点的答案要在 cut 之前收完：隔 purge 一个点再加 embargo
+        return [Window(start - 1 - params.grid(bars)[1], start, p.total)]
+    return _weighted(combo, z, bars, params, block)
 
 
-def evaluate(combo: Combo, params: EvalParams) -> dict[int, dict[str, Any]]:
-    """三档样本外 IC 加多空腿，与单因子走同一个 horizon"""
+def learned(combo: Combo, bars: int, params: EvalParams) -> np.ndarray:
+    """全部数据当训练窗学到的每条权重（月度截面 IC 均值）；combo 至少一条"""
+    ics = []
+    for j in range(len(combo.names)):
+        p = cs_ic.points(combo.rows, combo.values[:, j], bars, params.min_names)
+        ics.append(cs_ic.series(p))
+    return _weights(ics, p.months, p.total, params.min_points)
+
+
+def score(combo: Combo, w: np.ndarray) -> np.ndarray:
+    """每行按一组权重合成的组合信号：截面秩 z 分数的加权和"""
+    return _combine(zscores(combo), w)
+
+
+def evaluate(combo: Combo, vol: np.ndarray, params: EvalParams) -> dict[int, dict[str, Any]]:
+    """三档样本外 IC 加多空腿，与单因子走同一个 horizon；vol 与 combo.rows 对齐"""
     z = zscores(combo)
-    return {bars: horizon(combo.rows, signal(combo, z, bars, params), bars, params, params.iterations)
+    return {bars: horizon(combo.rows, signal(combo, z, bars, params), vol, bars, params, params.iterations)
             for bars in HORIZON_BARS.values()}
-
-
-def gain(combo: Combo, name: str, f: np.ndarray, params: EvalParams) -> dict[str, Any]:
-    """把候选加进组合后：三档样本外 IC 的变化、主档组合多空腿年化净 Sharpe 的变化，主档再数几个月 IC 比原来好；
-    库空时原来都当 0"""
-    base = ics(combo, params) if combo.names else None
-    plus = ics(combo.plus(name, f), params)
-    horizons = {}
-    for bars, after_ in plus.items():
-        before = base[bars]["mean"] if base else 0.0
-        horizons[bars] = {"base": before, "with": after_["mean"], "gain": after_["mean"] - before}
-    main = params.primary
-    # 组合一期仓位都没有时收益全是 0，Sharpe 算不出来，按 0
-    sharpe_before = float(np.nan_to_num(base[main]["sharpe"])) if base else 0.0
-    sharpe_with = float(np.nan_to_num(plus[main]["sharpe"]))
-    months = plus[main]["monthly"]
-    before_months = base[main]["monthly"] if base else {}
-    return {"horizons": horizons, "months": len(months),
-            "monthsBetter": sum(1 for m, v in months.items() if v > before_months.get(m, 0.0)),
-            "sharpe": {"base": sharpe_before, "with": sharpe_with, "gain": sharpe_with - sharpe_before}}
 
 
 def holdout(combo: Combo, cut_ms: int, params: EvalParams) -> dict[str, Any]:
@@ -140,24 +130,16 @@ def holdout(combo: Combo, cut_ms: int, params: EvalParams) -> dict[str, Any]:
     z = zscores(combo)
     out: dict[str, Any] = {"since": cut_ms, "at": now_ms(), "horizons": {}}
     for bars in HORIZON_BARS.values():
-        def block(p: cs_ic.Points) -> list[Window]:
-            start = int(np.searchsorted(p.times, cut_ms, side="right"))
-            # 训练窗最后一个点的答案要在 cut 之前收完：隔 purge 一个点再加 embargo
-            return [Window(start - 1 - params.grid(bars)[1], start, p.total)]
-        out["horizons"][bars] = after(combo.rows, _weighted(combo, z, bars, params, block), bars, cut_ms, params)
+        out["horizons"][bars] = after(combo.rows, holdout_signal(combo, z, bars, cut_ms, params), bars, cut_ms, params)
     return out
 
 
 def latest(combo: Combo, params: EvalParams) -> dict[str, Any]:
     """combo 是全量骨架：全部数据当训练窗定主档权重，出最后一个网格时刻每个在池币的组合信号"""
-    ics_ = []
-    for j in range(len(combo.names)):
-        p = cs_ic.points(combo.rows, combo.values[:, j], params.primary, params.min_names)
-        ics_.append(cs_ic.series(p))
-    w = _weights(ics_, p.months, p.total, params.min_points)
+    w = learned(combo, params.primary, params)
     t = combo.rows["t"].to_numpy()
     last = t == t.max()
-    values = _combine(zscores(combo)[last], w)
+    values = score(combo, w)[last]
     syms = combo.rows["sym"].to_numpy()[last]
     return {"asOf": int(t.max()),
             "weights": [{"name": n, "weight": float(v)} for n, v in zip(combo.names, w)],

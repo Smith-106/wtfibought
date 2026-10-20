@@ -17,10 +17,15 @@ from wiib_alpha.data.refresh import RefreshResult
 from wiib_alpha.dsl import parse
 from wiib_alpha.eval.params import EvalParams, Thresholds
 from wiib_alpha.store import SCHEMA
+from wiib_alpha.trade import scheduler
 
 ADMIN = {"satoken": "admin"}
 # fixture 会把 main.build_models 换成假的，想测真的从这里拿
 REAL_BUILD_MODELS = m.build_models
+
+
+async def idle(app, library) -> None:
+    return None
 
 
 def sim(request: httpx.Request) -> httpx.Response:
@@ -52,6 +57,8 @@ def prepared(tmp_path, monkeypatch, planted_panels):
     monkeypatch.setattr(reference, "parsed", lambda: {k: parse(v, ["trades"]) for k, v in REFERENCES.items()})
     monkeypatch.setattr(m, "build_models", lambda cfg: (model(gen_reply), model(review_reply)))
     monkeypatch.setattr(m, "_refresh_panels", lambda cfg, job: RefreshResult(universe, {}))
+    # 交易员的后台循环不起：用到它的测试直接调 scheduler 的函数
+    monkeypatch.setattr(scheduler, "loop", idle)
     app = m.app
     app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
     app.state.thresholds = Thresholds(min_samples=30)
@@ -399,12 +406,12 @@ async def test_eval_endpoint(client):
     assert out["passed"] is True and len(out["gates"]) == 11 and out["canonical"] == "$volume"
     # 测试的参照网格里没有老效应：回归掉 0 条，去老效应后剩的就是它自己的 IC
     assert out["brief"]["neutral"]["against"] == 0 and out["brief"]["neutral"]["retained"] == pytest.approx(1.0)
-    # 库是空的：组合净 Sharpe 从 0 往上算
-    assert out["brief"]["gainSharpe"]["base"] == 0 and out["brief"]["gainSharpe"]["gain"] > 0
+    # 库是空的：G9 的基线是只有基差 carry 的交易方案，加进埋了信号的因子净 Sharpe 升；主档 24h
+    assert out["brief"]["primary"] == "24h" and out["brief"]["gainSharpe"]["gain"] > 0 and "gain" not in out["brief"]
     # 手填的没有假设，方向不判
     assert out["gates"][10]["id"] == "G10" and out["gates"][10]["passed"] and out["gates"][10]["note"] == "没有声明方向，不判"
     assert out["brief"]["redundancy"]["with"] == "noise4" and out["brief"]["redundancy"]["maxAbs"] < 0.2
-    assert out["gates"][9]["id"] == "G9" and out["brief"]["gain"]["12h"] > 0.3
+    assert out["gates"][9]["id"] == "G9" and "加进交易方案后搜索段净 Sharpe" in out["gates"][9]["note"]
     # 手填的也带 holdout：门看搜索段，holdout 另算
     assert out["brief"]["holdout"]["horizons"]["12h"]["meanIc"] > 0 and out["eval"]["holdout"]["since"] == out["brief"]["holdout"]["since"]
     resp = await client.post("/api/alpha/eval", json={"expr": "Mean(close, 5)"}, headers=ADMIN)
