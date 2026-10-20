@@ -1,69 +1,231 @@
 package com.mawai.wiibsim.service;
 
+import com.mawai.wiibcommon.cache.CacheService;
+import com.mawai.wiibcommon.entity.FuturesPosition;
+import com.mawai.wiibcommon.market.BinanceRestClient;
+import com.mawai.wiibsim.mapper.FuturesPositionMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
 
+/**
+ * 资金费按各币自己的结算时刻收：feed 写的下次结算时刻 T 往后挪了，就是记下的那一期结算了，
+ * 费率用 Binance 结算记录里对上那个时刻的那条，只收结算时刻之前开的仓；每个时刻只收一次（Redis 记着看到的 T），
+ * 记录没出来下一分钟再试，sim 停机跨过一次结算起来后补上。
+ * <p>
+ * 时间轴从 T0 = 2026-10-20 00:00 UTC 起；结算记录的 fundingTime 比整点多 3ms，费率 = 第几小时 × 0.00001。
+ */
 class FundingRateServiceTest {
 
-    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    private static final long H = 3_600_000L;
+    private static final long T0 = Instant.parse("2026-10-20T00:00:00Z").toEpochMilli();
 
-    /** premiumIndex 全量返回几百个合约，只留我们订阅的那几个 */
-    @Test
-    void parseFundingRates_只留我们的合约标的() {
-        String json = """
-                [
-                  {"symbol":"BTCUSDT","markPrice":"63000.0","lastFundingRate":"0.00010000"},
-                  {"symbol":"ETHUSDT","markPrice":"2400.0","lastFundingRate":"-0.00023000"},
-                  {"symbol":"PEPEUSDT","markPrice":"0.00001","lastFundingRate":"0.00050000"},
-                  {"symbol":"XAUUSDT","markPrice":"3486.0","lastFundingRate":"0.00002500"}
-                ]
-                """;
-        Map<String, BigDecimal> rates = FundingRateService.parseFundingRates(
-                json, List.of("BTCUSDT", "ETHUSDT", "XAUUSDT", "SPCXUSDT"));
+    private final BinanceRestClient client = mock(BinanceRestClient.class);
+    private final CacheService cache = mock(CacheService.class);
+    private final FuturesPositionMapper positionMapper = mock(FuturesPositionMapper.class);
+    private final FuturesSettlementService settlement = mock(FuturesSettlementService.class);
+    /** 假 Redis（sim 自己记的键），重启前后共用 */
+    private final Map<String, String> redis = new HashMap<>();
+    /** feed 写的各币下次结算时刻 */
+    private final Map<String, Long> next = new HashMap<>();
+    /** Binance 已经出了的结算记录：symbol → 结算时刻 */
+    private final Map<String, List<Long>> published = new HashMap<>();
+    private final List<FuturesPosition> positions = new ArrayList<>();
+    /** 收过的：symbol@第几小时:费率 */
+    private final List<String> charges = new ArrayList<>();
+    private boolean historyDown;
+    private FundingRateService service;
 
-        assertThat(rates).containsOnlyKeys("BTCUSDT", "ETHUSDT", "XAUUSDT");
-        assertThat(rates.get("BTCUSDT")).isEqualByComparingTo("0.0001");
-        assertThat(rates.get("ETHUSDT")).isEqualByComparingTo("-0.00023");
-        // 返回里没有的标的不会凭空出现
-        assertThat(rates).doesNotContainKey("SPCXUSDT");
+    @BeforeEach
+    void setUp() {
+        doAnswer(inv -> redis.put(inv.getArgument(0), inv.getArgument(1)))
+                .when(cache).set(anyString(), anyString(), any(Duration.class));
+        when(cache.get(anyString())).thenAnswer(inv -> redis.get(inv.<String>getArgument(0)));
+        when(cache.getFundingRate(anyString())).thenAnswer(inv -> {
+            Long t = next.get(inv.<String>getArgument(0));
+            return t == null ? null : new CacheService.FundingRate(new BigDecimal("0.0001"), t, t - H);
+        });
+        when(client.getFundingRateHistory(anyString(), anyInt()))
+                .thenAnswer(inv -> historyDown ? null : history(inv.getArgument(0)));
+        when(positionMapper.selectList(any())).thenAnswer(inv -> positions);
+        doAnswer(inv -> charges.add(charge(inv.getArgument(0), inv.<Long>getArgument(1), inv.getArgument(2))))
+                .when(settlement).chargeFundingFee(anyString(), anyLong(), any(), anyList());
+        service = newService();
     }
 
     @Test
-    void parseFundingRates_空响应与坏响应都给空表() {
-        List<String> symbols = List.of("BTCUSDT");
-        assertThat(FundingRateService.parseFundingRates(null, symbols)).isEmpty();
-        assertThat(FundingRateService.parseFundingRates("", symbols)).isEmpty();
-        assertThat(FundingRateService.parseFundingRates("{\"code\":-1121}", symbols)).isEmpty();
-        // lastFundingRate 缺字段的条目跳过，不写 null 进表
-        assertThat(FundingRateService.parseFundingRates("[{\"symbol\":\"BTCUSDT\"}]", symbols)).isEmpty();
+    void 一小时四小时八小时的币各按自己的结算时刻收() {
+        positions.addAll(List.of(position(1, "AUSDT", T0 - 60_000), position(2, "BUSDT", T0 - 60_000),
+                position(3, "CUSDT", T0 - 60_000)));
+        // 每小时一轮：feed 的 T 按各币的间隔往后挪，Binance 出这一期的记录
+        for (int k = 0; k <= 8; k++) {
+            next.put("AUSDT", T0 + (k + 1) * H);
+            next.put("BUSDT", T0 + (k / 4 + 1) * 4 * H);
+            next.put("CUSDT", T0 + (k / 8 + 1) * 8 * H);
+            publish("AUSDT", k);
+            if (k % 4 == 0) publish("BUSDT", k);
+            if (k % 8 == 0) publish("CUSDT", k);
+            service.settleDue();
+        }
+
+        assertThat(charges).containsExactlyInAnyOrder(
+                expected("AUSDT", 1), expected("AUSDT", 2), expected("AUSDT", 3), expected("AUSDT", 4),
+                expected("AUSDT", 5), expected("AUSDT", 6), expected("AUSDT", 7), expected("AUSDT", 8),
+                expected("BUSDT", 4), expected("BUSDT", 8),
+                expected("CUSDT", 8));
     }
 
     @Test
-    void nextFundingTime_落在下一个0_8_16点() {
-        assertThat(next("2026-09-06T09:13:20")).isEqualTo(at("2026-09-06T16:00:00"));
-        assertThat(next("2026-09-06T00:00:01")).isEqualTo(at("2026-09-06T08:00:00"));
-        assertThat(next("2026-09-06T16:30:00")).isEqualTo(at("2026-09-07T00:00:00"));
-        assertThat(next("2026-09-06T23:59:59")).isEqualTo(at("2026-09-07T00:00:00"));
+    void 同一结算时刻只收一次_重启后也不重收() {
+        positions.add(position(1, "AUSDT", T0));
+        publish("AUSDT", 1);
+        next.put("AUSDT", T0 + H);
+        service.settleDue();
+        // feed 的 T 还没挪：不收
+        service.settleDue();
+        assertThat(charges).isEmpty();
+
+        next.put("AUSDT", T0 + 2 * H);
+        service.settleDue();
+        service = newService();
+        service.settleDue();
+
+        assertThat(charges).containsExactly(expected("AUSDT", 1));
+        verify(client, times(1)).getFundingRateHistory(eq("AUSDT"), anyInt());
     }
 
-    /** 正卡在结算点上：这一轮刚扣完，下一个是 8 小时后 */
     @Test
-    void nextFundingTime_整点当刻算下一个() {
-        assertThat(next("2026-09-06T08:00:00")).isEqualTo(at("2026-09-06T16:00:00"));
+    void 结算时刻之后开的仓不收_没有这样的仓位不取记录() {
+        long t = T0 + H;
+        FuturesPosition before = position(1, "AUSDT", t - 60_000);
+        positions.addAll(List.of(before, position(2, "AUSDT", t + 10_000), position(3, "BUSDT", t + 10_000)));
+        publish("AUSDT", 1);
+        publish("BUSDT", 1);
+        next.put("AUSDT", t);
+        next.put("BUSDT", t);
+        service.settleDue();
+        next.put("AUSDT", t + H);
+        next.put("BUSDT", t + H);
+        service.settleDue();
+
+        verify(settlement).chargeFundingFee(eq("AUSDT"), eq(t), any(), eq(List.of(before)));
+        verify(settlement, never()).chargeFundingFee(eq("BUSDT"), anyLong(), any(), anyList());
+        verify(client, never()).getFundingRateHistory(eq("BUSDT"), anyInt());
     }
 
-    private static long next(String localDateTime) {
-        return FundingRateService.nextFundingTime(at(localDateTime), ZONE);
+    @Test
+    void 结算记录没出来先不收_下一分钟再收() {
+        long t = T0 + H;
+        positions.add(position(1, "AUSDT", T0));
+        publish("AUSDT", 0);
+        next.put("AUSDT", t);
+        service.settleDue();
+        next.put("AUSDT", t + H);
+
+        historyDown = true;
+        service.settleDue();
+        historyDown = false;
+        // 只有上一期 0h 的记录，不能拿它顶
+        service.settleDue();
+        assertThat(charges).isEmpty();
+
+        publish("AUSDT", 1);
+        service.settleDue();
+        assertThat(charges).containsExactly(expected("AUSDT", 1));
     }
 
-    private static long at(String localDateTime) {
-        return ZonedDateTime.parse(localDateTime + "+08:00[Asia/Shanghai]").toInstant().toEpochMilli();
+    @Test
+    void 停机跨过结算_起来后补上最早那一期() {
+        positions.add(position(1, "AUSDT", T0));
+        next.put("AUSDT", T0 + H);
+        service.settleDue();
+        // 停机到 02:30：1h、2h 两期都过了，feed 的 T 已经是 3h。补 1h 那期，2h 那期不补
+        publish("AUSDT", 1);
+        publish("AUSDT", 2);
+        next.put("AUSDT", T0 + 3 * H);
+        service = newService();
+        service.settleDue();
+
+        assertThat(charges).containsExactly(expected("AUSDT", 1));
+        assertThat(redis).containsEntry("futures:funding:next:AUSDT", String.valueOf(T0 + 3 * H));
+    }
+
+    @Test
+    void 记录已经滚出最近几条_这一期不收() {
+        positions.add(position(1, "AUSDT", T0));
+        next.put("AUSDT", T0 + H);
+        service.settleDue();
+        // 最近 10 条记录都在 1h 之后：1h 那条取不到了
+        for (int k = 2; k <= 11; k++) publish("AUSDT", k);
+        next.put("AUSDT", T0 + 12 * H);
+        service.settleDue();
+
+        assertThat(charges).isEmpty();
+        assertThat(redis).containsEntry("futures:funding:next:AUSDT", String.valueOf(T0 + 12 * H));
+    }
+
+    @Test
+    void 前端查询读feed写的费率和下次结算时刻() {
+        next.put("AUSDT", T0 + 4 * H);
+
+        assertThat(service.query("AUSDT")).isEqualTo(
+                new FundingRateService.FundingRateView("AUSDT", new BigDecimal("0.0001"), T0 + 3 * H, T0 + 4 * H));
+        assertThat(service.query("NOPE")).isNull();
+        assertThat(service.query(null)).isNull();
+    }
+
+    private FundingRateService newService() {
+        return new FundingRateService(client, cache, positionMapper, settlement);
+    }
+
+    private void publish(String symbol, int hour) {
+        published.computeIfAbsent(symbol, s -> new ArrayList<>()).add(T0 + hour * H);
+    }
+
+    private String history(String symbol) {
+        return published.getOrDefault(symbol, List.of()).stream()
+                .map(t -> "{\"symbol\":\"%s\",\"fundingTime\":%d,\"fundingRate\":\"%s\"}"
+                        .formatted(symbol, t + 3, rate((int) ((t - T0) / H)).toPlainString()))
+                .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    private static BigDecimal rate(int hour) {
+        return BigDecimal.valueOf(hour).movePointLeft(5);
+    }
+
+    private static String charge(String symbol, long fundingTime, BigDecimal rate) {
+        return symbol + "@" + (fundingTime - T0) / H + "h:" + rate.toPlainString();
+    }
+
+    private static String expected(String symbol, int hour) {
+        return charge(symbol, T0 + hour * H, rate(hour));
+    }
+
+    private static FuturesPosition position(long id, String symbol, long createdAtMs) {
+        FuturesPosition p = new FuturesPosition();
+        p.setId(id);
+        p.setSymbol(symbol);
+        p.setStatus("OPEN");
+        p.setCreatedAt(LocalDateTime.ofInstant(Instant.ofEpochMilli(createdAtMs), ZoneId.systemDefault()));
+        return p;
     }
 }

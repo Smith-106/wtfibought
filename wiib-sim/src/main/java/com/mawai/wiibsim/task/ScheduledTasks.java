@@ -3,6 +3,7 @@ package com.mawai.wiibsim.task;
 import com.mawai.wiibsim.config.TradeFilterRegistry;
 import com.mawai.wiibsim.service.CryptoOrderService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
+import com.mawai.wiibsim.service.FundingRateService;
 import com.mawai.wiibsim.service.FuturesLiquidationService;
 import com.mawai.wiibsim.service.FuturesSettlementService;
 import com.mawai.wiibsim.service.TraderSymbolService;
@@ -36,6 +37,7 @@ public class ScheduledTasks {
     private final FuturesLiquidationService futuresLiquidationService;
     private final PredictionService predictionService;
     private final TraderSymbolService traderSymbolService;
+    private final FundingRateService fundingRateService;
     private final TradeFilterRegistry tradeFilterRegistry;
 
     /** 交易员集合：每分钟按库里的仓位和登记重算，变了才写 Redis，feed 按它订行情 */
@@ -128,14 +130,14 @@ public class ScheduledTasks {
         });
     }
 
-    /** feed 币资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费，只收 feed 币 */
-    @Scheduled(cron = "0 0 0,8,16 * * *")
-    public void chargeFuturesFundingFee() {
+    /** 资金费：每分钟看一遍有仓位的币，到了各自的结算时刻按 Binance 这一期的实际结算费率收 */
+    @Scheduled(fixedRate = 60 * 1000)
+    public void settleFundingFees() {
         Thread.startVirtualThread(() -> {
             try {
-                futuresSettlementService.chargeFundingFeeAll();
+                fundingRateService.settleDue();
             } catch (Exception e) {
-                log.error("futures资金费率扣除失败", e);
+                log.error("资金费结算失败", e);
             }
         });
     }

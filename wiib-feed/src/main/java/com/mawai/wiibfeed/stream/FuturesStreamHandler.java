@@ -25,6 +25,7 @@ public class FuturesStreamHandler implements StreamHandler {
     private final CacheService cacheService;
     private final MarketBroadcaster broadcastService;
     private final MatchPricePublisher matchPricePublisher;
+    private final FundingRateWriter fundingRateWriter;
 
     private WsConnection conn;
     /** 副连接（miniTicker），bind 时由副 handler 交进来，只用于判 fws */
@@ -75,11 +76,11 @@ public class FuturesStreamHandler implements StreamHandler {
         handle(raw);
     }
 
-    /** 一帧里的币、价，和这是不是标记价流（不是就是 miniTicker 的最新价） */
-    record Tick(String symbol, String price, boolean markPrice) {}
+    /** 一帧里的币、价，和这是不是标记价流（不是就是 miniTicker 的最新价）；标记价帧还带当期费率和下次结算时刻 */
+    record Tick(String symbol, String price, boolean markPrice, String rate, long nextTime) {}
 
     /**
-     * 组合流一帧：{"stream":"btcusdt@markPrice@1s","data":{...,"s":"BTCUSDT","p":"..."}} /
+     * 组合流一帧：{"stream":"btcusdt@markPrice@1s","data":{...,"s":"BTCUSDT","p":"...","r":"...","T":...}} /
      * {"stream":"btcusdt@miniTicker","data":{...,"s":"BTCUSDT","c":"..."}}。缺字段回 null。交易员那两条连接也用它。
      */
     static Tick parse(String raw) {
@@ -96,7 +97,11 @@ public class FuturesStreamHandler implements StreamHandler {
         // markPrice 的 "p" 是标记价，miniTicker 的 "c" 是最新价
         int pIdx = raw.indexOf(isMarkPrice ? "\"p\":\"" : "\"c\":\"", sIdx);
         if (pIdx < 0) return null;
-        return new Tick(symbol, StreamParse.extractQuoted(raw, pIdx + 5), isMarkPrice);
+        String price = StreamParse.extractQuoted(raw, pIdx + 5);
+        if (!isMarkPrice) return new Tick(symbol, price, false, null, 0L);
+        // markPrice 帧：r 当期费率，T 下次结算时刻
+        return new Tick(symbol, price, true, StreamParse.extractField(raw, "\"r\":\"", sIdx),
+                StreamParse.getEventTime(raw, raw.indexOf("\"T\":", sIdx), 0L));
     }
 
     /** 两条合约连接共用的解析体 */
@@ -107,6 +112,7 @@ public class FuturesStreamHandler implements StreamHandler {
         String price = tick.price();
         if (tick.markPrice()) {
             cacheService.setMarkPrice(symbol, price);
+            fundingRateWriter.write(symbol, tick.rate(), tick.nextTime());
 
             broadcastService.broadcastFuturesQuote(symbol, "{\"mp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 

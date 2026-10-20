@@ -161,7 +161,7 @@
     },
     "fundingRate": {
       "q": "What is the funding rate, and why does holding cost money?",
-      "a": "Perpetual futures never settle, so funding tethers the contract price to spot: a positive rate means longs pay shorts, a negative one the reverse. It is charged three times a day (aligned with Binance settlement times) on notional value, at the live Binance rate for the current period, falling back to a fixed +0.01% only if the feed fails. This is the main cost of holding a position for a long time — the position card shows the estimate for each period."
+      "a": "Perpetual futures never settle, so funding tethers the contract price to spot: a positive rate means longs pay shorts, a negative one the reverse. It is charged on notional value at each contract's own Binance settlement time (every 8 hours for most contracts, every 4 hours or 1 hour for some), using the rate Binance actually settled for that period. This is the main cost of holding a position for a long time — the position card shows the estimate for each period."
     },
     "tpSl": {
       "q": "How do take profit and stop loss work?",
@@ -206,7 +206,7 @@
     "futures1": "<0>Open long / Open short</0>: market and limit orders, cross margin — account equity backs the position",
     "futures2": "<0>Leverage 1-150x</0>: tiered by position value, aligned with Binance tiers",
     "futures3": "<0>Take profit / Stop loss</0>: preset at entry, partial exits, live liquidation price estimate",
-    "futures4": "<0>Funding rate</0>: real rates, longs and shorts pay each other every 8 hours",
+    "futures4": "<0>Funding rate</0>: real rates, longs and shorts pay each other at each contract's own settlement interval (8 hours for most, 4 or 1 hour for some)",
     "futures5": "<0>Fees</0>: maker 0.02%, taker 0.04%",
     "futures6": "Positions liquidate automatically once margin runs out — keep leverage in check",
     "walletTitle": "Two wallets",

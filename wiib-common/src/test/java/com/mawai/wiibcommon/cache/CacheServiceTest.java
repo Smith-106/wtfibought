@@ -93,10 +93,12 @@ class CacheServiceTest {
         assertThat(cache.getPredictionOfficialWindow(1700000000L))
                 .isEqualTo(new CacheService.PredictionOfficialWindow(1700000000L, 100L, 200L, 150L, 160L));
 
-        when(valueOps.get("market:funding-rate:BTCUSDT")).thenReturn("{\"fetchedAt\":1700000000000,\"rate\":0.00010000}");
+        when(valueOps.get("market:funding:BTCUSDT"))
+                .thenReturn("{\"nextTime\":1700028800000,\"rate\":0.00010000,\"updatedAt\":1700000000000}");
         CacheService.FundingRate rate = cache.getFundingRate("BTCUSDT");
         assertThat(rate.rate()).isEqualTo(new BigDecimal("0.00010000"));
-        assertThat(rate.fetchedAt()).isEqualTo(1700000000000L);
+        assertThat(rate.nextTime()).isEqualTo(1700028800000L);
+        assertThat(rate.updatedAt()).isEqualTo(1700000000000L);
     }
 
     @Test
@@ -105,13 +107,13 @@ class CacheServiceTest {
         ValueOperations<String, String> valueOps = mock(ValueOperations.class);
         CacheService cache = withRedis(valueOps);
 
-        cache.putFundingRate("BTCUSDT", new BigDecimal("-0.00012500"), 1700000000000L);
+        cache.putFundingRate("BTCUSDT", new BigDecimal("-0.00012500"), 1700028800000L, 1700000000000L);
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
-        verify(valueOps).set(eq("market:funding-rate:BTCUSDT"), json.capture(), any(Duration.class));
+        verify(valueOps).set(eq("market:funding:BTCUSDT"), json.capture(), any(Duration.class));
 
-        when(valueOps.get("market:funding-rate:BTCUSDT")).thenReturn(json.getValue());
+        when(valueOps.get("market:funding:BTCUSDT")).thenReturn(json.getValue());
         assertThat(cache.getFundingRate("BTCUSDT"))
-                .isEqualTo(new CacheService.FundingRate(new BigDecimal("-0.00012500"), 1700000000000L));
+                .isEqualTo(new CacheService.FundingRate(new BigDecimal("-0.00012500"), 1700028800000L, 1700000000000L));
     }
 
     @Test

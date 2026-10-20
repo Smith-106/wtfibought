@@ -1,9 +1,10 @@
 package com.mawai.wiibsim.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mawai.wiibcommon.cache.CacheService;
-import com.mawai.wiibcommon.config.BinanceProperties;
+import com.mawai.wiibcommon.entity.FuturesPosition;
 import com.mawai.wiibcommon.market.BinanceRestClient;
-import com.mawai.wiibsim.config.TradingConfig;
+import com.mawai.wiibsim.mapper.FuturesPositionMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -11,94 +12,147 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
- * feed 币资金费率的出口。只在结算点（0:00/8:00/16:00）调一次官方全量 premiumIndex 写缓存，
- * 扣费和前端查询都只读缓存——查询链路绝不打 Binance。
+ * 资金费：全部币按各自的结算时刻收，结算时刻从 feed 写的 markPrice 推送来（当期费率 r、下次结算时刻 T）。
+ * 每分钟一次：只看有未平仓位的币，Redis 记"上次看到的下次结算时刻"；feed 给的 T 往后挪了，就是记下的那一期结算了——
+ * 去 /fapi/v1/fundingRate 取这一期的实际费率（记录没出来下一分钟再试），给结算时刻之前开的仓收一次；先记已结算再收，不重收。
+ * sim 停机跨过一次结算，起来后 T 已经挪了，照样补上；跨过更多的只收最早那一期，其余打日志。
+ * 前端查费率也读 feed 写的，不打 Binance。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class FundingRateService {
 
-    /** 结算间隔 8 小时，对齐 ScheduledTasks 的 cron（服务器本地时区 0/8/16 点） */
-    private static final int SETTLE_HOURS = 8;
+    /** 每个币上次看到的下次结算时刻（毫秒）；3 天没仓位就作废，再开仓从 feed 给的 T 重新记 */
+    private static final String NEXT_KEY_PREFIX = "futures:funding:next:";
+    private static final Duration NEXT_TTL = Duration.ofDays(3);
+    /** 结算记录的 fundingTime 比整点多几毫秒，差这么多以内算同一个结算时刻 */
+    static final long FUNDING_TIME_MATCH_MS = 60_000L;
+    /** 一次取最近几条结算记录 */
+    private static final int FUNDING_HISTORY_LIMIT = 10;
+    /** 连着取结算记录时每次之间隔开 */
+    private static final long FUNDING_REQUEST_GAP_MS = 300L;
 
     private final BinanceRestClient restClient;
-    private final BinanceProperties binanceProperties;
     private final CacheService cacheService;
-    private final TradingConfig tradingConfig;
+    private final FuturesPositionMapper positionMapper;
+    private final FuturesSettlementService settlementService;
 
-    /** 前端查询的返回体；rate 是小数（0.0001 = 0.01%/8h） */
+    private final ReentrantLock settling = new ReentrantLock();
+
+    /** 前端查询的返回体；rate 是小数（0.0001 = 0.01%/期），fetchedAt 是 feed 写入时刻，nextTime 是下次结算时刻 */
     public record FundingRateView(String symbol, BigDecimal rate, long fetchedAt, long nextTime) {}
 
-    /** 结算点拉一次官方全量，只留我们的合约标的写缓存。拉不到就不动缓存，上一轮的值还能用满 TTL */
-    public void refresh() {
-        Map<String, BigDecimal> rates = parseFundingRates(
-                restClient.getPremiumIndexAll(), binanceProperties.getAllFuturesSymbols());
-        if (rates.isEmpty()) {
-            log.warn("资金费率全量拉取失败或为空，本轮沿用缓存");
-            return;
-        }
-        long now = System.currentTimeMillis();
-        rates.forEach((symbol, rate) -> cacheService.putFundingRate(symbol, rate, now));
-        log.info("资金费率缓存刷新 {}个 {}", rates.size(), rates);
-    }
-
-    /** 扣费取数：读缓存，缓存空了回退配置固定费率 */
-    public BigDecimal rateForSettlement(String symbol) {
-        CacheService.FundingRate cached = cacheService.getFundingRate(symbol);
-        if (cached != null && cached.rate() != null) return cached.rate();
-        BigDecimal fallback = tradingConfig.getFutures().getFundingRate();
-        log.warn("资金费率缓存缺失 symbol={} 回退固定费率 {}", symbol, fallback);
-        return fallback;
-    }
-
-    /** 前端查询：只读缓存。无合约的标的（bStock 等）和缓存没命中都返回 null */
+    /** 前端查询：只读 feed 写的；没有合约行情的标的（bStock 等）、feed 停了都返回 null */
     public FundingRateView query(String symbol) {
-        if (symbol == null || !binanceProperties.getAllFuturesSymbols().contains(symbol)) return null;
-        CacheService.FundingRate cached = cacheService.getFundingRate(symbol);
-        if (cached == null || cached.rate() == null) return null;
-        return new FundingRateView(symbol, cached.rate(), cached.fetchedAt(),
-                nextFundingTime(System.currentTimeMillis(), ZoneId.systemDefault()));
+        CacheService.FundingRate f = symbol == null ? null : cacheService.getFundingRate(symbol);
+        return f == null ? null : new FundingRateView(symbol, f.rate(), f.updatedAt(), f.nextTime());
     }
 
-    /** 下一个 0:00/8:00/16:00 的毫秒时间戳；正卡在结算点上算下一个 */
-    static long nextFundingTime(long nowMs, ZoneId zone) {
-        ZonedDateTime now = Instant.ofEpochMilli(nowMs).atZone(zone);
-        ZonedDateTime slot = now.truncatedTo(ChronoUnit.HOURS)
-                .withHour(now.getHour() / SETTLE_HOURS * SETTLE_HOURS);
-        return slot.plusHours(SETTLE_HOURS).toInstant().toEpochMilli();
-    }
-
-    /** 解析 premiumIndex 全量数组（几百个合约），只挑我们订阅的那些的 lastFundingRate */
-    static Map<String, BigDecimal> parseFundingRates(String json, Collection<String> symbols) {
-        if (json == null || json.isBlank() || symbols == null || symbols.isEmpty()) return Map.of();
-        Set<String> wanted = new HashSet<>(symbols);
-        Map<String, BigDecimal> result = new HashMap<>();
+    /** 每分钟一次；上一次还没跑完就跳过 */
+    public void settleDue() {
+        if (!settling.tryLock()) return;
         try {
-            ArrayNode arr = MAPPER.readValue(json, ArrayNode.class);
-            for (JsonNode item : arr) {
-                String symbol = item.path("symbol").asString(null);
-                if (symbol == null || !wanted.contains(symbol)) continue;
-                BigDecimal rate = item.path("lastFundingRate").asDecimal(null);
-                if (rate != null) result.put(symbol, rate);
+            Map<String, List<FuturesPosition>> open = positionMapper.selectList(new LambdaQueryWrapper<FuturesPosition>()
+                            .eq(FuturesPosition::getStatus, "OPEN"))
+                    .stream().collect(Collectors.groupingBy(FuturesPosition::getSymbol));
+            boolean requested = false;
+            for (Map.Entry<String, List<FuturesPosition>> entry : open.entrySet()) {
+                String symbol = entry.getKey();
+                CacheService.FundingRate funding = cacheService.getFundingRate(symbol);
+                if (funding == null) continue;
+                long next = funding.nextTime();
+                Long seen = seenNext(symbol);
+                if (seen == null) {
+                    putSeenNext(symbol, next);
+                    continue;
+                }
+                if (next <= seen) continue;
+                // T 往后挪了：seen 这一期结算了。没有要收的仓位就不取记录
+                List<FuturesPosition> positions = openedBefore(entry.getValue(), seen);
+                if (positions.isEmpty()) {
+                    putSeenNext(symbol, next);
+                    continue;
+                }
+                if (requested) {
+                    try {
+                        Thread.sleep(FUNDING_REQUEST_GAP_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                requested = true;
+                TreeMap<Long, BigDecimal> history = parseHistory(
+                        restClient.getFundingRateHistory(symbol, FUNDING_HISTORY_LIMIT), symbol);
+                if (history == null) continue;
+                BigDecimal rate = rateAt(history, seen);
+                if (rate == null) {
+                    // 记录还没出来：下一分钟再试。最近几条全在这一期之后：记录已经滚出去了，这一期不收
+                    if (history.isEmpty() || history.firstKey() <= seen + FUNDING_TIME_MATCH_MS) continue;
+                    log.warn("资金费结算记录已经取不到，这一期不收 symbol={} 结算时刻={}", symbol, seen);
+                    putSeenNext(symbol, next);
+                    continue;
+                }
+                List<Long> missed = List.copyOf(history.subMap(seen + FUNDING_TIME_MATCH_MS, next - FUNDING_TIME_MATCH_MS).keySet());
+                if (!missed.isEmpty()) {
+                    log.warn("资金费漏收（停机期间错过，不补）symbol={} 结算时刻={}", symbol, missed);
+                }
+                // 先记已结算再收，收到一半出错也不会重收
+                putSeenNext(symbol, next);
+                settlementService.chargeFundingFee(symbol, seen, rate, positions);
+            }
+        } finally {
+            settling.unlock();
+        }
+    }
+
+    private Long seenNext(String symbol) {
+        String v = cacheService.get(NEXT_KEY_PREFIX + symbol);
+        return v == null ? null : Long.valueOf(v);
+    }
+
+    private void putSeenNext(String symbol, long next) {
+        cacheService.set(NEXT_KEY_PREFIX + symbol, String.valueOf(next), NEXT_TTL);
+    }
+
+    /** 结算时刻之前开的仓（createdAt 是按本机时区填的） */
+    static List<FuturesPosition> openedBefore(List<FuturesPosition> positions, long fundingTime) {
+        LocalDateTime cutoff = LocalDateTime.ofInstant(Instant.ofEpochMilli(fundingTime), ZoneId.systemDefault());
+        return positions.stream().filter(p -> p.getCreatedAt().isBefore(cutoff)).toList();
+    }
+
+    /** 结算记录按 fundingTime 排好；请求失败、解析失败回 null */
+    static TreeMap<Long, BigDecimal> parseHistory(String json, String symbol) {
+        if (json == null) return null;
+        TreeMap<Long, BigDecimal> history = new TreeMap<>();
+        try {
+            for (JsonNode r : MAPPER.readValue(json, ArrayNode.class)) {
+                history.put(r.path("fundingTime").asLong(0L), r.path("fundingRate").asDecimal(null));
             }
         } catch (Exception e) {
-            log.warn("解析 premiumIndex 全量响应失败: {}", e.toString());
-            return Map.of();
+            log.warn("解析资金费结算记录失败 symbol={}: {}", symbol, e.toString());
+            return null;
         }
-        return result;
+        return history;
+    }
+
+    /** 和结算时刻差 60 秒以内的那条记录的费率；没有回 null */
+    static BigDecimal rateAt(TreeMap<Long, BigDecimal> history, long fundingTime) {
+        Map.Entry<Long, BigDecimal> e = history.ceilingEntry(fundingTime - FUNDING_TIME_MATCH_MS);
+        return e != null && e.getKey() < fundingTime + FUNDING_TIME_MATCH_MS ? e.getValue() : null;
     }
 }

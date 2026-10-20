@@ -170,13 +170,13 @@ export interface FuturesBracket {
   maintAmount: number;
 }
 
-/** 资金费率（GET /futures/funding-rate）：后端只读结算点缓存，无合约的标的返回 null。rate 是小数，0.0001=0.01% */
+/** 资金费率（GET /futures/funding-rate）：后端只读 feed 从 markPrice 推送写的当期费率，没有合约行情的标的返回 null。rate 是小数，0.0001=0.01% */
 export interface FundingRateView {
   symbol: string;
   rate: number;
-  /** 结算点拉取时刻 */
+  /** feed 写入时刻 */
   fetchedAt: number;
-  /** 下一个 0/8/16 点 */
+  /** 下次结算时刻（各合约间隔不同） */
   nextTime: number;
 }
 

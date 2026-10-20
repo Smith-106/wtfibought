@@ -1,7 +1,6 @@
 package com.mawai.wiibsim.service.impl;
 
 import com.mawai.wiibcommon.cache.CacheService;
-import com.mawai.wiibcommon.config.BinanceProperties;
 import com.mawai.wiibcommon.entity.FuturesOrder;
 import com.mawai.wiibcommon.entity.FuturesPosition;
 import com.mawai.wiibcommon.entity.User;
@@ -13,7 +12,6 @@ import com.mawai.wiibsim.mapper.FuturesPositionMapper;
 import com.mawai.wiibsim.mapper.UserMapper;
 import com.mawai.wiibsim.service.CrossLiquidationService;
 import com.mawai.wiibsim.service.CrossMarginService;
-import com.mawai.wiibsim.service.FundingRateService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.FuturesRiskService;
 import com.mawai.wiibsim.service.UserService;
@@ -89,8 +87,8 @@ class FuturesLimitOpenFillTest {
                 userService, userMapper, positionMapper, orderMapper,
                 new TradingConfig(), bracketRegistry, cacheService, positionIndexService,
                 mock(FuturesRiskService.class), crossMarginService,
-                mock(CrossLiquidationService.class), mock(FairLockRegistry.class), mock(FundingRateService.class),
-                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))), new BinanceProperties());
+                mock(CrossLiquidationService.class), mock(FairLockRegistry.class),
+                new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))));
     }
 
     private static FuturesPosition pos(long id, String side, String mode, int leverage,

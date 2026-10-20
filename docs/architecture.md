@@ -85,13 +85,16 @@ Jev 预测员（agent `jev/predictor/` 包，Jev 客户端与配置在 `jev/`，
 ### 资金费率
 
 ```text
-sim ScheduledTasks  cron 0 0 0,8,16
-  -> FundingRateService.refresh()   一次 premiumIndexAll 全量，只留本平台合约标的
-  -> Redis KV(market:funding-rate:<SYM>, TTL 9h)
-  -> 扣费 rateForSettlement() / 前端查询 query()  都只读缓存
+feed FuturesStreamHandler / TraderFuturesStreamHandler  markPrice@1s 推送自带当期费率 r 和下次结算时刻 T
+  -> FundingRateWriter  T 变了马上写、没变每 5 秒写一次 -> Redis KV(market:funding:<SYM>, TTL 10min)
+sim ScheduledTasks  每分钟
+  -> FundingRateService.settleDue()  有仓位的币：Redis 记"上次看到的 T"，feed 把它挪到后面了就是这一期结算了
+     -> /fapi/v1/fundingRate 取这一期的实际结算费率（记录没出来下一分钟再试）
+     -> 给结算时刻之前开的仓收，先记已结算再收，不重收
+  -> 前端查询 query()  只读 feed 写的
 ```
 
-**sim 侧只有结算点这一次调官方资金费率接口**，扣费与前端查询一律读缓存，查询链路绝不打 Binance。拉不到就不动缓存，上一轮的值还能用满 TTL；缓存真空了扣费回退配置里的固定费率（0.01%/8h）。这是个硬约束——在查询链路里"顺手"直连一次 Binance，就等于把限频风险接回了用户请求路径上。
+各币结算间隔不同（多数 8 小时，也有 4 小时、1 小时的），全按 Binance 的实际结算时刻和费率收。**sim 侧只在某个币结算了那一分钟调一次官方结算记录接口**，前端查询一律读 feed 写的缓存，查询链路绝不打 Binance；feed 停了缓存过期，sim 不按旧时刻收，起来后 T 已经挪了照样补上这一期。这是个硬约束——在查询链路里"顺手"直连一次 Binance，就等于把限频风险接回了用户请求路径上。
 
 （agent 侧的 `funding_history` / `premiumIndex` 取数工具另有一条只读链路会打 Binance，带熔断与 serve-stale，喂模型用，与 sim 的扣费链路无关。）
 

@@ -257,20 +257,21 @@ public class CacheService {
         return v == null ? null : Long.parseLong(v);
     }
 
-    // ==================== 资金费率（结算点写，扣费与前端查询读） ====================
+    // ==================== 资金费率（feed 从 markPrice 推送里写，sim 结算与前端查询读） ====================
 
-    public record FundingRate(BigDecimal rate, long fetchedAt) {}
+    /** 当期费率、下次结算时刻（毫秒）、feed 写入时刻 */
+    public record FundingRate(BigDecimal rate, long nextTime, long updatedAt) {}
 
-    // 9 小时盖到下一个结算点，多出 1 小时留给结算延迟；连着两个结算点都没拉到就自然过期，前端不显示旧数
-    private static final Duration FUNDING_RATE_TTL = Duration.ofHours(9);
+    // feed 几秒写一次；feed 停了就过期，sim 不按旧的结算时刻收、前端不显示旧数
+    private static final Duration FUNDING_RATE_TTL = Duration.ofMinutes(10);
 
-    public void putFundingRate(String symbol, BigDecimal rate, long fetchedAtMs) {
-        stringRedisTemplate.opsForValue().set("market:funding-rate:" + symbol,
-                MAPPER.writeValueAsString(new FundingRate(rate, fetchedAtMs)), FUNDING_RATE_TTL);
+    public void putFundingRate(String symbol, BigDecimal rate, long nextTimeMs, long nowMs) {
+        stringRedisTemplate.opsForValue().set("market:funding:" + symbol,
+                MAPPER.writeValueAsString(new FundingRate(rate, nextTimeMs, nowMs)), FUNDING_RATE_TTL);
     }
 
     public FundingRate getFundingRate(String symbol) {
-        String v = stringRedisTemplate.opsForValue().get("market:funding-rate:" + symbol);
+        String v = stringRedisTemplate.opsForValue().get("market:funding:" + symbol);
         return v != null ? MAPPER.readValue(v, FundingRate.class) : null;
     }
 

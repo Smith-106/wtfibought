@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.math.BigDecimal;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,7 +20,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 交易员的币的行情：两种帧只写价格键（标记价；最新价带写入时刻）；
+ * 交易员的币的行情：两种帧只写价格键（标记价连当期费率和下次结算时刻；最新价带写入时刻）；
  * 集合变了两条连接都换地址重连，没变不动，空了地址为空（连接闲置）。
  */
 class TraderFuturesStreamHandlerTest {
@@ -37,7 +38,8 @@ class TraderFuturesStreamHandlerTest {
         when(setOps.members(TraderFuturesStreamHandler.SYMBOLS_KEY)).thenReturn(Set.of());
         BinanceProperties props = new BinanceProperties();
         props.setFuturesWsUrl("wss://fstream.binance.com/ws");
-        TraderFuturesStreamHandler h = new TraderFuturesStreamHandler(props, redisTemplate, cacheService);
+        TraderFuturesStreamHandler h = new TraderFuturesStreamHandler(props, redisTemplate, cacheService,
+                new FundingRateWriter(cacheService));
         h.init();
         h.bind(conn);
         h.setMiniTickConn(miniTickConn);
@@ -45,13 +47,14 @@ class TraderFuturesStreamHandlerTest {
     }
 
     @Test
-    void 只写价格键_最新价带写入时刻() {
+    void 只写价格键_标记价连费率_最新价带写入时刻() {
         handler.handle("{\"stream\":\"pepeusdt@markPrice@1s\",\"data\":{\"e\":\"markPriceUpdate\",\"E\":1700000000000,"
                 + "\"s\":\"PEPEUSDT\",\"p\":\"0.00001234\",\"i\":\"0.00001230\",\"P\":\"0.00001235\",\"r\":\"0.00010000\",\"T\":1700004800000}}");
         handler.handle("{\"stream\":\"pepeusdt@miniTicker\",\"data\":{\"e\":\"24hrMiniTicker\",\"E\":1700000000500,"
                 + "\"s\":\"PEPEUSDT\",\"c\":\"0.00001233\",\"o\":\"0.00001200\",\"h\":\"0.00001300\",\"l\":\"0.00001100\",\"v\":\"1000\",\"q\":\"0.0123\"}}");
 
         verify(cacheService).setMarkPrice("PEPEUSDT", "0.00001234");
+        verify(cacheService).putFundingRate(eq("PEPEUSDT"), eq(new BigDecimal("0.00010000")), eq(1700004800000L), anyLong());
         verify(cacheService).setFuturesPrice(eq("PEPEUSDT"), eq("0.00001233"), anyLong());
         verifyNoMoreInteractions(cacheService);
     }
