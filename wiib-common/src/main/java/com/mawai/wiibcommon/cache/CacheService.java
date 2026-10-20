@@ -238,20 +238,20 @@ public class CacheService {
         cryptoPriceCache.put("spot:" + symbol, price);
     }
 
-    /** feed 每帧写：标记价落 Redis（feed 自己不读合约价，不进 L1） */
-    public void setMarkPrice(String symbol, String price) {
-        stringRedisTemplate.opsForValue().set("market:markprice:" + symbol, price);
+    /** feed 每帧写：标记价和写入时刻一次 MSET 落 Redis（feed 自己不读合约价，不进 L1）。写入时刻是 sim 市价开仓判行情活没活着的心跳 */
+    public void setMarkPrice(String symbol, String price, long nowMs) {
+        stringRedisTemplate.opsForValue().multiSet(Map.of("market:markprice:" + symbol, price,
+                "market:markprice-at:" + symbol, Long.toString(nowMs)));
     }
 
-    /** feed 每帧写：最新价和写入时刻一次 MSET 落 Redis。写入时刻给 sim 市价开仓判价格停没停 */
-    public void setFuturesPrice(String symbol, String price, long nowMs) {
-        stringRedisTemplate.opsForValue().multiSet(Map.of("market:futures-price:" + symbol, price,
-                "market:futures-price-at:" + symbol, Long.toString(nowMs)));
+    /** feed 每帧写：最新价落 Redis */
+    public void setFuturesPrice(String symbol, String price) {
+        stringRedisTemplate.opsForValue().set("market:futures-price:" + symbol, price);
     }
 
-    /** 最新价上次写入的时刻（毫秒）；没写过回 null */
-    public Long getFuturesPriceAt(String symbol) {
-        String v = stringRedisTemplate.opsForValue().get("market:futures-price-at:" + symbol);
+    /** 标记价上次写入的时刻（毫秒）；没写过回 null */
+    public Long getMarkPriceAt(String symbol) {
+        String v = stringRedisTemplate.opsForValue().get("market:markprice-at:" + symbol);
         return v == null ? null : Long.parseLong(v);
     }
 

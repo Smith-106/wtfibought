@@ -45,7 +45,7 @@ public class TraderSymbolService {
         refresh();
     }
 
-    /** 登记那一刻和每分钟定时各算一次，串行：不然定时那次读到登记前的 zset、登记后的 set，会把刚登记的删掉 */
+    /** 登记那一刻和每分钟定时各算一次，串行 */
     public synchronized void refresh() {
         redis.opsForZSet().removeRangeByScore(WATCH_KEY, Double.NEGATIVE_INFINITY, nowMs.getAsLong());
         SortedSet<String> wanted = new TreeSet<>(redis.opsForZSet().range(WATCH_KEY, 0, -1));

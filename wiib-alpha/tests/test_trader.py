@@ -132,7 +132,8 @@ async def test_tick_rebalances_between_0005_and_0100_and_records_equity_every_ho
     store = m.app.state.store
     ran: list[int] = []
     # 每次调仓的结局：状态和下出去的单
-    outcomes = [("failed", []), ("done", [{"ok": True}]), ("failed", [{"ok": False}])]
+    outcomes = [("failed", []), ("done", [{"ok": True}]), ("partial", [{"ok": False}]),
+                ("partial", [{"ok": True}, {"ok": False}])]
 
     async def rebalance(app, library, now):
         ran.append(now)
@@ -153,15 +154,16 @@ async def test_tick_rebalances_between_0005_and_0100_and_records_equity_every_ho
     await scheduler.tick(m.app, m._library, t0 + 60_000)
     await scheduler.tick(m.app, m._library, t0 + 120_000)
     assert ran == [t0, t0 + 60_000]
-    # 下过单的失败（单可能已成交）当天不重跑
+    # 下了单但一笔都没成：下一分钟再来；成了一笔的当天不重跑
     day2 = t0 + DAY_MS
     await scheduler.tick(m.app, m._library, day2)
     await scheduler.tick(m.app, m._library, day2 + 60_000)
-    assert ran == [t0, t0 + 60_000, day2]
+    await scheduler.tick(m.app, m._library, day2 + 120_000)
+    assert ran == [t0, t0 + 60_000, day2, day2 + 60_000]
     # 01:00 之后还没调过：跳过这一天，不拿 0 点的信号隔几小时再下
     day3 = DAY + 2 * DAY_MS + 61 * 60_000
     await scheduler.tick(m.app, m._library, day3)
-    assert ran == [t0, t0 + 60_000, day2] and await store.trade_run(scheduler.day_label(day3)) is None
+    assert ran == [t0, t0 + 60_000, day2, day2 + 60_000] and await store.trade_run(scheduler.day_label(day3)) is None
     curve = data(await client.get("/api/alpha/trader/equity", headers=ADMIN))
     assert [p["ts"] for p in curve["items"]] == [t0 + 60_000, day2, day3]
     assert curve["items"][0] == {"ts": t0 + 60_000, "equity": 10000, "balance": 10000, "long": 0, "short": 0}

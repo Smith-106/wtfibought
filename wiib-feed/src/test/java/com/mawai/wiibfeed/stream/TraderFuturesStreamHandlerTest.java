@@ -47,15 +47,15 @@ class TraderFuturesStreamHandlerTest {
     }
 
     @Test
-    void 只写价格键_标记价连费率_最新价带写入时刻() {
+    void 只写价格键_标记价带写入时刻连费率_最新价() {
         handler.handle("{\"stream\":\"pepeusdt@markPrice@1s\",\"data\":{\"e\":\"markPriceUpdate\",\"E\":1700000000000,"
                 + "\"s\":\"PEPEUSDT\",\"p\":\"0.00001234\",\"i\":\"0.00001230\",\"P\":\"0.00001235\",\"r\":\"0.00010000\",\"T\":1700004800000}}");
         handler.handle("{\"stream\":\"pepeusdt@miniTicker\",\"data\":{\"e\":\"24hrMiniTicker\",\"E\":1700000000500,"
                 + "\"s\":\"PEPEUSDT\",\"c\":\"0.00001233\",\"o\":\"0.00001200\",\"h\":\"0.00001300\",\"l\":\"0.00001100\",\"v\":\"1000\",\"q\":\"0.0123\"}}");
 
-        verify(cacheService).setMarkPrice("PEPEUSDT", "0.00001234");
+        verify(cacheService).setMarkPrice(eq("PEPEUSDT"), eq("0.00001234"), anyLong());
         verify(cacheService).putFundingRate(eq("PEPEUSDT"), eq(new BigDecimal("0.00010000")), eq(1700004800000L), anyLong());
-        verify(cacheService).setFuturesPrice(eq("PEPEUSDT"), eq("0.00001233"), anyLong());
+        verify(cacheService).setFuturesPrice("PEPEUSDT", "0.00001233");
         verifyNoMoreInteractions(cacheService);
     }
 

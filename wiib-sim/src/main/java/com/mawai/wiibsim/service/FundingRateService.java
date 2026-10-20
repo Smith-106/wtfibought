@@ -62,7 +62,7 @@ public class FundingRateService {
 
     /** 前端查询：只读 feed 写的；没有合约行情的标的（bStock 等）、feed 停了都返回 null */
     public FundingRateView query(String symbol) {
-        CacheService.FundingRate f = symbol == null ? null : cacheService.getFundingRate(symbol);
+        CacheService.FundingRate f = cacheService.getFundingRate(symbol);
         return f == null ? null : new FundingRateView(symbol, f.rate(), f.updatedAt(), f.nextTime());
     }
 
@@ -122,7 +122,7 @@ public class FundingRateService {
                 if (!missed.isEmpty()) {
                     log.warn("资金费漏收（停机期间错过，不补）symbol={} 结算时刻={}", symbol, missed);
                 }
-                // 先记已结算再收，收到一半出错也不会重收
+                // 先记已结算再收
                 putSeenNext(symbol, next);
                 settlementService.chargeFundingFee(symbol, seen, rate, positions);
             }

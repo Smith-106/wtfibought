@@ -111,7 +111,8 @@ public class FuturesStreamHandler implements StreamHandler {
         String symbol = tick.symbol();
         String price = tick.price();
         if (tick.markPrice()) {
-            cacheService.setMarkPrice(symbol, price);
+            // 标记价连写入时刻一起落：markPrice@1s 每秒必推，sim 市价开仓按它判这个币的行情停没停
+            cacheService.setMarkPrice(symbol, price, System.currentTimeMillis());
 
             broadcastService.broadcastFuturesQuote(symbol, "{\"mp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 
@@ -119,8 +120,7 @@ public class FuturesStreamHandler implements StreamHandler {
             matchPricePublisher.publish("{\"symbol\":\"" + symbol + "\",\"type\":\"markprice\",\"price\":\"" + price + "\"}");
             fundingRateWriter.write(symbol, tick.rate(), tick.nextTime());
         } else {
-            // 最新价连写入时刻一起落：sim 市价开仓按它判价格停没停
-            cacheService.setFuturesPrice(symbol, price, System.currentTimeMillis());
+            cacheService.setFuturesPrice(symbol, price);
 
             broadcastService.broadcastFuturesQuote(symbol, "{\"fp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 

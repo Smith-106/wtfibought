@@ -41,7 +41,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * 交易员的币走内部下单的整条链：feed 写的价就是成交价，默认档放行 4 倍全仓；
- * 价格超过 30 秒没更新开仓被拒，平仓照样按停住的价成交。
+ * 标记价超过 30 秒没更新开仓被拒，平仓照样按停住的价成交。
  * 例：PEPE 最新价 0.00001 开多 200 万个（名义 20，4 倍占保证金 5）→ 价格 0.0000125 平掉，盈亏 5.00、平仓手续费 0.01。
  */
 class TraderSymbolTradeFlowTest {
@@ -60,8 +60,8 @@ class TraderSymbolTradeFlowTest {
     private FuturesTradingServiceImpl trading() {
         when(cache.getFuturesPrice(anyString())).thenAnswer(inv -> price("market:futures-price:" + inv.getArgument(0)));
         when(cache.getMarkPrice(anyString())).thenAnswer(inv -> price("market:markprice:" + inv.getArgument(0)));
-        when(cache.getFuturesPriceAt(anyString())).thenAnswer(inv -> {
-            String v = redis.get("market:futures-price-at:" + inv.getArgument(0));
+        when(cache.getMarkPriceAt(anyString())).thenAnswer(inv -> {
+            String v = redis.get("market:markprice-at:" + inv.getArgument(0));
             return v == null ? null : Long.valueOf(v);
         });
         UserService userService = mock(UserService.class);
@@ -78,7 +78,7 @@ class TraderSymbolTradeFlowTest {
     }
 
     @Test
-    void feed的价开仓成交_价格停了超过30秒开仓被拒_平仓照旧() {
+    void feed的价开仓成交_标记价停了超过30秒开仓被拒_平仓照旧() {
         feedWrites("0.00001000", System.currentTimeMillis());
         trading.doOpenPosition(UID, open());
 
@@ -88,7 +88,7 @@ class TraderSymbolTradeFlowTest {
         assertThat(pos.getEntryPrice()).isEqualByComparingTo("0.00001");
         assertThat(pos.getMargin()).isEqualByComparingTo("5");
 
-        // 价格停在 31 秒前：开仓拒，不碰库
+        // 标记价停在 31 秒前：开仓拒，不碰库
         feedWrites("0.00001250", System.currentTimeMillis() - 31_000);
         assertThatThrownBy(() -> trading.doOpenPosition(UID, open()))
                 .isInstanceOf(BizException.class)
@@ -113,11 +113,11 @@ class TraderSymbolTradeFlowTest {
                 .containsExactly(tuple("OPEN_LONG", "FILLED"), tuple("CLOSE_LONG", "FILLED"));
     }
 
-    /** feed 写价：最新价、标记价和写入时刻 */
+    /** feed 写价：最新价、标记价和标记价的写入时刻 */
     private void feedWrites(String price, long atMs) {
         redis.put("market:futures-price:" + SYM, price);
         redis.put("market:markprice:" + SYM, price);
-        redis.put("market:futures-price-at:" + SYM, String.valueOf(atMs));
+        redis.put("market:markprice-at:" + SYM, String.valueOf(atMs));
     }
 
     private BigDecimal price(String key) {

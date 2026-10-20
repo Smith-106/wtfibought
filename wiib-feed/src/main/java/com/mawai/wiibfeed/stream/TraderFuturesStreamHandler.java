@@ -79,10 +79,10 @@ public class TraderFuturesStreamHandler implements StreamHandler {
         FuturesStreamHandler.Tick tick = FuturesStreamHandler.parse(raw);
         if (tick == null) return;
         if (tick.markPrice()) {
-            cacheService.setMarkPrice(tick.symbol(), tick.price());
+            cacheService.setMarkPrice(tick.symbol(), tick.price(), System.currentTimeMillis());
             fundingRateWriter.write(tick.symbol(), tick.rate(), tick.nextTime());
         } else {
-            cacheService.setFuturesPrice(tick.symbol(), tick.price(), System.currentTimeMillis());
+            cacheService.setFuturesPrice(tick.symbol(), tick.price());
         }
     }
 

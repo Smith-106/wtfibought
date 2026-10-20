@@ -3,7 +3,7 @@
 整点记一次账户净值；每天 UTC 00:05 ~ 01:00 之间，今天还没调过、数据已装载、没在刷新，就调一次仓：
 00:05 起补尾巴、算目标，等到 00:15（晚一根）再下单。01:00 之后还没调成就跳过这一天，不拿 0 点的信号隔几小时再下。
 一次调仓：ensure-account → 当月币池登记给 sim（feed 按交易员集合订行情）→ 补 live 尾巴 → 拼面板出目标 → 等到 00:15 → 读账户和标记价 → 下单 → 补拉 00:15 那根收盘价 → 再读账户；
-跑完不管成败都落一条 trade_run；一笔单都没下出去就失败的（Binance、sim 一时不通），01:00 之前下一分钟再来，下过单的当天不再跑；
+跑完不管成败都落一条 trade_run；一笔单都没成的（Binance、sim 一时不通，或者下了单全失败），01:00 之前下一分钟再来，成了一笔的当天不再跑；
 进程在半路退出就不落，重启后同一天重跑（下单 ID 不变，sim 去重）。
 刷新期间不跑；调仓、因子对比跑着的时候刷新接口拒绝（main 里那串互斥）。
 组合权重（全部历史、24h 档、晚一根成交的 IC）按装载时刻缓存，骨架就是挖掘装载的那份：库因子的值取自 main 的库缓存，不每天全池重算。
@@ -64,8 +64,8 @@ async def tick(app: FastAPI, library: Library, now: int) -> None:
 
 
 def _due(run: Mapping[str, Any] | None) -> bool:
-    """今天还没调过，或者一笔单都没下出去就失败了"""
-    return run is None or (run["status"] == "failed" and not run["orders"])
+    """今天还没调过，或者调了但一笔单都没成"""
+    return run is None or (run["status"] != "done" and not any(o["ok"] for o in run["orders"]))
 
 
 def day_label(ms: int) -> str:

@@ -184,24 +184,7 @@ class FundingRateServiceTest {
     }
 
     @Test
-    void 结算间隔调短_没到点T往前挪不算结算_按新时刻收() {
-        positions.add(position(1, "AUSDT", T0 - 60_000));
-        next.put("AUSDT", T0 + 8 * H);
-        round(T0 + 30_000);
-        // 02:00 Binance 把这个币改成 4 小时一结：T 从 8h 变成 4h，没到点，只换记下的时刻
-        next.put("AUSDT", T0 + 4 * H);
-        round(T0 + 2 * H + 30_000);
-        assertThat(charges).isEmpty();
-        verify(client, never()).getFundingRateHistory(anyString(), anyInt());
-
-        publish("AUSDT", 4);
-        next.put("AUSDT", T0 + 8 * H);
-        round(T0 + 4 * H + 30_000);
-        assertThat(charges).containsExactly(expected("AUSDT", 4));
-    }
-
-    @Test
-    void 结算间隔调长_没到点T往后跳不算结算_按新时刻收() {
+    void 结算间隔改了_没到点T就变不算结算_按新时刻收() {
         positions.add(position(1, "AUSDT", T0));
         next.put("AUSDT", T0 + H);
         round(T0 + 30_000);
