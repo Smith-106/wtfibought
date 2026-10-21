@@ -169,7 +169,7 @@ def g9(store: PanelStore, db_path: str, params: EvalParams, randoms: int, seed: 
     """G9 的阈值怎么定：库里每条（拿掉它的方案再加回去）、库外的候选、随机因子，加进交易方案后搜索段净 Sharpe 各升多少"""
     with snapshot(db_path) as db:
         universe = pd.read_sql_query("SELECT month, symbol, rank, avg_quote_volume FROM universe", db)
-        library = db.execute("SELECT name, expr FROM factor ORDER BY approved_at").fetchall()
+        library = db.execute("SELECT name, expr FROM factor WHERE retired_at IS NULL ORDER BY approved_at").fetchall()
         # 每条假设留着的是最后一版表达式；同一个表达式只算一次
         candidates = {expr: name for name, expr in db.execute(
             "SELECT name, expr FROM candidate WHERE expr IS NOT NULL ORDER BY updated_at")}
