@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -37,10 +39,10 @@ def test_empty_combo(planted_pool):
     assert empty.names == () and empty.values.shape == (len(planted_pool.search), 0)
 
 
-def test_signal_learns_the_sign_of_an_inverted_factor(planted_pool):
+def test_signal_learns_the_sign_of_an_inverted_factor(planted_pool, planted_vol):
     empty = combo.Combo.empty(planted_pool.search, planted_pool.symbols)
     inverted = empty.plus("inv", -search_values(planted_pool, "$volume"))
-    s = combo.signal(inverted, combo.zscores(inverted), 48, PARAMS)
+    s = combo.signal(inverted, combo.zscores(inverted), planted_vol[planted_pool.in_search], 48, PARAMS)
     planted = search_values(planted_pool, "$volume")
     ok = np.isfinite(s)
     # 方向学成负的：组合信号和原值同号排序
@@ -56,12 +58,25 @@ def test_evaluate_holdout_and_latest(planted_pool, planted_vol):
     assert ev[48]["leg"]["netReturn"] > 0 and ev[48]["leg"]["permPct"] >= 0.95
 
     full = combo.Combo.empty(planted_pool.rows, planted_pool.symbols).plus("planted", full_values)
-    held = combo.holdout(full, planted_pool.cut_ms, PARAMS)
+    held = combo.holdout(full, planted_vol, planted_pool.cut_ms, PARAMS)
     assert held["since"] == planted_pool.cut_ms and held["horizons"][48]["mean"] > 0.3
     assert held["horizons"][48]["samples"] > 0
-    now = combo.latest(full, PARAMS)
+    now = combo.latest(full, planted_vol, PARAMS)
     assert now["asOf"] == int(planted_pool.rows["t"].max())
     assert [w["name"] for w in now["weights"]] == ["planted"] and now["weights"][0]["weight"] > 0
     assert set(now["latest"]) == set(planted_pool.symbols)
     # 一条因子：组合信号就是它的截面 z 分数
     assert np.mean(list(now["latest"].values())) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_weight_is_the_legs_net_return_with_the_ic_sign(planted_pool, planted_vol):
+    # 符号跟 IC：反号的因子权重反号、大小一样
+    f = planted_pool.values(parse("Mean($volume, 4)", COLS)).f
+    full = combo.Combo.empty(planted_pool.rows, planted_pool.symbols).plus("planted", f).plus("inv", -f)
+    w = combo.learned(full, planted_vol, 96, PARAMS)
+    assert w[0] > 0 and w[1] == pytest.approx(-w[0])
+    # 大小是照 IC 方向单独做多空腿的净收益：成本高到怎么做都亏，IC 再强权重也是 0
+    costly = replace(PARAMS, cost_tiers_bps=(1e4, 1e4, 1e4))
+    assert (combo.learned(full, planted_vol, 96, costly) == 0).all()
+    tr = combo.tracks(full, planted_vol, 96, PARAMS)[0][0]
+    assert np.nanmean(tr.ic) > 0.3 and np.nanmean(tr.gross - tr.cost) > 0

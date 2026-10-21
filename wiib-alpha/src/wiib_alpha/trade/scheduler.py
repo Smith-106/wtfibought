@@ -6,7 +6,7 @@
 跑完不管成败都落一条 trade_run；一笔单都没成的（Binance、sim 一时不通，或者下了单全失败），01:00 之前下一分钟再来，成了一笔的当天不再跑；
 进程在半路退出就不落，重启后同一天重跑（下单 ID 不变，sim 去重）。
 刷新期间不跑；调仓、因子对比跑着的时候刷新接口拒绝（main 里那串互斥）。
-组合权重（全部历史、24h 档、晚一根成交的 IC）按装载时刻缓存，骨架就是挖掘装载的那份：库因子的值取自 main 的库缓存，不每天全池重算。
+组合权重和方向（全部历史、24h 档、晚一根成交的答案学的）按装载时刻缓存，骨架就是挖掘装载的那份：库因子的值取自 main 的库缓存，不每天全池重算。
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ def _cache(app: FastAPI) -> dict[str, Any]:
 
 
 async def combo_weights(app: FastAPI, lib: Any, cols: Sequence[int]) -> np.ndarray:
-    """lib.full 里这几列因子的组合权重（scheme.ic_weights）。一条因子的权重只看它自己的 IC，按因子 id 缓存；一条都没有是空的"""
+    """lib.full 里这几列因子的组合权重（scheme.learned_weights）。一条因子的权重只看它自己，按因子 id 缓存；一条都没有是空的"""
     if not cols:
         return np.empty(0)
     pool = app.state.data.pool
@@ -204,6 +204,6 @@ async def combo_weights(app: FastAPI, lib: Any, cols: Sequence[int]) -> np.ndarr
     for j in cols:
         fid = lib.factors[j]["id"]
         if fid not in cache:
-            cache[fid] = float((await asyncio.to_thread(scheme.ic_weights, pool, [lib.full.values[:, j]],
-                                                        app.state.params))[0])
+            cache[fid] = float((await asyncio.to_thread(scheme.learned_weights, pool, [lib.full.values[:, j]],
+                                                        app.state.data.vol, app.state.params))[0])
     return np.array([cache[lib.factors[j]["id"]] for j in cols])

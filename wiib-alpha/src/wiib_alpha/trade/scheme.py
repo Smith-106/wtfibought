@@ -1,10 +1,10 @@
 """交易方案的回测：组合腿 + 基差 carry 腿各一半、24h 调仓、每边按波动分仓、晚一根成交（选方案时那段脚本收进来）。
 
 骨架就是挖掘装载的那份（晚一根成交：信号那根收盘后再过一根才建仓，资金费从建仓那刻起算）。
-组合腿：勾选因子先转截面秩再 z 分数、按 24h 档月度截面 IC 加权（combo 那一套）；搜索段 walk-forward 学权重和方向，
-holdout 用搜索段整段定权重、方向定 +1。carry 腿：basis_7d，方向定死 −1（做空溢价高的）。
+组合腿：勾选因子先转截面秩再 z 分数，按 24h 档学到的权重加权（combo 那一套：符号跟 IC，大小是单独做多空腿的净收益，
+不赚钱的是 0）；搜索段 walk-forward 学权重和方向，holdout 用搜索段整段定权重、方向定 +1。carry 腿：basis_7d，方向定死 −1（做空溢价高的）。
 两腿都按缓冲带选币（cs_leg.weights），每边按 1/Std($ret, 672) 分仓，按档扣成本、扣资金费；每期净收益两腿各占一半。
-交易员的组合权重也从这里学（ic_weights）：全部历史、同一套骨架和函数。
+交易员的组合权重也从这里学（learned_weights）：全部历史、同一套骨架和函数。
 挖掘的 G9 也用它：库里的因子加基差 carry 是基线（Base），候选加进组合腿后搜索段净 Sharpe 升多少（gain）。
 python -m wiib_alpha.trade.scheme 在当前数据上把勾选因子的方案跑一遍，打印搜索段和 holdout。
 """
@@ -73,15 +73,17 @@ def leg(rows: pd.DataFrame, f: np.ndarray, vol: np.ndarray, params: EvalParams, 
     return Leg(np.bincount(p.g, w * r, p.total) - cost, -np.bincount(p.g, w * p.fund, p.total), traded, active)
 
 
-def combo_signal(rows: pd.DataFrame, symbols: tuple[str, ...], values: Sequence[np.ndarray], params: EvalParams,
-                 cut_ms: int | None) -> np.ndarray:
+def combo_signal(rows: pd.DataFrame, symbols: tuple[str, ...], values: Sequence[np.ndarray], vol: np.ndarray,
+                 params: EvalParams, cut_ms: int | None) -> np.ndarray:
     """组合腿的信号，与 rows 对齐：cut_ms 不给是 walk-forward（只在 test 块有值），给了是搜索段整段定权重、只在 cut 之后有值；
     一条因子都没有是全 NaN，组合腿空仓"""
     if not len(values):
         return np.full(len(rows), np.nan)
     c = combo.Combo(rows, symbols, tuple(map(str, range(len(values)))), np.column_stack(values))
     z = combo.zscores(c)
-    return combo.signal(c, z, BARS, params) if cut_ms is None else combo.holdout_signal(c, z, BARS, cut_ms, params)
+    if cut_ms is None:
+        return combo.signal(c, z, vol, BARS, params)
+    return combo.holdout_signal(c, z, vol, BARS, cut_ms, params)
 
 
 def backtest(pool: Pool, values: Sequence[np.ndarray], basis: np.ndarray, vol: np.ndarray, params: EvalParams,
@@ -97,7 +99,7 @@ def run(rows: pd.DataFrame, symbols: tuple[str, ...], values: Sequence[np.ndarra
         params: EvalParams, since: int | None) -> dict[str, Any]:
     """values、basis、vol 与 rows 对齐；since 不给是 walk-forward，给了是 holdout（只算它之后、组合腿方向定 +1）。
     出净收益、年化 Sharpe、最大回撤、换手、carry 腿每期资金费"""
-    signal = combo_signal(rows, symbols, values, params, since)
+    signal = combo_signal(rows, symbols, values, vol, params, since)
     a = leg(rows, signal, vol, params, None if since is None else 1.0, since)
     b = leg(rows, basis, vol, params, -1.0, since)
     active = a.active & b.active
@@ -144,10 +146,10 @@ def _search(c: combo.Combo, basis: np.ndarray, vol: np.ndarray, params: EvalPara
     return run(c.rows, c.symbols, [c.values[:, j] for j in range(len(c.names))], basis, vol, params, None)
 
 
-def ic_weights(pool: Pool, values: Sequence[np.ndarray], params: EvalParams) -> np.ndarray:
-    """交易员的组合权重：全部历史当训练窗，24h 档、晚一根成交的答案学的月度截面 IC 均值；values 与 pool.rows 对齐，至少一条"""
+def learned_weights(pool: Pool, values: Sequence[np.ndarray], vol: np.ndarray, params: EvalParams) -> np.ndarray:
+    """交易员的组合权重：全部历史当训练窗，24h 档、晚一根成交的答案学（combo.learned）；values、vol 与 pool.rows 对齐，至少一条"""
     c = combo.Combo(pool.rows, pool.symbols, tuple(map(str, range(len(values)))), np.column_stack(values))
-    return combo.learned(c, BARS, params)
+    return combo.learned(c, vol, BARS, params)
 
 
 # ========== 命令行 ==========

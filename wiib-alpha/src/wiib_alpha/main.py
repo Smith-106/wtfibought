@@ -137,8 +137,8 @@ def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams)
         report = {
             "brief": {"primary": prompts.hours(params.primary),
                       "horizons": horizons_brief(combo.evaluate(search, vol, params)),
-                      "holdout": holdout_brief(combo.holdout(full, data.cut_ms, params))},
-            **combo.latest(full, params),
+                      "holdout": holdout_brief(combo.holdout(full, data.vol, data.cut_ms, params))},
+            **combo.latest(full, data.vol, params),
         }
     known = data.reference_canonicals | {f["canonical"] for f in factors}
     base = scheme.Base.of(search, data.basis[pool.in_search], vol, params)

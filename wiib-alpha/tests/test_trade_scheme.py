@@ -100,10 +100,10 @@ def test_backtest_and_weights(planted_pool):
     held = scheme.backtest(planted_pool, [planted], basis, vol, PARAMS, True)
     # holdout 只算切点之后的点
     assert 0 < held["periods"] <= 10 and held["netReturn"] > 0
-    # 交易员的组合权重：全部历史上学的 24h 档 IC，方向跟着因子走
-    weight = scheme.ic_weights(planted_pool, [planted], PARAMS)[0]
-    assert weight > 0.1
-    assert scheme.ic_weights(planted_pool, [-planted, planted], PARAMS) == pytest.approx([-weight, weight])
+    # 交易员的组合权重：全部历史上学的 24h 档，方向跟着因子走
+    weight = scheme.learned_weights(planted_pool, [planted], vol, PARAMS)[0]
+    assert weight > 0
+    assert scheme.learned_weights(planted_pool, [-planted, planted], vol, PARAMS) == pytest.approx([-weight, weight])
 
 
 def test_gain_is_the_change_in_the_scheme_sharpe(planted_pool, planted_vol):

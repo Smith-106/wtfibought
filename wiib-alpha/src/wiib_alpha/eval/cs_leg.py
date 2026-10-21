@@ -115,6 +115,16 @@ def rebalance(p: Points, w: np.ndarray, unit_costs: tuple[float, float, float]) 
     return np.bincount(g[keep], delta[keep] * unit[keep], p.total), np.bincount(g[keep], delta[keep], p.total)
 
 
+def fixed(p: Points, vol: np.ndarray, params: EvalParams) -> tuple[np.ndarray, np.ndarray]:
+    """方向一直 +1 的多空腿：每个网格点的毛收益（含资金费）与换仓成本，没仓位也没换仓的点是 NaN；
+    方向 −1 就是多空两头对调，毛收益取反、成本不变。p、vol 来自 sized"""
+    w = inverse_vol(p.g, weights(p, np.ones(p.total), params.leg_enter, params.leg_exit), vol, p.total)
+    gross = np.bincount(p.g, w * (np.expm1(p.y) - p.fund), p.total)
+    cost = rebalance(p, w, params.costs)[0]
+    active = (np.bincount(p.g, np.abs(w), p.total) > 0) | (cost > 0)
+    return np.where(active, gross, np.nan), np.where(active, cost, np.nan)
+
+
 def permutation(p: Points, w: np.ndarray, r: np.ndarray, iterations: int, seed: int) -> float:
     """每个网格点内把收益在币之间打乱、仓位不动，随机毛收益 < 真实毛收益的比例；
     各币收益分布不一样时，调用方先把 r 除以波动、w 乘回去，打乱的就是同尺度的收益"""

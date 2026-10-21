@@ -302,7 +302,7 @@
     "title": "Factor library",
     "empty": "Nothing approved yet.",
     "combo": "Combination ({{n}} factors)",
-    "comboHint": "Each library factor is ranked across symbols at each moment, z-scored and summed with weights from its training-window monthly cross-sectional IC, same walk-forward as single factors; holdout weights are fit on the whole search span.",
+    "comboHint": "Each library factor is ranked across symbols at each moment, z-scored and summed with a weight whose sign follows its training-window monthly cross-sectional IC and whose size is the net return of trading it alone as a long-short leg after costs and funding; a factor that does not make money gets zero. Same walk-forward as single factors; holdout weights are fit on the whole search span.",
     "comboNone": "No data loaded, so the combination report can't be computed.",
     "weights": "Primary-horizon weights",
     "latest": "Cross-sectional signal at the last grid moment ({{time}} UTC)",
