@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Ban, ChevronDown, ChevronRight, CircleStop, History, Lightbulb, Pickaxe, Play, Radio, RefreshCw, ScrollText,
-  StickyNote, Repeat, type LucideIcon,
+  Ban, ChevronDown, ChevronRight, CircleStop, Lightbulb, Play, RefreshCw, StickyNote, type LucideIcon,
 } from 'lucide-react';
 import {
   alpha, type Campaign, type CampaignDetail, type Candidate, type LessonKind, type Run, type RunEvent, type RunRow,
@@ -13,7 +12,7 @@ import { usePoll } from '../poll';
 import { useFail, useToast } from '../toast';
 import { CampaignBadge, CandidateCard, RunBadge } from '../components/FactorCard';
 import { ModelSettings } from '../components/ModelSettings';
-import { Button, Card, Empty, Progress, Spinner } from '../components/ui';
+import { Badge, Button, Card, Empty, Progress, Spinner } from '../components/ui';
 import { OverviewStats, StatusCountBadges } from './Overview';
 
 /** 当前看的那一轮：刷新页接着看，关标签页就算了 */
@@ -237,9 +236,9 @@ export function MinePanel({ active, loaded }: { active: boolean; loaded: boolean
   const toggle = (key: string) => setPicked(shownId === key ? '' : key);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)] items-start">
+    <div className="grid items-start gap-x-12 gap-y-14 lg:grid-cols-[24rem_minmax(0,1fr)]">
       <div className="lg:col-span-2"><OverviewStats {...stats} /></div>
-      <div className="space-y-4">
+      <div className="space-y-14">
         <ModelSettings onReady={setModelsReady} />
 
         {running
@@ -247,10 +246,10 @@ export function MinePanel({ active, loaded }: { active: boolean; loaded: boolean
                           runs={groups.get(running.id) ?? []} openId={run?.id} onOpen={openRun} onStopped={loadLive} />
           : <StartCampaign ready={loaded && modelsReady} loaded={loaded} onStarted={started} />}
 
-        <Card title={t('campaign.list')} icon={History}
-              actions={<Button variant="ghost" icon={RefreshCw} onClick={() => void loadLists()} className="px-2" />}>
+        <Card title={t('campaign.list')}
+              actions={<Button variant="icon" icon={RefreshCw} aria-label={t('common.refresh')} onClick={() => void loadLists()} />}>
           {campaigns.length === 0 && !groups.get(null) ? <Empty>{t('campaign.none')}</Empty> : (
-            <div className="max-h-[26rem] overflow-y-auto -mx-4 divide-y divide-line border-y border-line">
+            <div className="-mx-3 max-h-[26rem] overflow-y-auto border-t border-fg px-3 divide-y divide-line">
               {campaigns.map(c => (
                 <CampaignGroup key={c.id} campaign={c.id === liveNow?.campaign.id ? liveNow.campaign : c}
                                runs={groups.get(c.id) ?? []} open={c.id === shownId} openId={run?.id}
@@ -266,11 +265,11 @@ export function MinePanel({ active, loaded }: { active: boolean; loaded: boolean
 
         <Lessons detail={shown} />
 
-        <Card title={t('detail.log')} icon={ScrollText}>
-          <div ref={logRef} className="max-h-80 overflow-y-auto space-y-1 text-[11.5px] leading-relaxed">
+        <Card title={t('detail.log')}>
+          <div ref={logRef} className="max-h-80 overflow-y-auto space-y-1 bg-panel-2 px-3 py-2.5 font-mono text-[12px] leading-relaxed">
             {logs.length === 0 && <Empty>{t('detail.logEmpty')}</Empty>}
             {logs.map((line, i) => (
-              <p key={i} className={cx(line.kind === 'done' && 'text-gain', line.kind === 'error' && 'text-loss',
+              <p key={i} className={cx('break-words', line.kind === 'done' && 'text-gain', line.kind === 'error' && 'text-loss',
                 line.kind === 'lessons' && 'text-info')}>
                 {line.kind === 'log' ? line.text
                   : line.kind === 'lessons' ? t('detail.lessons', { n: line.n })
@@ -282,34 +281,30 @@ export function MinePanel({ active, loaded }: { active: boolean; loaded: boolean
         </Card>
       </div>
 
-      <div className="space-y-4 min-w-0">
+      <div className="min-w-0 space-y-12">
         {!run ? (
-          <Card title={t('cand.title')} icon={Pickaxe}><Empty>{t('detail.pick')}</Empty></Card>
+          <Card title={t('cand.title')}><Empty>{t('detail.pick')}</Empty></Card>
         ) : (
           <>
             <Card>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <span className="num text-sm font-bold">{run.id}</span>
+                <span className="num font-mono text-[15px] font-bold">{run.id}</span>
                 <RunBadge status={run.status} />
-                {shownStage && <span className="text-xs text-muted">{t(`stage.${shownStage}`)}</span>}
-                {streaming && (
-                  <span className="inline-flex items-center gap-1 text-[11px] text-info">
-                    <Radio className="w-3 h-3 inline-flex animate-pulse" />{t('detail.live')}
-                  </span>
-                )}
+                {shownStage && <span className="text-[13px] text-muted">{t(`stage.${shownStage}`)}</span>}
+                {streaming && <Badge tone="info" pulse>{t('detail.live')}</Badge>}
                 {!streaming && run.status === 'running' && (
                   <Button icon={RefreshCw} onClick={reconnect}>{t('detail.reconnect')}</Button>
                 )}
-                <span className="ml-auto text-[11px] text-muted num">
+                <span className="ml-auto text-[12px] text-muted num">
                   {localTime(run.created_at)} · K={run.k}
                 </span>
               </div>
-              {run.note && <p className="mt-2 text-xs text-muted">{t('run.col.note')}：{run.note}</p>}
-              {run.error && <p className="mt-2 text-xs text-loss break-words">{run.error}</p>}
+              {run.note && <p className="mt-2.5 text-[13px] text-muted">{t('run.col.note')}：{run.note}</p>}
+              {run.error && <p className="mt-2.5 text-[13px] text-loss break-words">{run.error}</p>}
             </Card>
 
             {ordered.length === 0 ? (
-              <Card title={t('cand.title')} icon={Pickaxe}>
+              <Card title={t('cand.title')}>
                 {streaming ? <Spinner /> : <Empty>{t('cand.empty')}</Empty>}
               </Card>
             ) : ordered.map(c => <CandidateCard key={c.id} c={c} />)}
@@ -355,30 +350,30 @@ function StartCampaign({ ready, loaded, onStarted }: { ready: boolean; loaded: b
   );
 
   return (
-    <Card title={t('campaign.title')} icon={Play} hint={t('campaign.hint')}>
-      <div className="space-y-2.5">
-        <div className="grid grid-cols-2 gap-2">
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">{t('campaign.rounds')}</span>
+    <Card title={t('campaign.title')} hint={t('campaign.hint')}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1.5">
+            <span className="block text-[12px] font-semibold text-muted">{t('campaign.rounds')}</span>
             {intInput(rounds, setRounds, MAX_ROUNDS)}
           </label>
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">{t('campaign.k')}</span>
+          <label className="space-y-1.5">
+            <span className="block text-[12px] font-semibold text-muted">{t('campaign.k')}</span>
             {intInput(k, setK, MAX_K)}
           </label>
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">{t('campaign.maxSurvivors')}</span>
+          <label className="space-y-1.5">
+            <span className="block text-[12px] font-semibold text-muted">{t('campaign.maxSurvivors')}</span>
             <input type="number" min={1} value={maxSurvivors} onChange={e => setMaxSurvivors(e.target.value)}
                    placeholder={t('campaign.unlimited')} className="input w-full num" />
           </label>
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">{t('campaign.minutes')}</span>
+          <label className="space-y-1.5">
+            <span className="block text-[12px] font-semibold text-muted">{t('campaign.minutes')}</span>
             <input type="number" min={1} value={minutes} onChange={e => setMinutes(e.target.value)}
                    placeholder={t('campaign.unlimited')} className="input w-full num" />
           </label>
         </div>
-        <label className="block space-y-1">
-          <span className="block text-[11px] text-muted">{t('campaign.note')}</span>
+        <label className="block space-y-1.5">
+          <span className="block text-[12px] font-semibold text-muted">{t('campaign.note')}</span>
           <input value={note} onChange={e => setNote(e.target.value)} placeholder={t('campaign.notePh')}
                  className="input w-full" />
         </label>
@@ -386,8 +381,8 @@ function StartCampaign({ ready, loaded, onStarted }: { ready: boolean; loaded: b
                 className="w-full">
           {t('campaign.start')}
         </Button>
-        {!loaded && <p className="text-[11px] text-warn">{t('common.needData')}</p>}
-        {loaded && !ready && <p className="text-[11px] text-warn">{t('models.needBoth')}</p>}
+        {!loaded && <p className="text-[12px] text-warn">{t('common.needData')}</p>}
+        {loaded && !ready && <p className="text-[12px] text-warn">{t('models.needBoth')}</p>}
       </div>
     </Card>
   );
@@ -420,23 +415,23 @@ function LiveCampaign({ campaign: c, runs, openId, onOpen, onStopped }: {
   // 正在跑的这一轮也算进去
   const current = Math.min(c.rounds, c.done_rounds + 1);
   return (
-    <Card title={t('campaign.running')} icon={Repeat} actions={<CampaignBadge status={c.status} />}>
-      <div className="space-y-2.5">
+    <Card title={t('campaign.running')} actions={<CampaignBadge status={c.status} />}>
+      <div className="space-y-3">
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <span className="text-sm font-bold num">{t('campaign.round', { n: current, total: c.rounds })}</span>
-          <span className="text-xs num">
+          <span className="text-[26px] font-bold leading-none tracking-tight num [font-stretch:75%]">{t('campaign.round', { n: current, total: c.rounds })}</span>
+          <span className="text-[13px] num">
             {c.max_survivors != null ? t('campaign.survivorsOf', { n: c.survivors, max: c.max_survivors })
               : t('campaign.survivors', { n: c.survivors })}
           </span>
           {c.deadline_ms != null && (
-            <span className="text-[11px] text-muted num">{t('campaign.deadlineAt', { time: localTime(c.deadline_ms) })}</span>
+            <span className="text-[12px] text-muted num">{t('campaign.deadlineAt', { time: localTime(c.deadline_ms) })}</span>
           )}
         </div>
         <Progress done={c.done_rounds} total={c.rounds} />
-        <p className="text-[11px] text-muted num">K={c.k}{c.note && ` · ${c.note}`}</p>
+        <p className="text-[12px] text-muted num">K={c.k}{c.note && ` · ${c.note}`}</p>
         <RoundList runs={runs} openId={openId} onOpen={onOpen} />
         {c.status === 'stopping'
-          ? <p className="text-[11px] text-warn">{t('campaign.stopping')}</p>
+          ? <p className="text-[12px] text-warn">{t('campaign.stopping')}</p>
           : (
             <Button icon={CircleStop} loading={stopping} onClick={() => void stop()} className="w-full">
               {t('campaign.stop')}
@@ -447,19 +442,19 @@ function LiveCampaign({ campaign: c, runs, openId, onOpen, onStopped }: {
   );
 }
 
-/** 一个 campaign 的各轮，最新在前；轮号从 1 数 */
+/** 一个 campaign 的各轮，最新在前；轮号从 1 数；正看着的那轮左边一道橙线 */
 function RoundList({ runs, openId, onOpen }: { runs: RunRow[]; openId?: string; onOpen: (id: string) => void }) {
   const { t } = useTranslation();
   return (
-    <ul className="max-h-72 overflow-y-auto divide-y divide-line border border-line">
+    <ul className="-mx-3 max-h-72 overflow-y-auto border-t border-fg px-3">
       {runs.map((r, i) => (
         <li key={r.id} onClick={() => onOpen(r.id)}
-            className={cx('flex flex-wrap items-center gap-x-2 gap-y-1 px-2.5 py-1.5 cursor-pointer hover:bg-panel-2',
-              openId === r.id && 'bg-primary/8')}>
-          <span className="text-[11px] font-semibold num w-12 shrink-0">{t('campaign.roundNo', { n: runs.length - i })}</span>
+            className={cx('hov flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line py-2 cursor-pointer',
+              openId === r.id && 'on')}>
+          <span className="w-12 shrink-0 text-[12px] font-bold num">{t('campaign.roundNo', { n: runs.length - i })}</span>
           <RunBadge status={r.status} />
-          <span className="text-[11px] text-muted num" title={r.id}>{localTime(r.created_at)}</span>
-          <div className="basis-full"><StatusCountBadges counts={r.counts} /></div>
+          <span className="text-[12px] text-muted num" title={r.id}>{localTime(r.created_at)}</span>
+          <div className="basis-full pl-[3.625rem]"><StatusCountBadges counts={r.counts} /></div>
         </li>
       ))}
     </ul>
@@ -480,24 +475,23 @@ function CampaignGroup({ campaign: c, runs, open, openId, onToggle, onOpen }: {
   return (
     <div>
       <button onClick={onToggle}
-              className={cx('flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2 text-left cursor-pointer hover:bg-panel-2',
-                open && 'bg-panel-2')}>
-        <Chevron className="w-3 h-3 inline-flex shrink-0 text-muted" />
+              className={cx('hov flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 py-2.5 text-left cursor-pointer', open && 'lit')}>
+        <Chevron className="w-3.5 h-3.5 shrink-0 text-muted" />
         {c ? (
           <>
-            <span className="text-[11.5px] num whitespace-nowrap" title={c.id}>{localTime(c.created_at)}</span>
+            <span className="text-[12.5px] num whitespace-nowrap" title={c.id}>{localTime(c.created_at)}</span>
             <CampaignBadge status={c.status} />
-            <span className="text-[11px] text-muted num">
+            <span className="text-[12px] text-muted num">
               {t('campaign.progress', { done: c.done_rounds, total: c.rounds })} · {t('campaign.survivors', { n: c.survivors })}
             </span>
-            {c.note && <span className="basis-full truncate pl-5 text-[11px] text-muted" title={c.note}>{c.note}</span>}
+            {c.note && <span className="basis-full truncate pl-6 text-[12px] text-muted" title={c.note}>{c.note}</span>}
           </>
-        ) : <span className="text-[11.5px] text-muted">{t('campaign.solo', { n: runs.length })}</span>}
+        ) : <span className="text-[12.5px] text-muted">{t('campaign.solo', { n: runs.length })}</span>}
       </button>
       {open && (
-        <div className="space-y-1.5 px-4 pb-3">
-          {c?.stop_reason && <p className="text-[11px] text-muted">{t('campaign.stopReason', { reason: c.stop_reason })}</p>}
-          {c?.error && <p className="text-[11px] text-loss break-words">{c.error}</p>}
+        <div className="space-y-2 pb-3 pl-6">
+          {c?.stop_reason && <p className="text-[12px] text-muted">{t('campaign.stopReason', { reason: c.stop_reason })}</p>}
+          {c?.error && <p className="text-[12px] text-loss break-words">{c.error}</p>}
           {runs.length === 0 ? <Empty>{t('run.noRun')}</Empty> : <RoundList runs={runs} openId={openId} onOpen={onOpen} />}
         </div>
       )}
@@ -511,17 +505,17 @@ function Lessons({ detail }: { detail: CampaignDetail | null }) {
   // 经验是哪一轮写的：轮号从 1 数
   const roundOf = useMemo(() => new Map(detail?.runs.map((r, i) => [r.id, detail.runs.length - i])), [detail]);
   return (
-    <Card title={t('lessons.title')} icon={Lightbulb} hint={t('lessons.hint')}>
+    <Card title={t('lessons.title')} hint={t('lessons.hint')}>
       {!detail || detail.lessons.length === 0 ? <Empty>{t('lessons.empty')}</Empty> : (
-        <ol className="max-h-[22rem] overflow-y-auto space-y-2">
+        <ol className="max-h-[22rem] overflow-y-auto border-t border-fg">
           {detail.lessons.map(x => {
             const { icon: Icon, tone } = LESSON_ICON[x.kind];
             return (
-              <li key={x.id} className="flex items-start gap-2 text-[11.5px] leading-relaxed">
-                <Icon className={cx('w-3 h-3 inline-flex shrink-0 mt-[3px]', tone)} aria-label={t(`lessons.kind.${x.kind}`)} />
+              <li key={x.id} className="flex items-start gap-2.5 border-b border-line py-2.5 text-[13px] leading-relaxed">
+                <Icon className={cx('w-3.5 h-3.5 shrink-0 mt-[3px]', tone)} aria-label={t(`lessons.kind.${x.kind}`)} />
                 <div className="min-w-0">
                   <p className="break-words">{x.text}</p>
-                  <p className="text-[10.5px] text-muted num">
+                  <p className="mt-0.5 text-[11.5px] text-muted num">
                     {t(`lessons.kind.${x.kind}`)} · {t('lessons.meta', { n: roundOf.get(x.run_id) ?? '—', time: localTime(x.created_at) })}
                   </p>
                 </div>

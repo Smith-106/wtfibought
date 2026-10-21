@@ -26,6 +26,9 @@ const STATUS: Record<CandidateStatus, { tone: Tone; icon: LucideIcon }> = {
   declined: { tone: 'muted', icon: CircleX },
 };
 
+/** 还在轮内走流程的状态：单条候选的标签前面带一颗呼吸的方点 */
+const IN_FLIGHT = new Set<CandidateStatus>(['proposed', 'evaluating', 'rewrite', 'reviewing', 'revise']);
+
 const VERDICT: Record<Review['verdict'], Tone> = { pass: 'gain', revise: 'warn', reject: 'loss' };
 
 const RUN_TONE: Record<RunStatus, Tone> = { running: 'info', done: 'gain', failed: 'loss' };
@@ -36,19 +39,19 @@ const CAMPAIGN_TONE: Record<CampaignStatus, Tone> = {
 
 export function RunBadge({ status }: { status: RunStatus }) {
   const { t } = useTranslation();
-  return <Badge tone={RUN_TONE[status]}>{t(`runStatus.${status}`)}</Badge>;
+  return <Badge tone={RUN_TONE[status]} pulse={status === 'running'}>{t(`runStatus.${status}`)}</Badge>;
 }
 
 export function CampaignBadge({ status }: { status: CampaignStatus }) {
   const { t } = useTranslation();
-  return <Badge tone={CAMPAIGN_TONE[status]}>{t(`campaignStatus.${status}`)}</Badge>;
+  return <Badge tone={CAMPAIGN_TONE[status]} pulse={status === 'running' || status === 'stopping'}>{t(`campaignStatus.${status}`)}</Badge>;
 }
 
 /** count 给了就在状态后面带条数（公开概览用） */
 export function StatusBadge({ status, count }: { status: CandidateStatus; count?: number }) {
   const { t } = useTranslation();
   return (
-    <Badge tone={STATUS[status].tone} icon={STATUS[status].icon}>
+    <Badge tone={STATUS[status].tone} icon={STATUS[status].icon} pulse={count == null && IN_FLIGHT.has(status)}>
       {t(`status.${status}`)}{count != null && <span className="num">{count}</span>}
     </Badge>
   );
@@ -64,7 +67,7 @@ export function PassBadge({ passed }: { passed: boolean }) {
 export function ReviewLine({ review }: { review: Review }) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-wrap items-start gap-x-2 gap-y-1 text-[11.5px] leading-relaxed">
+    <div className="flex flex-wrap items-start gap-x-2.5 gap-y-1 text-[13px] leading-relaxed">
       <span className="text-muted shrink-0">{t('cand.review')}</span>
       <Badge tone={VERDICT[review.verdict]}>{t(`cand.verdict.${review.verdict}`)}</Badge>
       <span className="flex-1 min-w-[12rem]">
@@ -78,10 +81,10 @@ export function ReviewLine({ review }: { review: Review }) {
 export function ExprBlock({ expr, note, direction }: { expr: string; note?: string | null; direction?: 1 | -1 | null }) {
   const { t } = useTranslation();
   return (
-    <div className="space-y-1">
-      <code className="block border border-line bg-panel-2 px-2.5 py-1.5 text-[11.5px] break-all">{expr}</code>
+    <div className="space-y-1.5">
+      <code className="block border border-line bg-panel-2 px-3 py-2 text-[12.5px] break-all">{expr}</code>
       {direction != null && <DirectionLine direction={direction} />}
-      {note && <p className="text-[11.5px] text-muted leading-relaxed">{t('cand.note')}：{note}</p>}
+      {note && <p className="text-[12.5px] text-muted leading-relaxed">{t('cand.note')}：{note}</p>}
     </div>
   );
 }
@@ -91,8 +94,8 @@ export function DirectionLine({ direction, asked }: { direction: 1 | -1; asked?:
   const { t } = useTranslation();
   const Icon = direction > 0 ? TrendingUp : TrendingDown;
   return (
-    <p className="flex items-center gap-1.5 text-[11.5px] text-muted">
-      <Icon className="w-3 h-3 inline-flex shrink-0" />
+    <p className="flex items-center gap-1.5 text-[12.5px] text-muted">
+      <Icon className="w-3.5 h-3.5 shrink-0" />
       {t('cand.direction')}：<span className="text-fg">{t(direction > 0 ? 'cand.up' : 'cand.down')}</span>
       {asked && <span>（{t('cand.directionAsked')}）</span>}
     </p>
@@ -104,20 +107,20 @@ export function GateList({ gates }: { gates: (GateBrief & { name?: string | null
   const { t } = useTranslation();
   const passed = gates.filter(g => g.passed).length;
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
+    <div className="space-y-2">
+      <div className="flex items-baseline gap-2">
         <span className="microlabel">{t('gates.title')}</span>
-        <span className={cx('text-[11px] num', passed === gates.length ? 'text-gain' : 'text-loss')}>
+        <span className={cx('text-[12.5px] font-bold num', passed === gates.length ? 'text-gain' : 'text-loss')}>
           {passed}/{gates.length}
         </span>
       </div>
-      <ul className="border border-line divide-y divide-line">
+      <ul className="border-t border-fg">
         {gates.map(g => (
-          <li key={g.id} className="flex items-start gap-2 px-2.5 py-1.5 text-[11.5px] leading-relaxed">
+          <li key={g.id} className="flex items-start gap-2 border-b border-line py-1.5 text-[12.5px] leading-relaxed">
             {g.passed
-              ? <Check className="w-3 h-3 inline-flex shrink-0 mt-[3px] text-gain" />
-              : <X className="w-3 h-3 inline-flex shrink-0 mt-[3px] text-loss" />}
-            <span className="num font-semibold shrink-0 w-6">{g.id}</span>
+              ? <Check className="w-3 h-3 shrink-0 mt-[4px] text-gain" />
+              : <X className="w-3 h-3 shrink-0 mt-[4px] text-loss" />}
+            <span className="num font-mono font-bold shrink-0 w-7 text-[12px]">{g.id}</span>
             {g.name && <span className="text-muted shrink-0">{g.name}</span>}
             <span className={cx('min-w-0 break-words', g.passed ? 'text-muted' : 'text-fg')}>{g.note}</span>
           </li>
@@ -167,7 +170,7 @@ function bps(v: number | null, signed = false): string {
   return `${signed && v > 0 ? '+' : ''}${v.toFixed(1)} bps`;
 }
 
-/** primary 是判门用的那一档，高亮出来 */
+/** primary 是判门用的那一档，表头标橙、整列淡橙底 */
 function HorizonHead({ label, primary }: { label: ReactNode; primary: string }) {
   const { t } = useTranslation();
   return (
@@ -184,7 +187,7 @@ function HorizonHead({ label, primary }: { label: ReactNode; primary: string }) 
   );
 }
 
-const primaryCell = (h: string, primary: string) => cx('r num', h === primary && 'bg-primary/5');
+const primaryCell = (h: string, primary: string) => cx('r num', h === primary && 'pri');
 
 /** 切点之后的 IC；titleKey 换标题：holdout 是当前切点起，unseen 是发现它那一轮的切点起 */
 export function HoldoutTable({ holdout, primary, titleKey = 'brief.holdout' }: {
@@ -226,7 +229,7 @@ function TimeseriesTable({ ts, primary }: { ts: TimeseriesBrief; primary: string
     { key: 'net', get: h => signedPct(h.netReturn) },
   ];
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <table className="tbl">
         <HorizonHead label={t('brief.timeseries')} primary={primary} />
         <tbody>
@@ -238,9 +241,9 @@ function TimeseriesTable({ ts, primary }: { ts: TimeseriesBrief; primary: string
           ))}
         </tbody>
       </table>
-      <p className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 text-[11px] text-muted num">
+      <p className="flex flex-wrap gap-x-3.5 gap-y-0.5 text-[12px] text-muted num">
         <span>{t('brief.timeseriesBySymbol')}</span>
-        {Object.entries(ts.bySymbol).map(([s, v]) => <span key={s}>{s} <span className="text-fg">{num(v, 3)}</span></span>)}
+        {Object.entries(ts.bySymbol).map(([s, v]) => <span key={s}>{s} <span className="font-semibold text-fg">{num(v, 3)}</span></span>)}
       </p>
     </div>
   );
@@ -256,7 +259,7 @@ export function BriefTable({ brief }: { brief: BriefLike }) {
   const { gain, gainSharpe, holdout, unseen, timeseries, redundancy, complexity, neutral } = brief;
   const primary = primaryOf(brief);
   return (
-    <div className="space-y-2.5 min-w-0">
+    <div className="space-y-5 min-w-0">
       <div className="overflow-x-auto">
         <table className="tbl">
           <HorizonHead label={t('brief.metric')} primary={primary} />
@@ -287,7 +290,7 @@ export function BriefTable({ brief }: { brief: BriefLike }) {
         </table>
       </div>
       {redundancy && complexity && (
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 px-2 text-[11.5px]">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12.5px]">
           <dt className="text-muted">{t('brief.redundancy')}</dt>
           <dd className={cx('num break-all', !redundancy.ready && 'text-warn')}>
             {!redundancy.ready ? t('brief.gridNotReady')
@@ -315,7 +318,7 @@ export function BriefTable({ brief }: { brief: BriefLike }) {
   );
 }
 
-/** 一条因子的卡片：候选、手填评估共用 */
+/** 一条因子：顶上一道墨线开头，观察中的换成 2px 橙线；候选、手填评估共用 */
 export function FactorCard({ title, badges, meta, hypothesis, expr, note, direction, reason, review, gates, brief, highlight,
   children }: {
   title: ReactNode;
@@ -334,19 +337,19 @@ export function FactorCard({ title, badges, meta, hypothesis, expr, note, direct
 }) {
   const { t } = useTranslation();
   return (
-    <article className={cx('border bg-panel', highlight ? 'border-primary/60' : 'border-line')}>
-      <header className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
-        <h3 className="text-[13px] font-bold break-all">{title}</h3>
+    <article className={cx('pt-4', highlight ? 'border-t-2 border-primary' : 'border-t border-fg')}>
+      <header className="flex flex-wrap items-center gap-2">
+        <h3 className="text-[15px] font-bold break-all">{title}</h3>
         {badges}
-        {meta && <span className="ml-auto text-[11px] text-muted num">{meta}</span>}
+        {meta && <span className="ml-auto text-[12px] text-muted num">{meta}</span>}
       </header>
-      <div className="px-3.5 pb-3.5 pt-2 space-y-2.5">
-        {hypothesis && <p className="text-xs leading-relaxed">{hypothesis}</p>}
+      <div className="mt-3 space-y-3.5">
+        {hypothesis && <p className="max-w-[90ch] text-[14px] leading-relaxed">{hypothesis}</p>}
         {expr && <ExprBlock expr={expr} note={note} direction={direction} />}
-        {reason && <p className="text-[11.5px] text-loss leading-relaxed">{t('cand.reason')}：{reason}</p>}
+        {reason && <p className="text-[13px] text-loss leading-relaxed">{t('cand.reason')}：{reason}</p>}
         {review && <ReviewLine review={review} />}
         {(gates || brief) && (
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+          <div className="grid gap-x-8 gap-y-5 pt-1 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
             {gates && <GateList gates={gates} />}
             {brief && <BriefTable brief={brief} />}
           </div>
@@ -357,7 +360,7 @@ export function FactorCard({ title, badges, meta, hypothesis, expr, note, direct
   );
 }
 
-/** 一条候选：轮次详情与观察区共用；meta 不给就显示写了几次，children 放在卡片底部；观察中的描边高亮 */
+/** 一条候选：轮次详情与观察区共用；meta 不给就显示写了几次，children 放在卡片底部；观察中的橙线开头 */
 export function CandidateCard({ c, meta, children }: { c: Candidate; meta?: ReactNode; children?: ReactNode }) {
   const { t } = useTranslation();
   return (

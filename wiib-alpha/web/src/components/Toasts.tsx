@@ -7,6 +7,7 @@ interface Item {
   id: number;
   message: string;
   kind: ToastKind;
+  ms: number;
 }
 
 let seq = 0;
@@ -18,8 +19,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const toast = useCallback((message: string, kind: ToastKind = 'error') => {
     const id = ++seq;
-    setItems(list => [...list.slice(-3), { id, message, kind }]);
-    setTimeout(() => dismiss(id), kind === 'error' ? 6000 : 3000);
+    const ms = kind === 'error' ? 6000 : 3000;
+    setItems(list => [...list.slice(-3), { id, message, kind, ms }]);
+    setTimeout(() => dismiss(id), ms);
   }, [dismiss]);
 
   return (
@@ -27,16 +29,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-[min(24rem,calc(100vw-2rem))]">
         {items.map(i => (
-          <div key={i.id}
-               className={cx('flex items-start gap-2 border bg-panel px-3 py-2 shadow-lg text-xs leading-relaxed',
-                 i.kind === 'error' ? 'border-loss/50' : 'border-gain/50')}>
+          <div key={i.id} className="toast">
             {i.kind === 'error'
-              ? <CircleAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-loss" />
-              : <CircleCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-gain" />}
+              ? <CircleAlert className="w-4 h-4 shrink-0 mt-0.5 text-loss" />
+              : <CircleCheck className="w-4 h-4 shrink-0 mt-0.5 text-gain" />}
             <span className="flex-1 break-words">{i.message}</span>
-            <button onClick={() => dismiss(i.id)} className="text-muted hover:text-fg" aria-label="close">
+            <button onClick={() => dismiss(i.id)} className="text-muted transition-colors hover:text-fg cursor-pointer" aria-label="close">
               <X className="w-3.5 h-3.5" />
             </button>
+            {/* 底边细线倒计时，走完就收 */}
+            <i className={cx('toast-bar', i.kind === 'error' ? 'bg-loss' : 'bg-gain')} style={{ animationDuration: `${i.ms}ms` }} />
           </div>
         ))}
       </div>

@@ -9,9 +9,7 @@ export default defineConfig({
   server: {
     port: 3002,
     proxy: {
-      // 因子挖掘接口去 wiib-alpha，其余 /api（登录）去 sim；前缀长的先匹配
       '/api/alpha': 'http://localhost:8084',
-      '/api': 'http://localhost:8080',
     },
   },
 })

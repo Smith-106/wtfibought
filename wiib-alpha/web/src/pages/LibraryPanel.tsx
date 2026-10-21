@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Library, RefreshCw, ScanSearch, Sigma } from 'lucide-react';
+import { RefreshCw, ScanSearch } from 'lucide-react';
 import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck, type ReevalJob } from '../api';
 import { cx, HORIZON_BARS, HORIZONS, localTime, num, primaryOf, utcMinute } from '../format';
 import { usePoll } from '../poll';
@@ -92,24 +92,24 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
     <SortTh key={k} k={k} sort={sort} onSort={toggle} right={right}>{label}</SortTh>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-14">
       {combo ? <ComboCard combo={combo} /> : factors && factors.length > 0 && !loaded && (
         <Card><Empty>{t('library.comboNone')}</Empty></Card>
       )}
 
-      <Card title={t('library.title')} icon={Library}
-            actions={<Button variant="ghost" icon={RefreshCw} onClick={() => void load()} className="px-2" />}>
+      <Card title={t('library.title')}
+            actions={<Button variant="icon" icon={RefreshCw} aria-label={t('common.refresh')} onClick={() => void load()} />}>
         {!factors ? <Spinner /> : factors.length === 0 ? <Empty>{t('library.empty')}</Empty> : (
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[11px] text-muted">{t('library.reevalHint')}</p>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="max-w-[90ch] text-[12.5px] leading-relaxed text-muted">{t('library.reevalHint')}</p>
               <Button icon={ScanSearch} loading={starting || running} disabled={!loaded}
                       onClick={() => void reeval()} className="ml-auto">
                 {running ? t('library.reevalRunning') : t('library.reeval')}
               </Button>
             </div>
             {job && <ReevalProgress job={job} />}
-            <div className="overflow-x-auto -mx-4">
+            <div className="tw">
               <table className="tbl">
                 <thead>
                   <tr>
@@ -126,8 +126,8 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
                 <tbody>
                   {sorted.map(f => (
                     <tr key={f.id} onClick={() => open(f.id)} className="cursor-pointer">
-                      <td className="font-semibold whitespace-nowrap">{f.name}</td>
-                      <td className="max-w-[28rem]"><code className="block truncate text-[11.5px] text-muted" title={f.expr}>{f.expr}</code></td>
+                      <td className="font-mono text-[12.5px] font-bold whitespace-nowrap">{f.name}</td>
+                      <td className="max-w-[28rem]"><code className="block truncate text-[12px] text-muted" title={f.expr}>{f.expr}</code></td>
                       <td className="r num whitespace-nowrap">{localTime(f.approved_at)}</td>
                       <td className="r num">{num(primaryIc(f))}</td>
                       <td className="r num">{num(primaryIcir(f), 2)}</td>
@@ -145,7 +145,7 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
 
       <Drawer open={openId !== null} onClose={close}
               title={detail
-                ? <div className="flex items-center gap-2"><span className="font-bold">{detail.name}</span><Badge tone="gain">{t('status.approved')}</Badge></div>
+                ? <div className="flex items-center gap-2.5"><span className="font-mono text-[16px] font-bold">{detail.name}</span><Badge tone="gain">{t('status.approved')}</Badge></div>
                 : <Spinner />}>
         {detail && (
           <FactorDetailView f={detail} loaded={loaded} rechecking={rechecking} onRecheck={() => void recheck(detail.id)} />
@@ -165,37 +165,37 @@ function FactorDetailView({ f, loaded, rechecking, onRecheck }: {
   return (
     <>
       <ExprBlock expr={f.expr} />
-      <dl className="grid gap-x-6 gap-y-2 text-[11.5px] sm:grid-cols-2">
+      <dl className="grid gap-x-6 gap-y-3 text-[12.5px] sm:grid-cols-2">
         <div className="sm:col-span-2">
           <dt className="text-muted">{t('library.canonical')}</dt>
           <dd><code className="break-all">{f.canonical}</code></dd>
         </div>
         <div>
           <dt className="text-muted">{t('library.columns')}</dt>
-          <dd className="flex flex-wrap gap-1 pt-0.5">{f.columns.map(c => <Badge key={c}>${c}</Badge>)}</dd>
+          <dd className="flex flex-wrap gap-1 pt-1">{f.columns.map(c => <Badge key={c}>${c}</Badge>)}</dd>
         </div>
         <div>
           <dt className="text-muted">{t('library.approvedAt')} · {t('library.runId')}</dt>
           <dd className="num">{localTime(f.approved_at)} · {f.run_id}</dd>
         </div>
       </dl>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         <div className="microlabel">{t('library.hypothesis')}</div>
-        <p className="text-xs leading-relaxed">{f.hypothesis}</p>
+        <p className="text-[14px] leading-relaxed">{f.hypothesis}</p>
       </div>
       {f.review && <ReviewLine review={f.review} />}
       <GateList gates={f.gates} />
       <BriefTable brief={f.brief} />
       {f.reeval && <ReevalBlock r={f.reeval} />}
-      <section className="border border-line bg-panel p-3 space-y-2">
+      <section className="space-y-3 border-t border-fg pt-4">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="microlabel">{t('library.recheck')}</span>
-          <span className="text-[11px] text-muted">{t('library.recheckHint')}</span>
+          <span className="text-[14px] font-extrabold">{t('library.recheck')}</span>
+          <span className="text-[12.5px] text-muted">{t('library.recheckHint')}</span>
           <Button icon={RefreshCw} loading={rechecking} disabled={!loaded} onClick={onRecheck} className="ml-auto">
             {t('library.recheckRun')}
           </Button>
         </div>
-        {!loaded && <p className="text-[11px] text-warn">{t('common.needData')}</p>}
+        {!loaded && <p className="text-[12px] text-warn">{t('common.needData')}</p>}
         {f.recheck ? <RecheckView recheck={f.recheck} primary={primaryOf(f.brief)} /> : <Empty>{t('library.recheckNone')}</Empty>}
       </section>
       <RawJson value={f.eval} />
@@ -216,7 +216,7 @@ function RecheckView({ recheck, primary }: { recheck: Recheck; primary: string }
   ];
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-muted num">{t('library.recheckAt', { since: utcMinute(recheck.since), at: localTime(recheck.at) })}</p>
+      <p className="text-[12px] text-muted num">{t('library.recheckAt', { since: utcMinute(recheck.since), at: localTime(recheck.at) })}</p>
       <table className="tbl">
         <thead>
           <tr>
@@ -241,12 +241,8 @@ function RecheckView({ recheck, primary }: { recheck: Recheck; primary: string }
 function Diverging({ v, max }: { v: number | null; max: number }) {
   const width = v == null || max === 0 ? 0 : Math.min(1, Math.abs(v) / max) * 50;
   return (
-    <span className="relative block h-2 w-28 bg-panel-2">
-      <span className="absolute inset-y-0 left-1/2 w-px bg-line" />
-      {v != null && (
-        <span className={cx('absolute inset-y-0', v >= 0 ? 'left-1/2 bg-gain/70' : 'right-1/2 bg-loss/70')}
-              style={{ width: `${width}%` }} />
-      )}
+    <span className="dvg">
+      {v != null && <i className={v >= 0 ? 'pos' : 'neg'} style={{ width: `${width}%` }} />}
     </span>
   );
 }
@@ -259,10 +255,10 @@ function ComboCard({ combo }: { combo: ComboReport }) {
     [combo.latest]);
   const maxLatest = Math.max(0, ...latest.map(([, v]) => Math.abs(v ?? 0)));
   return (
-    <Card title={t('library.combo', { n: combo.weights.length })} icon={Sigma} hint={t('library.comboHint')}>
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+    <Card title={t('library.combo', { n: combo.weights.length })} hint={t('library.comboHint')}>
+      <div className="grid gap-x-10 gap-y-8 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <BriefTable brief={combo.brief} />
-        <div className="space-y-4">
+        <div className="space-y-6">
           <table className="tbl">
             <thead>
               <tr><th colSpan={3}>{t('library.weights')}</th></tr>
@@ -270,14 +266,14 @@ function ComboCard({ combo }: { combo: ComboReport }) {
             <tbody>
               {combo.weights.map(w => (
                 <tr key={w.name}>
-                  <td className="font-semibold">{w.name}</td>
+                  <td className="font-mono text-[12.5px] font-bold">{w.name}</td>
                   <td className="r num">{num(w.weight, 3)}</td>
-                  <td className="w-32"><Diverging v={w.weight} max={maxWeight} /></td>
+                  <td className="w-32 align-middle"><Diverging v={w.weight} max={maxWeight} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="max-h-[28rem] overflow-auto border border-line">
+          <div className="tw max-h-[28rem] overflow-y-auto">
             <table className="tbl tbl-sticky">
               <thead>
                 <tr><th colSpan={3}>{t('library.latest', { time: utcMinute(combo.asOf) })}</th></tr>
@@ -285,9 +281,9 @@ function ComboCard({ combo }: { combo: ComboReport }) {
               <tbody>
                 {latest.map(([s, v]) => (
                   <tr key={s}>
-                    <td className="num">{s}</td>
+                    <td className="num font-mono text-[12.5px]">{s}</td>
                     <td className="r num">{num(v, 3)}</td>
-                    <td className="w-32"><Diverging v={v} max={maxLatest} /></td>
+                    <td className="w-32 align-middle"><Diverging v={v} max={maxLatest} /></td>
                   </tr>
                 ))}
               </tbody>

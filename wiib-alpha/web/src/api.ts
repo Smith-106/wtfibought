@@ -436,11 +436,6 @@ export interface Overview {
   observing: number;
 }
 
-export interface AuthMode {
-  linuxDoEnabled: boolean;
-  passwordLoginEnabled: boolean;
-}
-
 /** 挖掘用的两个角色：gen 提假设写表达式，review 评审 */
 export type ModelRole = 'gen' | 'review';
 export const MODEL_ROLES: ModelRole[] = ['gen', 'review'];
@@ -639,16 +634,16 @@ export class ApiError extends Error {
   }
 }
 
-// 与 wiib-web 同 key 同格式（zustand persist）：同域部署时登录态共享
+// 与 wiib-web 同 key 同格式（zustand persist）：同域部署，主站登录了这里就带着同一个 token
 const USER_KEY = 'wiib-user';
+
+// 本地 vite dev 和主站不同源，手里没有主站的 token 时用 .env.development.local 里的 VITE_DEV_TOKEN（文件不进库）
+const DEV_TOKEN: string | undefined = import.meta.env.DEV ? import.meta.env.VITE_DEV_TOKEN : undefined;
 
 export function getToken(): string | null {
   const raw = localStorage.getItem(USER_KEY);
-  return raw ? ((JSON.parse(raw) as { state?: { token?: string | null } }).state?.token ?? null) : null;
-}
-
-export function saveToken(token: string): void {
-  localStorage.setItem(USER_KEY, JSON.stringify({ state: { token }, version: 0 }));
+  const stored = raw ? (JSON.parse(raw) as { state?: { token?: string | null } }).state?.token : null;
+  return stored ?? DEV_TOKEN ?? null;
 }
 
 export function clearToken(): void {
@@ -725,7 +720,7 @@ async function stream(path: string, onEvent: (e: RunEvent) => void, signal: Abor
 
 const ALPHA = '/api/alpha';
 
-/** 公开的只有 overview、data/status、reference；其余要管理员 token，没 token 是 code 401，不是管理员是 403 */
+/** 公开的只有 overview、data/status、reference 和交易员的 account、positions、equity；其余要管理员 token，没 token 是 code 401，不是管理员是 403 */
 export const alpha = {
   /** 手里的 token 是不是管理员 */
   me: (signal?: AbortSignal) => call<{ admin: boolean; lang: string }>('GET', `${ALPHA}/me`, undefined, signal),
@@ -778,12 +773,4 @@ export const alpha = {
     call<{ id: string; selected: boolean }>('PUT', `${ALPHA}/trader/factors/${id}`, { selected }),
   /** 后台比"当前勾选"和"加上 / 去掉这条"，进度看 traderFactors().compare */
   compareTraderFactor: (id: string) => call<{ started: boolean }>('POST', `${ALPHA}/trader/compare/${id}`),
-};
-
-/** sim 的登录接口，返回体同形，data 就是 token */
-export const sim = {
-  mode: () => call<AuthMode>('GET', '/api/auth/mode'),
-  passwordLogin: (username: string, password: string) =>
-    call<string>('POST', '/api/auth/login/password', { username, password }),
-  localLogin: () => call<string>('POST', '/api/auth/login/local'),
 };

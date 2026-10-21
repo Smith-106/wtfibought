@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, Eye, RefreshCw, ScanSearch, Trash2, TriangleAlert } from 'lucide-react';
+import { Archive, RefreshCw, ScanSearch, Trash2, TriangleAlert } from 'lucide-react';
 import { alpha, type ObservationItem, type Reeval, type ReevalJob } from '../api';
 import { cx, localTime, num } from '../format';
 import { usePoll } from '../poll';
@@ -67,40 +67,44 @@ export function ObservationPanel({ active }: { active: boolean }) {
   };
 
   return (
-    <div className="space-y-4">
-      <Card title={t('observe.title')} icon={Eye} hint={t('observe.hint')}
-            actions={<Button variant="ghost" icon={RefreshCw} onClick={() => void load()} className="px-2" />}>
+    <div className="space-y-14">
+      <Card title={t('observe.title')} hint={t('observe.hint')}
+            actions={<Button variant="icon" icon={RefreshCw} aria-label={t('common.refresh')} onClick={() => void load()} />}>
         {!items ? <Spinner /> : items.length === 0
           ? <Empty>{t('observe.empty')}</Empty>
           : (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-xs text-muted">{t('observe.count', { n: items.length })}</p>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-[14px] font-semibold">{t('observe.count', { n: items.length })}</p>
                 <Button icon={ScanSearch} loading={starting || running} disabled={busy !== null}
                         onClick={() => void reeval()} className="ml-auto">
                   {running ? t('observe.reevalRunning') : t('observe.reeval')}
                 </Button>
               </div>
-              <p className="text-[11px] text-muted">{t('observe.reevalHint')}</p>
+              <p className="text-[12.5px] leading-relaxed text-muted">{t('observe.reevalHint')}</p>
               {job && <ReevalProgress job={job} />}
             </div>
           )}
       </Card>
-      {items?.map(c => (
-        <CandidateCard key={c.id} c={c} meta={t('observe.from', { run: c.run_id, time: localTime(c.created_at) })}>
-          {c.reeval && <ReevalBlock r={c.reeval} />}
-          <div className="flex items-center gap-2 border-t border-line pt-2.5">
-            <Button variant="gain" icon={Archive} loading={busy?.id === c.id && busy.approve}
-                    disabled={busy !== null || running} onClick={() => void decide(c, true)}>
-              {t('observe.approve')}
-            </Button>
-            <Button icon={Trash2} loading={busy?.id === c.id && !busy.approve} disabled={busy !== null || running}
-                    onClick={() => void decide(c, false)}>
-              {t('observe.decline')}
-            </Button>
-          </div>
-        </CandidateCard>
-      ))}
+      {items && items.length > 0 && (
+        <div className="space-y-12">
+          {items.map(c => (
+            <CandidateCard key={c.id} c={c} meta={t('observe.from', { run: c.run_id, time: localTime(c.created_at) })}>
+              {c.reeval && <ReevalBlock r={c.reeval} />}
+              <div className="flex items-center gap-2 border-t border-line pt-3.5">
+                <Button variant="gain" icon={Archive} loading={busy?.id === c.id && busy.approve}
+                        disabled={busy !== null || running} onClick={() => void decide(c, true)}>
+                  {t('observe.approve')}
+                </Button>
+                <Button icon={Trash2} loading={busy?.id === c.id && !busy.approve} disabled={busy !== null || running}
+                        onClick={() => void decide(c, false)}>
+                  {t('observe.decline')}
+                </Button>
+              </div>
+            </CandidateCard>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -110,21 +114,21 @@ export function ReevalProgress({ job }: { job: ReevalJob }) {
   const { t } = useTranslation();
   if (!job.startedAt) return null;
   return (
-    <div className="space-y-1.5 border-t border-line pt-2">
+    <div className="space-y-2 border-t border-line pt-3">
       {job.running && (
         <>
-          <div className="flex items-center gap-3 text-xs">
-            <span className="num">{t('observe.reevalProgress', { done: job.done ?? 0, total: job.total ?? 0 })}</span>
+          <div className="flex items-center gap-3 text-[13px]">
+            <span className="num font-semibold">{t('observe.reevalProgress', { done: job.done ?? 0, total: job.total ?? 0 })}</span>
             {job.current && <span className="text-muted break-all">{job.current}</span>}
           </div>
           <Progress done={job.done ?? 0} total={job.total ?? 0} />
         </>
       )}
       {!job.running && job.finishedAt && (
-        <p className="text-[11.5px] text-muted">{t('observe.reevalFinished', { time: localTime(job.finishedAt) })}</p>
+        <p className="text-[12.5px] text-muted">{t('observe.reevalFinished', { time: localTime(job.finishedAt) })}</p>
       )}
       {job.error && (
-        <p className="flex items-start gap-1.5 text-xs text-loss break-words">
+        <p className="flex items-start gap-1.5 text-[13px] text-loss break-words">
           <TriangleAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />{t('observe.reevalError', { msg: job.error })}
         </p>
       )}
@@ -137,24 +141,24 @@ export function ReevalBlock({ r }: { r: Reeval }) {
   const { t } = useTranslation();
   const peers = [...r.peers].sort((a, b) => b[1] - a[1]);
   return (
-    <section className="border-t border-line pt-2.5 space-y-2.5">
+    <section className="space-y-3 border-t border-line pt-3.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="microlabel">{t('observe.reevalTitle')}</span>
         <PassBadge passed={r.passed} />
-        <span className="ml-auto text-[11px] text-muted num">{localTime(r.at)}</span>
+        <span className="ml-auto text-[12px] text-muted num">{localTime(r.at)}</span>
       </div>
       <DirectionLine direction={r.direction} asked={r.asked} />
-      {r.reason && <p className="text-[11.5px] text-loss leading-relaxed">{t('cand.reason')}：{r.reason}</p>}
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+      {r.reason && <p className="text-[13px] text-loss leading-relaxed">{t('cand.reason')}：{r.reason}</p>}
+      <div className="grid gap-x-8 gap-y-5 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
         <GateList gates={r.gates} />
         <BriefTable brief={r.brief} />
       </div>
       {peers.length > 0 && (
-        <p className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 text-[11px] text-muted num">
+        <p className="flex flex-wrap gap-x-3.5 gap-y-0.5 text-[12px] text-muted num">
           <span>{t('observe.peers')}</span>
           {peers.map(([name, v], i) => (
             <span key={i} className="break-all">
-              {name} <span className={cx(v >= REDUNDANT ? 'text-loss' : 'text-fg')}>{num(v, 2)}</span>
+              {name} <span className={cx('font-semibold', v >= REDUNDANT ? 'text-loss' : 'text-fg')}>{num(v, 2)}</span>
             </span>
           ))}
         </p>

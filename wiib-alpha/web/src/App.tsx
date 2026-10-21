@@ -1,21 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Bot, Database, Eye, FlaskConical, Languages, Library, Lock, LogOut, Pickaxe, RefreshCw, Ruler, ShieldCheck,
-  SquareFunction, TriangleAlert,
-} from 'lucide-react';
+import { ArrowUpRight, Bot, Database, Eye, Library, Pickaxe, Ruler, SquareFunction, TriangleAlert } from 'lucide-react';
 import { alpha, ApiError, clearToken, getToken, type DataStatus } from './api';
-import i18n, { currentLang, setLang } from './i18n';
-import { cx } from './format';
+import i18n from './i18n';
 import { usePoll } from './poll';
+import { RevealGate } from './reveal';
 import { AuthErrorContext, useFail, useToast } from './toast';
-import { AdminLogin } from './components/AdminLogin';
-import { Connecting } from './components/Connecting';
-import { Badge, Button, Card } from './components/ui';
+import { Header } from './components/Header';
+import { Splash } from './components/Splash';
+import { Badge } from './components/ui';
 import { DataPanel } from './pages/DataPanel';
 import { MinePanel } from './pages/MinePanel';
 import { ObservationPanel } from './pages/ObservationPanel';
-import { GuestLibrary, GuestMine, GuestObservation } from './pages/Overview';
+import { GuestMine } from './pages/Overview';
 import { LibraryPanel } from './pages/LibraryPanel';
 import { ReferencePanel } from './pages/ReferencePanel';
 import { EvalPanel } from './pages/EvalPanel';
@@ -33,6 +30,9 @@ const TABS = [
 
 type Tab = (typeof TABS)[number]['id'];
 
+/** 只给管理员的分区，访客连 tab 都不显示 */
+const ADMIN_TABS = new Set<Tab>(['observe', 'library', 'eval']);
+
 /** 当前分区记在地址的 # 上，刷新页还在原处 */
 const tabFromHash = (): Tab => TABS.find(t => `#${t.id}` === location.hash)?.id ?? 'mine';
 
@@ -40,13 +40,20 @@ export function App() {
   const { t } = useTranslation();
   const toast = useToast();
   const fail = useFail();
-  // 默认只读；/me 认了手里的 token 才进管理员模式
+  // 默认只读；主站登录留下的 token 经 /me 认了才进管理员模式
   const [admin, setAdmin] = useState(false);
+  // 手里有 token 时 /me 回没回来：回来之前开屏不收
+  const [authChecked, setAuthChecked] = useState(() => !getToken());
+  // 开屏裂开了没有：裂开之后入场动效才开始揭开
+  const [opened, setOpened] = useState(false);
+  const open = useCallback(() => setOpened(true), []);
   const [status, setStatus] = useState<DataStatus | null>(null);
-  // 头一次拉状态失败的原因，显示在连接页；拉到过之后的失败只弹提示
+  // 头一次拉状态失败的原因，显示在开屏上；拉到过之后的失败只弹提示
   const [down, setDown] = useState<string | null>(null);
   const connected = useRef(false);
   const [tab, setTab] = useState<Tab>(tabFromHash);
+  // 访客停在只给管理员的分区上（带着 #library 刷新、中途退回只读）就看挖掘；/me 认了管理员再回到原分区
+  const shown: Tab = admin || !ADMIN_TABS.has(tab) ? tab : 'mine';
 
   // 启动时看手里的 token：401 当失效清掉，403 是主站的普通用户，静默留在只读，别打扰读者
   useEffect(() => {
@@ -58,7 +65,8 @@ export function App() {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 401) clearToken();
         else if (!(err instanceof ApiError && err.code === 403)) toast(err.message, 'error');
-      });
+      })
+      .finally(() => { if (!ctrl.signal.aborted) setAuthChecked(true); });
     return () => ctrl.abort();
   }, [toast]);
 
@@ -68,11 +76,6 @@ export function App() {
     setAdmin(false);
     toast(i18n.t(code === 401 ? 'auth.expired' : 'auth.notAdmin'), 'error');
   }, [toast]);
-
-  const logout = () => {
-    clearToken();
-    setAdmin(false);
-  };
 
   const loadStatus = useCallback(() => alpha.dataStatus()
     .then(s => { connected.current = true; setStatus(s); setDown(null); })
@@ -91,71 +94,61 @@ export function App() {
     history.replaceState(null, '', `#${id}`);
   };
 
-  if (!status) return <Connecting error={down} onRetry={() => void loadStatus()} />;
+  const items = TABS.filter(({ id }) => admin || !ADMIN_TABS.has(id)).map(({ id, icon }) => ({ id, icon, label: t(`tabs.${id}`) }));
 
   return (
     <AuthErrorContext.Provider value={onAuthError}>
-      <div className="min-h-screen">
-        <header className="sticky top-0 z-30 border-b border-line bg-panel/95 backdrop-blur">
-          <div className="mx-auto flex h-12 max-w-[1440px] items-center gap-5 px-4 md:px-6">
-            <span className="inline-flex shrink-0 items-center gap-2 text-sm font-bold">
-              <FlaskConical className="w-4 h-4 text-primary" />
-              {t('title')}
-            </span>
-            <nav className="flex h-full min-w-0 items-stretch overflow-x-auto">
-              {TABS.map(({ id, icon: Icon }) => (
-                <button key={id} onClick={() => go(id)}
-                        className={cx('inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 text-xs font-semibold cursor-pointer',
-                          tab === id ? 'border-primary text-fg' : 'border-transparent text-muted hover:text-fg')}>
-                  <Icon className="w-3.5 h-3.5" />
-                  {t(`tabs.${id}`)}
-                </button>
-              ))}
-            </nav>
-            <div className="ml-auto flex shrink-0 items-center gap-3">
-              {refreshing && <Badge tone="info" icon={RefreshCw}>{t('data.refreshing')}</Badge>}
+      <RevealGate.Provider value={opened}>
+        <Splash ready={status !== null && authChecked} error={down} onRetry={() => void loadStatus()} onOpen={open} />
+        {status && authChecked && (
+          <div className="flex min-h-screen flex-col">
+            <Header items={items} active={shown} onGo={go} admin={admin} badges={<>
+              {refreshing && <Badge tone="info" pulse>{t('data.refreshing')}</Badge>}
               {!status.loaded && <Badge tone="warn" icon={TriangleAlert}>{t('data.none')}</Badge>}
-              <button onClick={() => setLang(currentLang() === 'zh' ? 'en' : 'zh')}
-                      className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg cursor-pointer">
-                <Languages className="w-3.5 h-3.5" />{t('lang')}
-              </button>
-              {admin ? (
-                <>
-                  <Badge tone="gain" icon={ShieldCheck}>{t('auth.admin')}</Badge>
-                  <Button variant="ghost" icon={LogOut} onClick={logout}>{t('auth.logout')}</Button>
-                </>
-              ) : <AdminLogin onDone={() => setAdmin(true)} />}
-            </div>
-          </div>
-        </header>
+            </>} />
 
-        {/* 七块都常驻，切走只是藏起来：挖掘那块的事件流不断。
-            挖掘、观察区、因子库两种模式是两套组件，切模式就整块换掉重拉，不留另一种模式的内容 */}
-        <main className="mx-auto max-w-[1440px] px-4 py-5 md:px-6">
-          <div hidden={tab !== 'data'}><DataPanel status={status} admin={admin} onReload={loadStatus} /></div>
-          <div hidden={tab !== 'mine'}>
-            {admin ? <MinePanel active={tab === 'mine'} loaded={status.loaded} /> : <GuestMine active={tab === 'mine'} />}
+            {/* 各块都常驻，切走只是藏起来：挖掘那块的事件流不断。
+                挖掘两种模式是两套组件、交易员按模式换 key，切模式就整块换掉重拉，不留另一种模式的内容；
+                观察区、因子库、手填评估只有管理员才挂 */}
+            <main className="wrap flex-1">
+              <div className="page-h"><h1>{t('title')}</h1></div>
+              <div hidden={shown !== 'data'}><DataPanel status={status} admin={admin} onReload={loadStatus} /></div>
+              <div hidden={shown !== 'mine'}>
+                {admin ? <MinePanel active={shown === 'mine'} loaded={status.loaded} /> : <GuestMine active={shown === 'mine'} />}
+              </div>
+              {admin && (
+                <>
+                  <div hidden={shown !== 'observe'}><ObservationPanel active={shown === 'observe'} /></div>
+                  <div hidden={shown !== 'library'}><LibraryPanel active={shown === 'library'} loaded={status.loaded} /></div>
+                </>
+              )}
+              <div hidden={shown !== 'reference'}><ReferencePanel active={shown === 'reference'} admin={admin} loaded={status.loaded} /></div>
+              {admin && <div hidden={shown !== 'eval'}><EvalPanel loaded={status.loaded} /></div>}
+              <div hidden={shown !== 'trader'}>
+                <TraderPanel key={String(admin)} active={shown === 'trader'} admin={admin} loaded={status.loaded} />
+              </div>
+            </main>
+
+            <footer className="wrap">
+              <div className="foot flex flex-wrap items-baseline justify-between gap-x-8 gap-y-3 text-[12.5px] text-muted">
+                <span className="text-[15px] font-bold text-fg">{t('footer.brand')}</span>
+                <nav className="flex flex-wrap gap-x-5 gap-y-1 text-fg">
+                  <a href="https://wtfibought.com" className="underline underline-offset-3">wtfibought.com</a>
+                  <a href="https://intro.wtfibought.com" target="_blank" rel="noopener noreferrer"
+                     className="inline-flex items-center gap-0.5 underline underline-offset-3">
+                    {t('footer.intro')}<ArrowUpRight className="w-3 h-3" />
+                  </a>
+                  <a href="https://github.com/mamawai/wtfibought" target="_blank" rel="noopener noreferrer"
+                     className="inline-flex items-center gap-0.5 underline underline-offset-3">
+                    GitHub<ArrowUpRight className="w-3 h-3" />
+                  </a>
+                </nav>
+                <span>{t('footer.disclaimer')}</span>
+              </div>
+            </footer>
           </div>
-          <div hidden={tab !== 'observe'}>
-            {admin ? <ObservationPanel active={tab === 'observe'} /> : <GuestObservation active={tab === 'observe'} />}
-          </div>
-          <div hidden={tab !== 'library'}>
-            {admin ? <LibraryPanel active={tab === 'library'} loaded={status.loaded} /> : <GuestLibrary active={tab === 'library'} />}
-          </div>
-          <div hidden={tab !== 'reference'}><ReferencePanel active={tab === 'reference'} admin={admin} loaded={status.loaded} /></div>
-          <div hidden={tab !== 'eval'}><EvalPanel key={String(admin)} admin={admin} loaded={status.loaded} /></div>
-          {/* 交易员整块只给管理员 */}
-          <div hidden={tab !== 'trader'}>
-            {admin ? <TraderPanel active={tab === 'trader'} loaded={status.loaded} /> : (
-              <Card>
-                <p className="flex items-center gap-1.5 text-[11.5px] text-muted">
-                  <Lock className="w-3 h-3 inline-flex" />{t('overview.adminOnly')}
-                </p>
-              </Card>
-            )}
-          </div>
-        </main>
-      </div>
+        )}
+      </RevealGate.Provider>
     </AuthErrorContext.Provider>
   );
 }

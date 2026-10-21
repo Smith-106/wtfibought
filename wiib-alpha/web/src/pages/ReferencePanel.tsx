@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, ChevronDown, Play, Ruler, Search, TriangleAlert, X } from 'lucide-react';
+import { Check, ChevronDown, Play, Search, TriangleAlert, X } from 'lucide-react';
 import { alpha, type ReferenceItem, type ReferenceList } from '../api';
 import { cx, localTime, num, primaryOf } from '../format';
 import { usePoll } from '../poll';
@@ -74,17 +74,18 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
   const { job } = list;
 
   return (
-    <div className="space-y-4">
-      <Card title={t('reference.title')} icon={Ruler} hint={t('reference.hint')}>
+    <div className="space-y-14">
+      <Card title={t('reference.title')} hint={t('reference.hint')}>
         {admin && (
           <>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-muted mr-1">{t('reference.windows')}</span>
+              <span className="mr-1 text-[12.5px] text-muted">{t('reference.windows')}</span>
+              {/* 选中的窗口填墨 */}
               {WINDOWS.map(([w, label]) => (
-                <button key={w} onClick={() => toggleWindow(w)}
-                        className={cx('h-7 px-2.5 border text-[11.5px] num cursor-pointer',
-                          windows.includes(w) ? 'border-primary bg-primary/10 text-primary' : 'border-line hover:bg-panel-2')}>
-                  {label}<span className="ml-1 text-muted">({w})</span>
+                <button key={w} onClick={() => toggleWindow(w)} aria-pressed={windows.includes(w)}
+                        className={cx('h-[30px] px-2.5 border border-fg text-[12.5px] font-semibold num cursor-pointer transition-colors',
+                          windows.includes(w) ? 'bg-fg text-bg' : 'text-muted hover:bg-panel-2 hover:text-fg')}>
+                  {label}<span className="ml-1 opacity-60">({w})</span>
                 </button>
               ))}
               <Button variant="primary" icon={Play} loading={starting || running} disabled={!loaded}
@@ -92,26 +93,26 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
                 {running ? t('reference.running') : t('reference.run')}
               </Button>
             </div>
-            <p className="mt-1.5 text-[11px] text-muted">{t('reference.windowsHint')}</p>
-            {!loaded && <p className="mt-1 text-[11px] text-warn">{t('common.needData')}</p>}
+            <p className="mt-2 text-[12px] text-muted">{t('reference.windowsHint')}</p>
+            {!loaded && <p className="mt-1 text-[12px] text-warn">{t('common.needData')}</p>}
           </>
         )}
         {job.startedAt && (
-          <div className={cx('space-y-1.5', admin && 'mt-3 border-t border-line pt-3')}>
+          <div className={cx('space-y-2', admin && 'mt-5 border-t border-line pt-4')}>
             {running && (
               <>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="num">{t('reference.progress', { done: job.done ?? 0, total: job.total ?? 0 })}</span>
-                  <span className="ml-auto text-[11px] text-muted">{t('reference.startedAt', { time: localTime(job.startedAt) })}</span>
+                <div className="flex items-baseline gap-3 text-[13px]">
+                  <span className="num font-semibold">{t('reference.progress', { done: job.done ?? 0, total: job.total ?? 0 })}</span>
+                  <span className="ml-auto text-[12px] text-muted">{t('reference.startedAt', { time: localTime(job.startedAt) })}</span>
                 </div>
                 <Progress done={job.done ?? 0} total={job.total ?? 0} />
               </>
             )}
             {!running && job.finishedAt && (
-              <p className="text-[11.5px] text-muted">{t('reference.finishedAt', { time: localTime(job.finishedAt) })}</p>
+              <p className="text-[12.5px] text-muted">{t('reference.finishedAt', { time: localTime(job.finishedAt) })}</p>
             )}
             {job.error && (
-              <p className="flex items-start gap-1.5 text-xs text-loss break-words">
+              <p className="flex items-start gap-1.5 text-[13px] text-loss break-words">
                 <TriangleAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />{t('reference.error', { msg: job.error })}
               </p>
             )}
@@ -121,19 +122,19 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
 
       <Card>
         {items.length === 0 ? <Empty>{t('reference.empty')}</Empty> : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
                 <input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('reference.filter')}
-                       className="input w-56 pl-8" />
+                       className="input w-60 pl-8" />
               </div>
-              <span className="text-[11px] text-muted num">{t('common.shown', { n: filtered.length, total: items.length })}</span>
-              <span className="ml-auto text-xs num">
+              <span className="text-[12.5px] text-muted num">{t('common.shown', { n: filtered.length, total: items.length })}</span>
+              <span className="ml-auto text-[13px] font-semibold num">
                 {t('reference.passed', { n: items.filter(i => i.passed).length, total: items.length })}
               </span>
             </div>
-            <div className="max-h-[40rem] overflow-auto border border-line">
+            <div className="tw max-h-[40rem] overflow-y-auto">
               <table className="tbl tbl-sticky">
                 <thead>
                   <tr>
@@ -154,8 +155,8 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
                     return (
                       <Fragment key={item.name}>
                         <tr onClick={() => setOpenName(open ? null : item.name)} className="cursor-pointer">
-                          <td className="font-semibold num whitespace-nowrap">{item.name}</td>
-                          <td className="max-w-[26rem]"><code className="block truncate text-[11.5px] text-muted" title={item.expr}>{item.expr}</code></td>
+                          <td className="font-mono text-[12.5px] font-bold whitespace-nowrap">{item.name}</td>
+                          <td className="max-w-[26rem]"><code className="block truncate text-[12px] text-muted" title={item.expr}>{item.expr}</code></td>
                           <td className="r">
                             {item.passed
                               ? <Check className="w-3.5 h-3.5 inline-flex text-gain" />
@@ -165,12 +166,12 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
                           <td className="r num">{num(h?.icir, 2)}</td>
                           <td className="r num">{num(h?.monotonic, 2)}</td>
                           <td className="r num whitespace-nowrap">{localTime(item.updatedAt)}</td>
-                          <td className="r"><ChevronDown className={cx('w-3.5 h-3.5 inline-flex text-muted transition-transform', open && 'rotate-180')} /></td>
+                          <td className="r"><ChevronDown className={cx('w-3.5 h-3.5 inline-flex text-muted transition-transform duration-300', open && 'rotate-180')} /></td>
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={8} className="bg-panel-2/50">
-                              <div className="grid gap-3 py-1 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+                            <td colSpan={8} className="expand">
+                              <div className="grid gap-x-8 gap-y-5 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
                                 <GateList gates={item.brief.gates} />
                                 <BriefTable brief={item.brief} />
                               </div>
@@ -182,7 +183,7 @@ export function ReferencePanel({ active, admin, loaded }: { active: boolean; adm
                   })}
                 </tbody>
               </table>
-              {sorted.length === 0 && <div className="px-3"><Empty>{t('reference.noMatch')}</Empty></div>}
+              {sorted.length === 0 && <Empty>{t('reference.noMatch')}</Empty>}
             </div>
           </div>
         )}

@@ -400,9 +400,19 @@ async def auth(request: Request) -> Auth:
     return await request.app.state.authenticator(request.headers.get("satoken"), request.headers.get("X-Lang"))
 
 
+async def is_admin(request: Request) -> bool:
+    """公开接口里个别字段只给管理员：手里的 token 是管理员才算"""
+    try:
+        await auth(request)
+    except (AuthError, Forbidden):
+        return False
+    return True
+
+
 # ========== 接口 ==========
 
-# 公开的只有数据状态、参照集和概览数字；候选、事件流、因子库的内容和全部 POST 只有管理员
+# 公开的只有数据状态、参照集、概览数字和交易员的账户、持仓、净值；候选、事件流、因子库的内容、
+# 交易员用的因子与调仓明细、全部 POST 只有管理员
 public = APIRouter(prefix="/api/alpha")
 router = APIRouter(prefix="/api/alpha", dependencies=[Depends(auth)])
 
@@ -1065,13 +1075,17 @@ async def _sim(fn, *args):
         raise UpstreamError(str(exc)) from exc
 
 
-@router.get("/trader/account")
+@public.get("/trader/account")
 async def trader_account(request: Request):
     """账户概况：userId、净值、余额、可用；还没调过仓（还没建账户）的都是 null。job 是调仓任务的进度"""
     app = request.app
     user_id = await app.state.store.trade_user()
+    job = app.state.runs.jobs["trader"]
+    # 出错原文可能带着因子表达式，访客拿到的不带 error
+    if not await is_admin(request):
+        job = {k: v for k, v in job.items() if k != "error"}
     out = {"userId": user_id, "equity": None, "balance": None, "available": None,
-           "initialBalance": executor.INITIAL_BALANCE, "job": app.state.runs.jobs["trader"]}
+           "initialBalance": executor.INITIAL_BALANCE, "job": job}
     if user_id is not None:
         balance, positions = await _sim(scheduler.account, app.state.sim, user_id)
         out.update(equity=executor.equity(balance, positions), balance=float(balance["balance"]),
@@ -1079,7 +1093,7 @@ async def trader_account(request: Request):
     return _ok(out)
 
 
-@router.get("/trader/positions")
+@public.get("/trader/positions")
 async def trader_positions(request: Request):
     """当前持仓：每币方向、数量、名义（数量 × 标记价）、浮盈；legs 是最近一次出了目标的调仓里两条腿各给这个币的目标名义"""
     app = request.app
@@ -1098,7 +1112,7 @@ async def trader_positions(request: Request):
     return _ok({"items": items, "day": last["day"] if last else None})
 
 
-@router.get("/trader/equity")
+@public.get("/trader/equity")
 async def trader_equity(request: Request):
     """每小时一次的净值快照，旧的在前"""
     rows = await request.app.state.store.trade_equity()

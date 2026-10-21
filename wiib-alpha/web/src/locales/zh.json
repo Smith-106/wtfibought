@@ -1,7 +1,15 @@
 {
   "title": "因子挖掘",
-  "desc": "模型提假设、写表达式，十道代码硬门判真假，门没过带着数字重写，另一个模型评审；过了的进观察区由你入库。",
-  "lang": "EN",
+  "header": {
+    "lang": "切换语言",
+    "toLight": "切到浅色",
+    "toDark": "切到深色"
+  },
+  "footer": {
+    "brand": "WhatIfIBought 模拟交易",
+    "intro": "产品介绍",
+    "disclaimer": "交易员用的是模拟资金，页面内容不构成投资建议"
+  },
   "tabs": {
     "data": "数据",
     "mine": "挖掘",
@@ -18,16 +26,7 @@
     "checking": "正在连接服务",
     "down": "连不上服务：{{msg}}",
     "retry": "重试",
-    "login": "管理员登录",
-    "loginTitle": "用模拟盘的管理员账号登录",
-    "username": "用户名",
-    "password": "密码",
-    "submit": "登录",
-    "local": "管理员直登",
-    "localHint": "站点没开正式登录方式，直接以管理员进入。",
-    "noPassword": "这个站点没开放账号密码登录。",
     "admin": "管理员",
-    "logout": "退出",
     "expired": "登录已失效，已切回只读",
     "notAdmin": "当前账号不是管理员"
   },
@@ -42,6 +41,9 @@
   "common": {
     "raw": "原始 JSON",
     "close": "关闭",
+    "refresh": "刷新",
+    "expand": "展开",
+    "collapse": "收起",
     "filter": "按币名筛选",
     "shown": "{{n}} / {{total}}",
     "needData": "先刷新行情数据。"
@@ -379,8 +381,7 @@
     "hint": "直接过一遍全部门，门只看搜索段，另算一份 holdout 给你看；不进循环、不计试验数。Ctrl+Enter 提交。",
     "passed": "全过",
     "failed": "没过",
-    "canonical": "规范形",
-    "needAdmin": "要管理员登录"
+    "canonical": "规范形"
   },
   "trader": {
     "title": "交易员账户",

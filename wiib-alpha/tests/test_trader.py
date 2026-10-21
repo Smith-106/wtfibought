@@ -76,6 +76,10 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     assert account["userId"] == 42 and account["equity"] == pytest.approx(10000) and account["available"] == 10000
     positions = data(await client.get("/api/alpha/trader/positions", headers=ADMIN))
     assert positions["day"] == "2025-03-01" and len(positions["items"]) == len(coins)
+    # 访客看到的账户和持仓跟管理员一样，只是调仓任务里不带 error
+    guest = data(await client.get("/api/alpha/trader/account"))
+    assert guest == {**account, "job": {k: v for k, v in account["job"].items() if k != "error"}}
+    assert data(await client.get("/api/alpha/trader/positions")) == positions
     for p in positions["items"]:
         c = coins[p["symbol"]]
         assert p["side"] == ("LONG" if c["weight"] > 0 else "SHORT")
@@ -208,14 +212,21 @@ async def test_factor_selection_and_compare(client, trader):
     assert (await client.post("/api/alpha/trader/compare/nope", headers=ADMIN)).status_code == 404
 
 
-async def test_trader_is_admin_only_and_holds_off_refresh(client):
-    assert data(await client.get("/api/alpha/trader/account", headers=ADMIN))["userId"] is None
-    assert data(await client.get("/api/alpha/trader/positions", headers=ADMIN)) == {"items": [], "day": None}
-    for path in ("account", "positions", "equity", "runs", "factors"):
+async def test_trader_account_is_public_but_factors_are_not_and_holds_off_refresh(client):
+    # 账户、持仓、净值公开；用了哪些因子、调仓明细、因子对比只有管理员
+    assert data(await client.get("/api/alpha/trader/account"))["userId"] is None
+    assert data(await client.get("/api/alpha/trader/positions", headers={"satoken": "user"})) == {"items": [], "day": None}
+    assert data(await client.get("/api/alpha/trader/equity"))["items"] == []
+    # 调仓的出错原文可能带因子表达式，只有管理员拿得到
+    jobs = m.app.state.runs.jobs
+    jobs["trader"]["error"] = "因子 Mean($volume, 4) 在 T 那根全池没有值"
+    assert "error" not in data(await client.get("/api/alpha/trader/account"))["job"]
+    assert "error" not in data(await client.get("/api/alpha/trader/account", headers={"satoken": "user"}))["job"]
+    assert data(await client.get("/api/alpha/trader/account", headers=ADMIN))["job"]["error"].startswith("因子")
+    for path in ("runs", "runs/2025-03-01", "factors"):
         assert (await client.get(f"/api/alpha/trader/{path}", headers={"satoken": "user"})).status_code == 403
         assert (await client.get(f"/api/alpha/trader/{path}")).json()["code"] == 401
     assert (await client.post("/api/alpha/trader/compare/x", headers={"satoken": "user"})).status_code == 403
-    jobs = m.app.state.runs.jobs
     for name, word in (("trader", "调仓"), ("compare", "对比")):
         jobs[name]["running"] = True
         resp = await client.post("/api/alpha/data/refresh", headers=ADMIN)

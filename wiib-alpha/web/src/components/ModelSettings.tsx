@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, ChevronUp, Plug, Save } from 'lucide-react';
+import { ChevronDown, ChevronUp, Plug, Save } from 'lucide-react';
 import {
   alpha, MODEL_ROLES, PROTOCOLS, type ModelRole, type Models, type ModelSave, type ModelView, type Protocol,
 } from '../api';
@@ -28,16 +28,17 @@ export function ModelSettings({ onReady }: { onReady: (ready: boolean) => void }
   };
 
   return (
-    <Card title={t('models.title')} icon={Bot}
-          actions={<Button variant="ghost" icon={open ? ChevronUp : ChevronDown} onClick={() => setOpen(o => !o)} className="px-2" />}>
+    <Card title={t('models.title')}
+          actions={<Button variant="icon" icon={open ? ChevronUp : ChevronDown} aria-expanded={open}
+                           aria-label={t(open ? 'common.collapse' : 'common.expand')} onClick={() => setOpen(o => !o)} />}>
       {!models ? <Spinner /> : (
-        <div className={cx(open ? 'space-y-4' : 'space-y-1.5')}>
+        <div className={cx(open ? 'space-y-6' : 'border-t border-fg')}>
           {MODEL_ROLES.map(role => (
             open
               ? <RoleForm key={role} role={role} view={models[role]} onSaved={v => saved(role, v)} />
               : <Summary key={role} role={role} view={models[role]} />
           ))}
-          {!open && (!models.gen || !models.review) && <p className="text-[11px] text-warn">{t('models.needBoth')}</p>}
+          {!open && (!models.gen || !models.review) && <p className="pt-2 text-[12px] text-warn">{t('models.needBoth')}</p>}
         </div>
       )}
     </Card>
@@ -47,7 +48,7 @@ export function ModelSettings({ onReady }: { onReady: (ready: boolean) => void }
 function Summary({ role, view }: { role: ModelRole; view: ModelView | null }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-baseline gap-2 text-xs">
+    <div className="flex items-baseline gap-2 border-b border-line py-2 text-[13px]">
       <span className="w-14 shrink-0 text-muted">{t(`models.role.${role}`)}</span>
       {view
         ? <span className="truncate">{view.protocol} · {view.model}{view.effort && ` · ${view.effort}`} · ****{view.apiKeyTail}</span>
@@ -98,10 +99,10 @@ function RoleForm({ role, view, onSaved }: { role: ModelRole; view: ModelView | 
   };
 
   return (
-    <form onSubmit={e => void save(e)} className="space-y-2">
+    <form onSubmit={e => void save(e)} className="space-y-2.5 border-t border-fg pt-3">
       <div className="flex items-baseline justify-between">
-        <span className="text-xs font-semibold">{t(`models.role.${role}`)}</span>
-        {view && <span className="text-[11px] text-muted">{t('models.updatedAt', { time: localTime(view.updatedAt) })}</span>}
+        <span className="text-[14px] font-extrabold">{t(`models.role.${role}`)}</span>
+        {view && <span className="text-[12px] text-muted">{t('models.updatedAt', { time: localTime(view.updatedAt) })}</span>}
       </div>
       <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2">
         <select value={protocol} onChange={e => setProtocol(e.target.value as Protocol)} className="input">
@@ -124,7 +125,7 @@ function RoleForm({ role, view, onSaved }: { role: ModelRole; view: ModelView | 
           {t('models.save')}
         </Button>
       </div>
-      {result && <p className={cx('text-[11.5px] break-all', result.ok ? 'text-gain' : 'text-loss')}>{result.text}</p>}
+      {result && <p className={cx('text-[12.5px] break-all', result.ok ? 'text-gain' : 'text-loss')}>{result.text}</p>}
     </form>
   );
 }

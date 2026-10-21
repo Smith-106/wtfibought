@@ -1,7 +1,15 @@
 {
   "title": "Factor mining",
-  "desc": "One model proposes hypotheses and writes expressions, ten code gates judge them, failures are rewritten with the numbers in hand, another model reviews; survivors wait in the observation area for you to approve.",
-  "lang": "中文",
+  "header": {
+    "lang": "Switch language",
+    "toLight": "Light theme",
+    "toDark": "Dark theme"
+  },
+  "footer": {
+    "brand": "WhatIfIBought paper trading",
+    "intro": "About",
+    "disclaimer": "The trader runs on simulated funds; nothing here is investment advice"
+  },
   "tabs": {
     "data": "Data",
     "mine": "Mining",
@@ -18,16 +26,7 @@
     "checking": "Connecting",
     "down": "Service unreachable: {{msg}}",
     "retry": "Retry",
-    "login": "Admin sign-in",
-    "loginTitle": "Sign in with the paper-trading admin account",
-    "username": "Username",
-    "password": "Password",
-    "submit": "Sign in",
-    "local": "Enter as admin",
-    "localHint": "No sign-in method is enabled on this site, so you enter as the admin directly.",
-    "noPassword": "Password sign-in is not enabled on this site.",
     "admin": "Admin",
-    "logout": "Sign out",
     "expired": "Session expired, switched to read-only",
     "notAdmin": "This account is not the admin"
   },
@@ -42,6 +41,9 @@
   "common": {
     "raw": "Raw JSON",
     "close": "Close",
+    "refresh": "Refresh",
+    "expand": "Expand",
+    "collapse": "Collapse",
     "filter": "Filter by symbol",
     "shown": "{{n}} / {{total}}",
     "needData": "Refresh market data first."
@@ -379,8 +381,7 @@
     "hint": "Runs every gate on the search span and computes a separate holdout for you; not part of a round and not counted as a trial. Ctrl+Enter to submit.",
     "passed": "all gates passed",
     "failed": "did not pass",
-    "canonical": "Canonical form",
-    "needAdmin": "Admin sign-in required"
+    "canonical": "Canonical form"
   },
   "trader": {
     "title": "Trader account",

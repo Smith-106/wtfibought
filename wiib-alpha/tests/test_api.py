@@ -467,7 +467,7 @@ async def test_eval_endpoint(client):
 
 
 async def test_auth_rules(client):
-    # 公开的三个：数据状态、参照集、概览数字
+    # 公开的：数据状态、参照集、概览数字；交易员那几个见 test_trader
     assert data(await client.get("/api/alpha/data/status"))["loaded"]
     assert data(await client.get("/api/alpha/reference", headers={"satoken": "user"}))["items"] == []
     assert data(await client.get("/api/alpha/overview")) == {"runs": [], "trials": 0, "factors": 0, "observing": 0}
