@@ -14,9 +14,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..data.panel import POOL_COLUMN
+from ..data.panel import FEATURE_COLUMNS, POOL_COLUMN
 from ..data.pool import cross_at, cross_values
-from ..dsl import Expr
+from ..dsl import Expr, parse
 from ..eval import combo, cs_leg
 from ..eval.params import EvalParams
 from .scheme import CARRY, SHARE, VOL
@@ -82,3 +82,43 @@ def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights
             if c["weight"]:
                 coins.setdefault(c["symbol"], {"combo": 0.0, "carry": 0.0})[name] = SHARE * c["weight"]
     return {"legs": legs, "coins": {s: {"weight": x["combo"] + x["carry"], **x} for s, x in sorted(coins.items())}}
+
+
+def stances(signal: pd.Series, products: Sequence[str], params: EvalParams) -> dict[str, dict[str, Any]]:
+    """signal 越大越强：产品币在全池里从强数第几、共几个，排进头部 1/5 看多、尾部 1/5 看空、其余中性（和交易腿进场同口径）；
+    有数的币不到 min_names 个就不给看法，不在池的产品币不出"""
+    s = signal[np.isfinite(signal)].sort_index()
+    n = len(s)
+    if n < params.min_names:
+        return {}
+    head = s.rank(ascending=False, method="first")
+    out = {}
+    for p in products:
+        if p in head.index:
+            h = int(head[p])
+            stance = "long" if h / n <= params.leg_enter else "short" if (n + 1 - h) / n <= params.leg_enter else "neutral"
+            out[p] = {"stance": stance, "rank": h, "of": n}
+    return out
+
+
+def board(panels: Mapping[str, pd.DataFrame], factors: Sequence[Mapping[str, Any]], products: Sequence[str], t_ms: int,
+          params: EvalParams) -> dict[str, Any]:
+    """因子看板：每条在役因子在 T 那根全池截面上按它的方向排强弱，看产品币落在哪；combo 是进组合（权重不为 0）的那几条
+    按学好的权重合成后的看法。factors 每条带 expr、sign、weight、live；live 尾巴补不出来的、学不出方向的不给看法"""
+    out, used, weights = [], [], []
+    for f in factors:
+        if not (f["live"] and f["sign"]):
+            out.append({**f, "stances": {}})
+            continue
+        values = values_at(panels, parse(f["expr"], FEATURE_COLUMNS), t_ms)
+        out.append({**f, "stances": stances(values * f["sign"], products, params)})
+        if f["weight"]:
+            used.append(values)
+            weights.append(f["weight"])
+    combined = {}
+    if used:
+        table = pd.concat(used, axis=1)
+        c = combo.Combo(pd.DataFrame({"t": np.full(len(table), t_ms)}), tuple(table.index), tuple(map(str, range(len(used)))),
+                        table.to_numpy(dtype="float64"))
+        combined = stances(pd.Series(combo.score(c, np.array(weights)), index=table.index), products, params)
+    return {"coins": list(products), "factors": out, "combo": combined}

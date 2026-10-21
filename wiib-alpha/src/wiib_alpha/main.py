@@ -1203,6 +1203,22 @@ async def trader_equity(request: Request):
                            "short": r["short_notional"]} for r in rows]})
 
 
+@public.get("/board")
+async def factor_board(request: Request):
+    """因子看板：最近一次调仓那一刻库里在役因子对产品币的看法；还没算过是 null。
+    访客只看到编号、进没进组合、算没算得了和看法，名字、表达式、方向、权重只给管理员"""
+    row = await request.app.state.store.latest_board()
+    if row is None:
+        return _ok(None)
+    board = row["board"]
+    if not await is_admin(request):
+        board = {**board, "factors": [{"no": f["no"], "live": f["live"], "inCombo": bool(f["weight"]),
+                                       "stances": f["stances"]} for f in board["factors"]]}
+    else:
+        board = {**board, "factors": [{**f, "inCombo": bool(f["weight"])} for f in board["factors"]]}
+    return _ok({"day": row["day"], "signalMs": row["signal_ms"], **board})
+
+
 @router.get("/trader/runs")
 async def trader_runs(request: Request):
     """调仓记录，新的在前，只带概要；job 是调仓任务的进度"""

@@ -44,6 +44,25 @@ def test_target_leg_day_by_day_matches_the_backtest_positions():
             held = {"long": out["long"], "short": out["short"]}
 
 
+def test_board_views_by_direction_and_skips_what_it_cannot_compute(planted_pool, planted_store):
+    panels = {s: planted_store.load(s) for s in planted_pool.symbols}
+    t = int(planted_pool.rows["t"].max())
+    products = list(planted_pool.symbols[:3])
+    factor = {"no": 1, "expr": "Mean($volume, 4)", "sign": 1.0, "weight": 0.5, "live": True}
+    out = targets.board(panels, [factor,
+                                 {**factor, "no": 2, "sign": -1.0, "weight": 0.0},
+                                 {**factor, "no": 3, "live": False},
+                                 {**factor, "no": 4, "sign": 0.0}], products, t, PARAMS)
+    views = [f["stances"] for f in out["factors"]]
+    # 方向反过来，强弱名次正好颠倒
+    n = len(planted_pool.symbols)
+    assert all(views[1][p]["rank"] == n + 1 - views[0][p]["rank"] for p in products)
+    # live 补不出来的、学不出方向的不给看法；权重 0 的不进组合，只剩一条时组合的看法就是它的
+    assert views[2] == views[3] == {} and out["combo"] == views[0]
+    # 有数的币不到 min_names 个：谁都不给看法
+    assert targets.stances(pd.Series({"A": 1.0, "B": 2.0}), ["A"], PARAMS) == {}
+
+
 def test_values_at_one_moment_match_pool_values_with_cross_nodes(planted_pool, planted_store):
     # 带截面算子的表达式跨全部面板算，和评估器全池求值在同一时刻的值一样
     expr = parse("CsRank(Mean($volume, 4)) - CsZ($premium)", FEATURE_COLUMNS)

@@ -152,6 +152,12 @@ def learned_weights(pool: Pool, values: Sequence[np.ndarray], vol: np.ndarray, p
     return combo.learned(c, vol, BARS, params)
 
 
+def learned_signs(pool: Pool, values: Sequence[np.ndarray], params: EvalParams) -> np.ndarray:
+    """看板用的方向：全部历史、24h 档学的 IC 符号（combo.learned_signs）；values 与 pool.rows 对齐，至少一条"""
+    c = combo.Combo(pool.rows, pool.symbols, tuple(map(str, range(len(values)))), np.column_stack(values))
+    return combo.learned_signs(c, BARS, params)
+
+
 # ========== 命令行 ==========
 
 

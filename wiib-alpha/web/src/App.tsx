@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowUpRight, Bot, Database, Eye, Library, Pickaxe, Ruler, SquareFunction, TriangleAlert } from 'lucide-react';
+import { ArrowUpRight, Bot, Database, Eye, LayoutGrid, Library, Pickaxe, Ruler, SquareFunction, TriangleAlert } from 'lucide-react';
 import { alpha, ApiError, clearToken, getToken, type DataStatus } from './api';
 import i18n from './i18n';
 import { usePoll } from './poll';
@@ -12,6 +12,7 @@ import { Badge } from './components/ui';
 import { DataPanel } from './pages/DataPanel';
 import { MinePanel } from './pages/MinePanel';
 import { ObservationPanel } from './pages/ObservationPanel';
+import { BoardPanel } from './pages/BoardPanel';
 import { GuestMine } from './pages/Overview';
 import { LibraryPanel } from './pages/LibraryPanel';
 import { ReferencePanel } from './pages/ReferencePanel';
@@ -21,6 +22,7 @@ import { TraderPanel } from './pages/TraderPanel';
 const TABS = [
   { id: 'data', icon: Database },
   { id: 'mine', icon: Pickaxe },
+  { id: 'board', icon: LayoutGrid },
   { id: 'observe', icon: Eye },
   { id: 'library', icon: Library },
   { id: 'reference', icon: Ruler },
@@ -115,6 +117,9 @@ export function App() {
               <div hidden={shown !== 'data'}><DataPanel status={status} admin={admin} onReload={loadStatus} /></div>
               <div hidden={shown !== 'mine'}>
                 {admin ? <MinePanel active={shown === 'mine'} loaded={status.loaded} /> : <GuestMine active={shown === 'mine'} />}
+              </div>
+              <div hidden={shown !== 'board'}>
+                <BoardPanel key={String(admin)} active={shown === 'board'} admin={admin} />
               </div>
               {admin && (
                 <>

@@ -426,6 +426,39 @@ export interface EvalResult {
   eval: Record<string, unknown>;
 }
 
+/** 一条因子（或组合）对一个产品币的看法：全池从强数第 rank、共 of 个，头部 1/5 看多、尾部 1/5 看空 */
+export interface StanceView {
+  stance: 'long' | 'short' | 'neutral';
+  rank: number;
+  of: number;
+}
+
+/** 看板上的一条因子；名字、表达式、方向、权重只给管理员 */
+export interface BoardFactor {
+  no: number;
+  /** live 尾巴补不补得出它用到的列，补不出来就没有看法 */
+  live: boolean;
+  /** 组合权重不为 0：单独做多空腿赚钱 */
+  inCombo: boolean;
+  /** 键是产品币；不在池、算不了的币没有 */
+  stances: Record<string, StanceView>;
+  id?: string;
+  name?: string;
+  expr?: string;
+  sign?: number;
+  weight?: number;
+}
+
+/** 因子看板：最近一次调仓那一刻（day 的 UTC 0 点收盘）库里在役因子对产品币的看法 */
+export interface Board {
+  day: string;
+  signalMs: number;
+  coins: string[];
+  factors: BoardFactor[];
+  /** 进组合的因子按权重合成后的看法 */
+  combo: Record<string, StanceView>;
+}
+
 /** 手填评估是后台任务；queued 是 campaign 正在评估的两条占着，排队 */
 export interface EvalJob {
   running: boolean;
@@ -489,7 +522,7 @@ export interface TraderJob {
   finishedAt?: number | null;
   /** 这次调仓的 UTC 日期 */
   day?: string;
-  stage?: 'prepare' | 'account' | 'live' | 'targets' | 'waiting' | 'orders' | null;
+  stage?: 'prepare' | 'account' | 'live' | 'targets' | 'waiting' | 'orders' | 'board' | null;
   total?: number;
   done?: number;
   symbol?: string | null;
@@ -770,6 +803,8 @@ export const alpha = {
   restoreFactor: (id: string) => call<{ id: string }>('POST', `${ALPHA}/library/${id}/restore`),
   /** 库里全部因子用当前评估器重算，后台跑，进度看 library().reeval */
   libraryReeval: () => call<{ started: boolean; total: number }>('POST', `${ALPHA}/library/reeval`),
+  /** 公开；还没算过是 null */
+  board: () => call<Board | null>('GET', `${ALPHA}/board`),
   /** 后台评估，进度和结果看 evalJob() */
   evaluate: (expr: string) => call<{ started: boolean }>('POST', `${ALPHA}/eval`, { expr }),
   evalJob: () => call<EvalJob>('GET', `${ALPHA}/eval`),

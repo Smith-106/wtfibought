@@ -72,11 +72,11 @@ SCHEMA = [
         api_key TEXT NOT NULL, effort TEXT NOT NULL, updated_at INTEGER NOT NULL)""",
     # 交易员每天一次调仓，day 是 UTC 日期，signal_ms 是出信号那根的收盘时刻；status：done / partial / failed。
     # factors_json 是这次用的因子与权重，legs_json 是每条腿这一期的多空集合（下一期缓冲用），
-    # targets_json 是每币目标与各腿信号，orders_json 是下单与结果
+    # targets_json 是每币目标与各腿信号，orders_json 是下单与结果，board_json 是这一刻库里在役因子对产品币的看法（因子看板）
     """CREATE TABLE IF NOT EXISTS trade_run(
         day TEXT PRIMARY KEY, signal_ms INTEGER NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
         status TEXT NOT NULL, user_id INTEGER, factors_json TEXT, legs_json TEXT, targets_json TEXT, orders_json TEXT,
-        equity_before REAL, equity_after REAL, error TEXT)""",
+        equity_before REAL, equity_after REAL, error TEXT, board_json TEXT)""",
     # 交易员账户每小时一次的净值快照；多空名义是持仓的数量 × 标记价
     """CREATE TABLE IF NOT EXISTS trade_equity(
         ts INTEGER PRIMARY KEY, equity REAL NOT NULL, balance REAL NOT NULL, long_notional REAL NOT NULL,
@@ -87,11 +87,13 @@ SCHEMA = [
 
 _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "review", "data_json": "data",
                  "columns_json": "columns", "recheck_json": "recheck", "reeval_json": "reeval",
-                 "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders"}
+                 "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders",
+                 "board_json": "board"}
 # 建表之后才加的列：老库启动时补上
 _ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
                   "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"},
-                  "factor": {"reeval_json": "TEXT", "retired_at": "INTEGER", "retire_reason": "TEXT"}}
+                  "factor": {"reeval_json": "TEXT", "retired_at": "INTEGER", "retire_reason": "TEXT"},
+                  "trade_run": {"board_json": "TEXT"}}
 
 
 def clean(obj: Any) -> Any:
@@ -414,15 +416,21 @@ class Store:
         """一天一条，同一天再写就覆盖"""
         await self.db.execute(
             """INSERT OR REPLACE INTO trade_run(day, signal_ms, started_at, finished_at, status, user_id, factors_json,
-                   legs_json, targets_json, orders_json, equity_before, equity_after, error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   legs_json, targets_json, orders_json, equity_before, equity_after, error, board_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (r["day"], r["signal_ms"], r["started_at"], r["finished_at"], r["status"], r.get("user_id"),
              *(dumps(r[k]) if r.get(k) is not None else None for k in ("factors", "legs", "targets", "orders")),
-             r.get("equity_before"), r.get("equity_after"), r.get("error")))
+             r.get("equity_before"), r.get("equity_after"), r.get("error"),
+             dumps(r["board"]) if r.get("board") is not None else None))
         await self.db.commit()
 
     async def trade_run(self, day: str) -> dict[str, Any] | None:
         return await self._one("SELECT * FROM trade_run WHERE day = ?", (day,))
+
+    async def latest_board(self) -> dict[str, Any] | None:
+        """最近一次算出因子看板的调仓：day、signal_ms、board"""
+        return await self._one("SELECT day, signal_ms, board_json FROM trade_run WHERE board_json IS NOT NULL "
+                               "ORDER BY day DESC LIMIT 1", ())
 
     async def trade_runs(self, limit: int = 200) -> list[dict[str, Any]]:
         """新的在前"""

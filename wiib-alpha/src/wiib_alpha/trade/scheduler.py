@@ -2,7 +2,8 @@
 
 整点记一次账户净值；每天 UTC 00:05 ~ 01:00 之间，今天还没调过、数据已装载、没在刷新，就调一次仓：
 00:05 起补尾巴、算目标，等到 00:15（晚一根）再下单。01:00 之后还没调成就跳过这一天，不拿 0 点的信号隔几小时再下。
-一次调仓：ensure-account → 当月币池登记给 sim（feed 按交易员集合订行情）→ 补 live 尾巴 → 拼面板出目标 → 等到 00:15 → 读账户和标记价 → 下单 → 补拉 00:15 那根收盘价 → 再读账户；
+一次调仓：ensure-account → 当月币池登记给 sim（feed 按交易员集合订行情）→ 补 live 尾巴 → 拼面板出目标 → 等到 00:15 → 读账户和标记价 → 下单 → 补拉 00:15 那根收盘价 → 再读账户
+→ 用同一批面板算因子看板（库里全部在役因子对产品币的看法，算不出来不影响调仓）；
 跑完不管成败都落一条 trade_run；一笔单都没成的（Binance、sim 一时不通，或者下了单全失败），01:00 之前下一分钟再来，成了一笔的当天不再跑；
 进程在半路退出就不落，重启后同一天重跑（下单 ID 不变，sim 去重）。
 刷新期间不跑；调仓、因子对比跑着的时候刷新接口拒绝（main 里那串互斥）。
@@ -117,11 +118,12 @@ async def rebalance(app: FastAPI, library: Library, now: int) -> None:
         weights = await combo_weights(app, lib, cols)
         record["factors"] = [{"id": lib.factors[j]["id"], "name": lib.factors[j]["name"], "expr": lib.factors[j]["expr"],
                               "weight": float(w)} for j, w in zip(cols, weights)]
+        board = await board_factors(app, lib)
         held = await store.last_trade_legs() or {}
         exprs = [parse(lib.factors[j]["expr"], FEATURE_COLUMNS) for j in cols]
         await asyncio.to_thread(_rebalance, app.state.fapi, app.state.sim, data.pool.store, pool,
                                 universe_table.months_by_symbol(table), exprs, weights, held, app.state.params, now,
-                                record, job)
+                                record, job, board, list(data.products))
     except Exception as exc:
         logger.exception("调仓失败")
         record["error"] = str(exc)[:500]
@@ -134,8 +136,8 @@ async def rebalance(app: FastAPI, library: Library, now: int) -> None:
 def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Sequence[str],
                months: Mapping[str, frozenset[str]], factors: Sequence[Expr], weights: np.ndarray,
                held: Mapping[str, Any], params: EvalParams, now: int, record: dict[str, Any],
-               job: dict[str, Any]) -> None:
-    """在线程里跑；做到哪一步就往 record 里记到哪一步，中途出错外面照样落库"""
+               job: dict[str, Any], board: Sequence[Mapping[str, Any]], products: Sequence[str]) -> None:
+    """在线程里跑；做到哪一步就往 record 里记到哪一步，中途出错外面照样落库。下完单再用同一批面板算看板"""
     signal_ms = record["signal_ms"]
     job["stage"] = "account"
     user_id = record["user_id"] = sim.ensure_account()
@@ -173,6 +175,12 @@ def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Seq
         row["refPrice"] = refs.get(row["symbol"])
     balance, positions = account(sim, user_id)
     record["equity_after"] = executor.equity(balance, positions)
+    job["stage"] = "board"
+    try:
+        record["board"] = targets.board(panels, board, products, signal_ms, params)
+    except Exception:
+        # 看板只是展示：算不出来不算这次调仓出错
+        logger.exception("算因子看板失败")
 
 
 def _status(record: Mapping[str, Any]) -> str:
@@ -191,19 +199,40 @@ def _cache(app: FastAPI) -> dict[str, Any]:
     cache = app.state.trade_cache
     if cache.get("loadedAt") != app.state.data.loaded_at:
         cache.clear()
-        cache.update(loadedAt=app.state.data.loaded_at, weights={})
+        cache.update(loadedAt=app.state.data.loaded_at, weights={}, signs={})
     return cache
 
 
-async def combo_weights(app: FastAPI, lib: Any, cols: Sequence[int]) -> np.ndarray:
-    """lib.full 里这几列因子的组合权重（scheme.learned_weights）。一条因子的权重只看它自己，按因子 id 缓存；一条都没有是空的"""
+async def _per_factor(app: FastAPI, lib: Any, cols: Sequence[int], kind: str, learn: Callable[[list[np.ndarray]], np.ndarray]
+                      ) -> np.ndarray:
+    """lib.full 里这几列因子各自学的一个数：只看它自己，按因子 id 缓存在 kind 下；一条都没有是空的"""
     if not cols:
         return np.empty(0)
-    pool = app.state.data.pool
-    cache = _cache(app)["weights"]
+    cache = _cache(app)[kind]
     for j in cols:
         fid = lib.factors[j]["id"]
         if fid not in cache:
-            cache[fid] = float((await asyncio.to_thread(scheme.learned_weights, pool, [lib.full.values[:, j]],
-                                                        app.state.data.vol, app.state.params))[0])
+            cache[fid] = float((await asyncio.to_thread(learn, [lib.full.values[:, j]]))[0])
     return np.array([cache[lib.factors[j]["id"]] for j in cols])
+
+
+async def combo_weights(app: FastAPI, lib: Any, cols: Sequence[int]) -> np.ndarray:
+    """这几列因子的组合权重（scheme.learned_weights）"""
+    data = app.state.data
+    return await _per_factor(app, lib, cols, "weights",
+                             lambda v: scheme.learned_weights(data.pool, v, data.vol, app.state.params))
+
+
+async def combo_signs(app: FastAPI, lib: Any, cols: Sequence[int]) -> np.ndarray:
+    """这几列因子的方向（scheme.learned_signs），看板用"""
+    data = app.state.data
+    return await _per_factor(app, lib, cols, "signs", lambda v: scheme.learned_signs(data.pool, v, app.state.params))
+
+
+async def board_factors(app: FastAPI, lib: Any) -> list[dict[str, Any]]:
+    """看板用：库里全部在役因子按入库先后编号，带方向、组合权重，和 live 尾巴补不补得出它用到的列"""
+    cols = list(range(len(lib.factors)))[::-1]
+    signs, weights = await combo_signs(app, lib, cols), await combo_weights(app, lib, cols)
+    return [{"no": no, "id": lib.factors[j]["id"], "name": lib.factors[j]["name"], "expr": lib.factors[j]["expr"],
+             "sign": float(s), "weight": float(w), "live": set(lib.factors[j]["columns"]) <= live.COLUMNS}
+            for no, (j, s, w) in enumerate(zip(cols, signs, weights), 1)]

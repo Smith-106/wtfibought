@@ -21,11 +21,11 @@ def no_rest_gap(monkeypatch):
     monkeypatch.setattr(b, "REST_GAP_S", 0.0)
 
 
-async def add_factor(fid: str, name: str, expr: str) -> None:
+async def add_factor(fid: str, name: str, expr: str, approved_at: int = 1) -> None:
     e = parse(expr, FEATURE_COLUMNS)
     await m.app.state.store.add_factor({"id": fid, "name": name, "hypothesis": "h", "expr": expr, "canonical": e.canonical(),
                                         "columns": sorted(e.columns()), "eval": {"horizons": {}}, "gates": [],
-                                        "approved_at": 1, "run_id": "r"})
+                                        "approved_at": approved_at, "run_id": "r"})
 
 
 @pytest.fixture
@@ -44,6 +44,9 @@ async def trader(client, tmp_path, monkeypatch):
 async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader):
     fake, market = trader
     store = m.app.state.store
+    # 库里再放一条反号的、交易员没勾：调仓不用它，看板照样算
+    await add_factor("f-inv", "inv8", "-Mean($volume, 8)", approved_at=2)
+    assert data(await client.get("/api/alpha/board")) is None
     await scheduler.rebalance(m.app, m._library, NOW)
     run = await store.trade_run("2025-03-01")
     assert run["status"] == "done", run["error"]
@@ -70,6 +73,29 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     assert run["equity_after"] == pytest.approx(10000)
     # 补数据之前就把当月在交易的币登记给 sim（feed 据此订行情），下单时都订上了
     assert market.watched == [sorted(POOL_SYMBOLS)]
+
+    # 因子看板：库里全部在役因子按入库先后编号，各自按学到的方向排全池强弱，产品币落在头尾 1/5 是看多看空
+    products = list(m.app.state.data.products)
+    board = run["board"]
+    assert board["coins"] == products
+    assert [(f["no"], f["name"], f["sign"], f["live"]) for f in board["factors"]] == [(1, "vol4", 1.0, True),
+                                                                                      (2, "inv8", -1.0, True)]
+    assert all(f["weight"] for f in board["factors"]) and set(board["combo"]) == set(products)
+    for p in products:
+        view = board["factors"][0]["stances"][p]
+        assert view["of"] == len(POOL_SYMBOLS)
+        assert view["stance"] == ("long" if view["rank"] <= 4 else "short" if view["rank"] >= 21 else "neutral")
+        # 第一天没有缓冲：只勾了 vol4，它看多看空的产品币就是组合腿做多做空的
+        assert (view["stance"] == "long") == (p in run["legs"]["combo"]["long"])
+        assert (view["stance"] == "short") == (p in run["legs"]["combo"]["short"])
+    # 公开接口：访客只看到编号、进没进组合、算没算得了和看法；管理员看得到名字和表达式
+    guest = data(await client.get("/api/alpha/board"))
+    assert guest["day"] == "2025-03-01" and guest["signalMs"] == DAY - 1 and guest["coins"] == products
+    assert [set(f) for f in guest["factors"]] == [{"no", "live", "inCombo", "stances"}] * 2
+    assert guest["factors"][0]["stances"] == board["factors"][0]["stances"] and guest["combo"] == board["combo"]
+    admin = data(await client.get("/api/alpha/board", headers=ADMIN))
+    assert [(f["name"], f["expr"], f["inCombo"]) for f in admin["factors"]] == [("vol4", "Mean($volume, 4)", True),
+                                                                                ("inv8", "-Mean($volume, 8)", True)]
 
     # 页面：账户、持仓（带两条腿各占多少）、调仓记录与详情
     account = data(await client.get("/api/alpha/trader/account", headers=ADMIN))

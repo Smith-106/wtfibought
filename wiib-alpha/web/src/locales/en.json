@@ -13,6 +13,7 @@
   "tabs": {
     "data": "Data",
     "mine": "Mining",
+    "board": "Factor board",
     "observe": "Observation",
     "library": "Library",
     "reference": "Reference",
@@ -299,6 +300,24 @@
     "timeseries": "Product time-series report",
     "timeseriesBySymbol": "Primary IC by symbol"
   },
+  "board": {
+    "title": "Factor board",
+    "hint": "How the library's active factors see the product coins at the {{day}} 00:00 UTC close — computed at the same moment and on the same data as the trader's rebalance, refreshed daily after 00:15.",
+    "none": "Nothing yet. The board appears after the trader's daily 00:15 UTC rebalance.",
+    "factor": "Factor",
+    "factorNo": "Factor {{no}}",
+    "combo": "Combined",
+    "comboSub": "factors in the combo, weighted",
+    "notLive": "not computable today",
+    "notInCombo": "not in the combo",
+    "rank": "#{{rank}} of {{of}}",
+    "stance": {
+      "long": "Bullish",
+      "short": "Bearish",
+      "neutral": "Neutral"
+    },
+    "legend": "Each factor ranks the whole pool from strongest to weakest in the direction it learned from history: the top fifth is bullish, the bottom fifth bearish, the rest neutral — the same rule the trader uses to pick coins. It is about relative strength, not absolute moves: bullish means stronger than most of the pool over the next 24 hours. A factor marked “not in the combo” loses money on its own after costs, so the trader does not use it and it only shows its view here; “not computable today” means a column it needs could not be filled in today."
+  },
   "library": {
     "title": "Factor library",
     "empty": "Nothing approved yet.",
@@ -418,7 +437,8 @@
       "live": "fetching the live tail",
       "targets": "computing targets",
       "waiting": "waiting for 00:15",
-      "orders": "placing orders"
+      "orders": "placing orders",
+      "board": "computing the factor board"
     },
     "lastError": "Last rebalance failed: {{msg}}",
     "curve": "Equity curve",
