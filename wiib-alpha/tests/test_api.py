@@ -132,7 +132,7 @@ async def wait_campaign(client: httpx.AsyncClient, campaign_id: str, status: str
 
 
 async def test_one_round_campaign_then_approve_from_observation(client, planted_panels):
-    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None,
+    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None, "retired": [],
                                                                              "reeval": {"running": False}}
     started = data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 2}, headers=ADMIN))
     campaign_id, run_id = started["id"], started["runId"]
@@ -233,6 +233,47 @@ async def test_decline_and_duplicate_names(client):
     assert data(await client.post("/api/alpha/candidates/r3-1/approve", headers=ADMIN))["name"] == "carry_2"
     factors = {f["id"]: f for f in await store.factors()}
     assert set(factors) == {"r2-1", "r3-1"} and factors["r3-1"]["run_id"] == "r3" and factors["r3-1"]["columns"] == ["volume"]
+    assert {(t["run_id"], t["outcome"]) for t in await store.tried()} == {("r2", "approved"), ("r3", "approved")}
+    # 退役的名字也算占用
+    await store.retire_factor("r2-1", "过期")
+    await store.create_run("r4", 1, "", "zh", None)
+    await store.upsert_candidate({"id": "r4-1", "run_id": "r4", "seq": 1, "name": "carry", "hypothesis": "h",
+                                  "expr": "$volume", "canonical": "$volume", "status": "observing",
+                                  "eval": {"columns": ["volume"], "horizons": {}}, "gates": [{"id": "G0"}]})
+    assert data(await client.post("/api/alpha/candidates/r4-1/approve", headers=ADMIN))["name"] == "carry_3"
+
+
+async def test_retire_and_restore(client):
+    """退役：库、组合、交易员里都没它，规范形还算 G8 的已知，tried 记着原因；能恢复，交易员的勾选不跟着恢复"""
+    store = m.app.state.store
+    ev = await evaluated(client, "Mean($volume, 4)")
+    await store.add_factor({"id": "f1", "name": "vol4", "hypothesis": "h", "expr": "Mean($volume, 4)",
+                            "canonical": parse("Mean($volume, 4)", ["volume"]).canonical(), "columns": ["volume"],
+                            "eval": ev["eval"], "gates": ev["gates"], "approved_at": 1, "run_id": "old"})
+    await store.set_trade_factor("f1", True)
+    url = "/api/alpha/library/f1"
+    assert (await client.post(url + "/retire", json={"reason": "  "}, headers=ADMIN)).status_code == 400
+    assert data(await client.post(url + "/retire", json={"reason": "单腿净收益为负"}, headers=ADMIN)) == {"id": "f1"}
+    assert (await client.post(url + "/retire", json={"reason": "又一次"}, headers=ADMIN)).status_code == 409
+    lib = data(await client.get("/api/alpha/library", headers=ADMIN))
+    assert lib["factors"] == [] and lib["combo"] is None
+    assert [(f["id"], f["retire_reason"]) for f in lib["retired"]] == [("f1", "单腿净收益为负")] and lib["retired"][0]["retired_at"]
+    # 交易员：勾选取消了，勾不回去，也不能拿来对比
+    assert await store.trade_factor_ids() == set()
+    assert data(await client.get("/api/alpha/trader/factors", headers=ADMIN))["items"] == []
+    assert (await client.put("/api/alpha/trader/factors/f1", json={"selected": True}, headers=ADMIN)).status_code == 409
+    assert (await client.post("/api/alpha/trader/compare/f1", headers=ADMIN)).status_code == 409
+    # 出题看得到它退役了和原因；换个窗口再交同一结构，G8 照样拒，G6 不再拿它比
+    assert [(t["outcome"], t["reason"]) for t in await store.tried()] == [("retired", "单腿净收益为负")]
+    again = await evaluated(client, "Mean($volume, 8)")
+    assert again["gates"][8]["id"] == "G8" and not again["gates"][8]["passed"]
+    assert again["brief"]["redundancy"]["with"] != "lib:vol4"
+    # 恢复：回到库里，tried 改回入库；交易员的勾选不跟着恢复
+    assert data(await client.post(url + "/restore", headers=ADMIN)) == {"id": "f1"}
+    assert (await client.post(url + "/restore", headers=ADMIN)).status_code == 409
+    assert [f["id"] for f in data(await client.get("/api/alpha/library", headers=ADMIN))["factors"]] == ["f1"]
+    assert [t["outcome"] for t in await store.tried()] == ["approved"]
+    assert await store.trade_factor_ids() == set()
 
 
 async def test_two_failed_rounds_in_a_row_fail_the_campaign(client):

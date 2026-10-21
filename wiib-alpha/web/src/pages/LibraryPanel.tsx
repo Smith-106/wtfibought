@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw, ScanSearch } from 'lucide-react';
+import { Archive, ArchiveRestore, RefreshCw, ScanSearch } from 'lucide-react';
 import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck, type ReevalJob } from '../api';
 import { cx, HORIZON_BARS, HORIZONS, localTime, num, primaryOf, utcMinute } from '../format';
 import { usePoll } from '../poll';
@@ -30,11 +30,12 @@ const FACTOR_VALUES: Record<FactorKey, (f: Factor) => string | number | null | u
   reeval: reevalIc,
 };
 
-/** 管理员的因子库：列表、组合报告、详情与复查；可以用当前评估器整批复评 */
+/** 管理员的因子库：在役列表、组合报告、详情与复查、退役与恢复；可以用当前评估器整批复评 */
 export function LibraryPanel({ active, loaded }: { active: boolean; loaded: boolean }) {
   const { t } = useTranslation();
   const fail = useFail();
   const [factors, setFactors] = useState<Factor[] | null>(null);
+  const [retired, setRetired] = useState<Factor[]>([]);
   const [combo, setCombo] = useState<ComboReport | null>(null);
   const [job, setJob] = useState<ReevalJob | null>(null);
   const [detail, setDetail] = useState<FactorDetail | null>(null);
@@ -43,7 +44,7 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(() => alpha.library()
-    .then(r => { setFactors(r.factors); setCombo(r.combo); setJob(r.reeval); })
+    .then(r => { setFactors(r.factors); setRetired(r.retired); setCombo(r.combo); setJob(r.reeval); })
     .catch(fail), [fail]);
 
   useEffect(() => {
@@ -86,6 +87,12 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
     } finally {
       setRechecking(false);
     }
+  };
+
+  // 退役、恢复之后列表和详情都重新拿：在役、退役两张表都会变
+  const changed = async (id: string) => {
+    await load();
+    setDetail(await alpha.factor(id));
   };
 
   const th = (k: FactorKey, label: string, right = true) =>
@@ -143,23 +150,57 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
         )}
       </Card>
 
+      {retired.length > 0 && (
+        <Card title={t('library.retiredTitle', { n: retired.length })} hint={t('library.retiredHint')}>
+          <div className="tw">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t('library.col.name')}</th>
+                  <th>{t('library.col.expr')}</th>
+                  <th className="r">{t('library.col.retiredAt')}</th>
+                  <th>{t('library.col.reason')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {retired.map(f => (
+                  <tr key={f.id} onClick={() => open(f.id)} className="cursor-pointer">
+                    <td className="font-mono text-[12.5px] font-bold whitespace-nowrap text-muted">{f.name}</td>
+                    <td className="max-w-[24rem]"><code className="block truncate text-[12px] text-muted" title={f.expr}>{f.expr}</code></td>
+                    <td className="r num whitespace-nowrap">{localTime(f.retired_at)}</td>
+                    <td className="text-[12.5px]">{f.retire_reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       <Drawer open={openId !== null} onClose={close}
               title={detail
-                ? <div className="flex items-center gap-2.5"><span className="font-mono text-[16px] font-bold">{detail.name}</span><Badge tone="gain">{t('status.approved')}</Badge></div>
+                ? <div className="flex items-center gap-2.5">
+                    <span className="font-mono text-[16px] font-bold">{detail.name}</span>
+                    {detail.retired_at == null
+                      ? <Badge tone="gain">{t('status.approved')}</Badge>
+                      : <Badge tone="muted" icon={Archive}>{t('status.retired')}</Badge>}
+                  </div>
                 : <Spinner />}>
         {detail && (
-          <FactorDetailView f={detail} loaded={loaded} rechecking={rechecking} onRecheck={() => void recheck(detail.id)} />
+          <FactorDetailView f={detail} loaded={loaded} rechecking={rechecking} onRecheck={() => void recheck(detail.id)}
+                            onChanged={() => changed(detail.id)} />
         )}
       </Drawer>
     </div>
   );
 }
 
-function FactorDetailView({ f, loaded, rechecking, onRecheck }: {
+function FactorDetailView({ f, loaded, rechecking, onRecheck, onChanged }: {
   f: FactorDetail;
   loaded: boolean;
   rechecking: boolean;
   onRecheck: () => void;
+  onChanged: () => Promise<void>;
 }) {
   const { t } = useTranslation();
   return (
@@ -198,8 +239,62 @@ function FactorDetailView({ f, loaded, rechecking, onRecheck }: {
         {!loaded && <p className="text-[12px] text-warn">{t('common.needData')}</p>}
         {f.recheck ? <RecheckView recheck={f.recheck} primary={primaryOf(f.brief)} /> : <Empty>{t('library.recheckNone')}</Empty>}
       </section>
+      <RetireSection f={f} onChanged={onChanged} />
       <RawJson value={f.eval} />
     </>
+  );
+}
+
+/** 在役的填原因退役；退役的显示时间和原因，可以恢复 */
+function RetireSection({ f, onChanged }: { f: FactorDetail; onChanged: () => Promise<void> }) {
+  const { t } = useTranslation();
+  const fail = useFail();
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const act = async (call: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await call();
+      setReason('');
+      await onChanged();
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (f.retired_at != null) {
+    return (
+      <section className="space-y-3 border-t border-fg pt-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[14px] font-extrabold">{t('library.retireSection')}</span>
+          <span className="text-[12.5px] text-muted">{t('library.restoreHint')}</span>
+          <Button icon={ArchiveRestore} loading={busy} onClick={() => void act(() => alpha.restoreFactor(f.id))}
+                  className="ml-auto">
+            {t('library.restore')}
+          </Button>
+        </div>
+        <p className="text-[13px]">{t('library.retiredInfo', { time: localTime(f.retired_at), reason: f.retire_reason })}</p>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-3 border-t border-fg pt-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[14px] font-extrabold">{t('library.retireSection')}</span>
+        <span className="text-[12.5px] text-muted">{t('library.retireHint')}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={reason} onChange={e => setReason(e.target.value)} placeholder={t('library.retirePh')} maxLength={500}
+               className="input min-w-0 flex-1" />
+        <Button icon={Archive} loading={busy} disabled={reason.trim() === ''}
+                onClick={() => void act(() => alpha.retireFactor(f.id, reason.trim()))}>
+          {t('library.retireRun')}
+        </Button>
+      </div>
+    </section>
   );
 }
 

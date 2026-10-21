@@ -52,11 +52,13 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS lesson(
         id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, campaign_id TEXT, kind TEXT NOT NULL,
         text TEXT NOT NULL, created_at INTEGER NOT NULL)""",
-    # recheck_json：入库后只用新数据算的 IC；reeval_json：用当前评估器复评的结果，入库时那份 eval、gates 不动
+    # recheck_json：入库后只用新数据算的 IC；reeval_json：用当前评估器复评的结果，入库时那份 eval、gates 不动；
+    # retired_at / retire_reason：退役的时刻和原因，NULL 是在役
     """CREATE TABLE IF NOT EXISTS factor(
         id TEXT PRIMARY KEY, name TEXT NOT NULL, hypothesis TEXT NOT NULL, expr TEXT NOT NULL, canonical TEXT NOT NULL,
         columns_json TEXT NOT NULL, eval_json TEXT NOT NULL, gates_json TEXT NOT NULL, review_json TEXT,
-        approved_at INTEGER NOT NULL, run_id TEXT NOT NULL, recheck_json TEXT, reeval_json TEXT)""",
+        approved_at INTEGER NOT NULL, run_id TEXT NOT NULL, recheck_json TEXT, reeval_json TEXT,
+        retired_at INTEGER, retire_reason TEXT)""",
     "CREATE TABLE IF NOT EXISTS trials(id INTEGER PRIMARY KEY CHECK (id = 1), count INTEGER NOT NULL)",
     "INSERT OR IGNORE INTO trials(id, count) VALUES (1, 0)",
     """CREATE TABLE IF NOT EXISTS reference_eval(
@@ -89,7 +91,7 @@ _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "rev
 # 建表之后才加的列：老库启动时补上
 _ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
                   "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"},
-                  "factor": {"reeval_json": "TEXT"}}
+                  "factor": {"reeval_json": "TEXT", "retired_at": "INTEGER", "retire_reason": "TEXT"}}
 
 
 def clean(obj: Any) -> Any:
@@ -331,10 +333,33 @@ class Store:
         await self.db.commit()
 
     async def factors(self) -> list[dict[str, Any]]:
-        return await self._all("SELECT * FROM factor ORDER BY approved_at DESC", ())
+        """在役的"""
+        return await self._all("SELECT * FROM factor WHERE retired_at IS NULL ORDER BY approved_at DESC", ())
+
+    async def retired_factors(self) -> list[dict[str, Any]]:
+        """退役的，最近退役的在前"""
+        return await self._all("SELECT * FROM factor WHERE retired_at IS NOT NULL ORDER BY retired_at DESC", ())
 
     async def factor(self, factor_id: str) -> dict[str, Any] | None:
+        """在役、退役都查得到"""
         return await self._one("SELECT * FROM factor WHERE id = ?", (factor_id,))
+
+    async def retire_factor(self, factor_id: str, reason: str) -> bool:
+        """在役的才退得了，同时取消交易员的勾选；已经退役的返回 False"""
+        cur = await self.db.execute("UPDATE factor SET retired_at = ?, retire_reason = ? WHERE id = ? AND retired_at IS NULL",
+                                    (now_ms(), reason, factor_id))
+        done = cur.rowcount == 1
+        if done:
+            await self.db.execute("DELETE FROM trade_factor WHERE factor_id = ?", (factor_id,))
+        await self.db.commit()
+        return done
+
+    async def restore_factor(self, factor_id: str) -> bool:
+        """退役的才恢复得了；交易员的勾选不跟着恢复"""
+        cur = await self.db.execute(
+            "UPDATE factor SET retired_at = NULL, retire_reason = NULL WHERE id = ? AND retired_at IS NOT NULL", (factor_id,))
+        await self.db.commit()
+        return cur.rowcount == 1
 
     async def set_recheck(self, factor_id: str, recheck: Any) -> None:
         await self.db.execute("UPDATE factor SET recheck_json = ? WHERE id = ?", (dumps(recheck), factor_id))

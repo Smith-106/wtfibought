@@ -231,7 +231,8 @@
     "failed": "失败",
     "observing": "观察中",
     "approved": "已入库",
-    "declined": "已丢弃"
+    "declined": "已丢弃",
+    "retired": "已退役"
   },
   "observe": {
     "title": "观察区",
@@ -314,8 +315,19 @@
       "icir": "ICIR",
       "holdout": "Holdout IC",
       "recheck": "复查 IC",
-      "reeval": "复评 IC"
+      "reeval": "复评 IC",
+      "retiredAt": "退役时间",
+      "reason": "原因"
     },
+    "retiredTitle": "已退役（{{n}} 条）",
+    "retiredHint": "不进组合和交易员，不当 G6 对比和 G9 基线；点开看详情，可以恢复。",
+    "retireSection": "退役",
+    "retireHint": "下线错误或过期的因子：不再进组合和交易员，不再当 G6 的对比和 G9 的基线，出题时也不再列为库里已有；结构仍算 G8 的已知，原因记进已试列表给出题看。记录不删，能恢复。",
+    "retirePh": "退役原因，比如：单腿扣完成本是亏的，拖累组合",
+    "retireRun": "退役",
+    "retiredInfo": "{{time}} 退役：{{reason}}",
+    "restore": "恢复在役",
+    "restoreHint": "恢复后回到库里；交易员的勾选不会自动恢复。",
     "hypothesis": "假设",
     "canonical": "规范形",
     "columns": "用到的列",

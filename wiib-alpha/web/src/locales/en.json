@@ -231,7 +231,8 @@
     "failed": "failed",
     "observing": "in observation",
     "approved": "approved",
-    "declined": "dropped"
+    "declined": "dropped",
+    "retired": "retired"
   },
   "observe": {
     "title": "Observation",
@@ -314,8 +315,19 @@
       "icir": "ICIR",
       "holdout": "Holdout IC",
       "recheck": "Recheck IC",
-      "reeval": "Re-eval IC"
+      "reeval": "Re-eval IC",
+      "retiredAt": "Retired",
+      "reason": "Reason"
     },
+    "retiredTitle": "Retired ({{n}})",
+    "retiredHint": "Out of the combo and the trader, no longer a G6 comparison or the G9 baseline; open one for details or to restore it.",
+    "retireSection": "Retire",
+    "retireHint": "Take a wrong or stale factor offline: it leaves the combo and the trader, is no longer a G6 comparison or the G9 baseline, and is no longer listed as in the library when proposing; its structure still counts as known for G8 and the reason goes into the tried list. Nothing is deleted and it can be restored.",
+    "retirePh": "Why it retires, e.g. its own leg loses money after costs and drags the combo",
+    "retireRun": "Retire",
+    "retiredInfo": "Retired {{time}}: {{reason}}",
+    "restore": "Restore",
+    "restoreHint": "Back in the library; the trader's tick is not restored automatically.",
     "hypothesis": "Hypothesis",
     "canonical": "Canonical form",
     "columns": "Columns used",

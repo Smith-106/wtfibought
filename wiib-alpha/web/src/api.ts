@@ -363,6 +363,9 @@ export interface Factor {
   /** 用当前评估器复评的结果；没有同批，asked 恒 false、peers 空 */
   reeval: Reeval | null;
   brief: EvalBrief;
+  /** 退役的时刻和原因，在役是 null */
+  retired_at: number | null;
+  retire_reason: string | null;
 }
 
 /** 因子详情多带整份 eval 和完整的门 */
@@ -382,9 +385,12 @@ export interface ComboReport {
 }
 
 export interface LibraryList {
+  /** 在役的 */
   factors: Factor[];
   /** 库空或没装载数据时是 null */
   combo: ComboReport | null;
+  /** 退役的，最近退役的在前 */
+  retired: Factor[];
   /** 库里因子复评任务的进度 */
   reeval: ReevalJob;
 }
@@ -760,6 +766,8 @@ export const alpha = {
   library: () => call<LibraryList>('GET', `${ALPHA}/library`),
   factor: (id: string) => call<FactorDetail>('GET', `${ALPHA}/library/${id}`),
   recheck: (id: string) => call<Recheck>('POST', `${ALPHA}/library/${id}/recheck`),
+  retireFactor: (id: string, reason: string) => call<{ id: string }>('POST', `${ALPHA}/library/${id}/retire`, { reason }),
+  restoreFactor: (id: string) => call<{ id: string }>('POST', `${ALPHA}/library/${id}/restore`),
   /** 库里全部因子用当前评估器重算，后台跑，进度看 library().reeval */
   libraryReeval: () => call<{ started: boolean; total: number }>('POST', `${ALPHA}/library/reeval`),
   /** 后台评估，进度和结果看 evalJob() */

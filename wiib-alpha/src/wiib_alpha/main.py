@@ -114,7 +114,8 @@ def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -
 
 @dataclass
 class Library:
-    """库里的因子在当前数据上的派生物：已知规范形、G9 的基线（库里因子 + 基差 carry 的交易方案，组合也是 G6 的库因子对比集）、组合报告"""
+    """库里在役因子在当前数据上的派生物：已知规范形（退役的也算）、G9 的基线（在役因子 + 基差 carry 的交易方案，
+    组合也是 G6 的库因子对比集）、组合报告"""
     factors: list[dict[str, Any]]
     known: set[str]
     base: scheme.Base
@@ -124,8 +125,9 @@ class Library:
     full: combo.Combo
 
 
-def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams) -> Library:
-    """库里每条因子全池求值一遍（全量骨架），搜索段的组合从里面切"""
+def build_library(data: Data, factors: list[dict[str, Any]], retired: list[dict[str, Any]],
+                  params: EvalParams) -> Library:
+    """在役的每条因子全池求值一遍（全量骨架），搜索段的组合从里面切；退役的只把规范形算进已知"""
     pool = data.pool
     full = combo.Combo.empty(pool.rows, pool.symbols)
     for f in factors:
@@ -140,7 +142,7 @@ def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams)
                       "holdout": holdout_brief(combo.holdout(full, data.vol, data.cut_ms, params))},
             **combo.latest(full, data.vol, params),
         }
-    known = data.reference_canonicals | {f["canonical"] for f in factors}
+    known = data.reference_canonicals | {f["canonical"] for f in [*factors, *retired]}
     base = scheme.Base.of(search, data.basis[pool.in_search], vol, params)
     return Library(factors, known, base, report, full)
 
@@ -320,11 +322,11 @@ async def _library(app: FastAPI) -> Library:
     """库或数据变了才重算；同时来几个请求只算一次"""
     data: Data = _data(app)
     async with app.state.library_lock:
-        factors = await app.state.store.factors()
-        key = (data.loaded_at, tuple(f["id"] for f in factors))
+        factors, retired = await app.state.store.factors(), await app.state.store.retired_factors()
+        key = (data.loaded_at, tuple(f["id"] for f in factors), tuple(f["id"] for f in retired))
         cache = app.state.library
         if cache is None or cache[0] != key:
-            cache = (key, await asyncio.to_thread(build_library, data, factors, app.state.params))
+            cache = (key, await asyncio.to_thread(build_library, data, factors, retired, app.state.params))
             app.state.library = cache
     return cache[1]
 
@@ -434,6 +436,10 @@ class CreateCampaign(BaseModel):
 
 class EvalBody(BaseModel):
     expr: str
+
+
+class RetireBody(BaseModel):
+    reason: str = Field(max_length=500)
 
 
 class ReferenceRun(BaseModel):
@@ -739,13 +745,14 @@ async def approve(candidate_id: str, request: Request):
     # 检查与置位一条 UPDATE：入库、丢弃同时点，只有一个能抢到
     if not await store.claim_candidate(candidate_id, "observing", "approved"):
         raise HTTPException(409, "这条不在观察区")
-    name = _unique_name(c["name"], {f["name"] for f in await store.factors()})
+    name = _unique_name(c["name"], {f["name"] for f in [*await store.factors(), *await store.retired_factors()]})
     latest = c["reeval"] or c
     await store.add_factor({
         "id": c["id"], "name": name, "hypothesis": c["hypothesis"], "expr": c["expr"], "canonical": c["canonical"],
         "columns": latest["eval"]["columns"], "eval": latest["eval"], "gates": latest["gates"], "review": c.get("review"),
         "approved_at": now_ms(), "run_id": c["run_id"],
     })
+    await store.add_tried(c["run_id"], c["hypothesis"], c["expr"], "approved", None)
     if request.app.state.data is not None:
         asyncio.create_task(_warm(request.app))
     return _ok({"id": c["id"], "name": name})
@@ -820,11 +827,12 @@ def _frame(e: dict[str, Any]) -> str:
 
 @router.get("/library")
 async def library(request: Request):
-    """因子列表加组合报告；没装载数据时只有列表。reeval 是库里因子复评任务的进度"""
+    """在役因子列表加组合报告，另带退役的列表；没装载数据时没有组合报告。reeval 是库里因子复评任务的进度"""
     app = request.app
-    rows = await app.state.store.factors()
+    store: Store = app.state.store
     report = (await _library(app)).report if app.state.data else None
-    return _ok({"factors": [_factor_view(f, full=False) for f in rows], "combo": report,
+    return _ok({"factors": [_factor_view(f, full=False) for f in await store.factors()], "combo": report,
+                "retired": [_factor_view(f, full=False) for f in await store.retired_factors()],
                 "reeval": app.state.runs.jobs["libraryReeval"]})
 
 
@@ -838,13 +846,49 @@ async def library_item(factor_id: str, request: Request):
 
 def _factor_view(f: dict[str, Any], full: bool) -> dict[str, Any]:
     out = {k: f.get(k) for k in ("id", "name", "hypothesis", "expr", "canonical", "columns", "approved_at",
-                                  "run_id", "review", "recheck")}
+                                  "run_id", "review", "recheck", "retired_at", "retire_reason")}
     out["brief"] = eval_brief(f["eval"], f["gates"])
     out["reeval"] = _reeval_view(f.get("reeval"))
     if full:
         out["eval"] = f["eval"]
         out["gates"] = f["gates"]
     return out
+
+
+@router.post("/library/{factor_id}/retire")
+async def library_retire(factor_id: str, body: RetireBody, request: Request):
+    """退役：不再进组合和交易员，不再当 G6 的库对比和 G9 的基线，出题的"库里已有"里也没有它；
+    规范形仍算 G8 的已知，tried 里记一条"retired + 原因"给出题看。记录不删，能恢复"""
+    app = request.app
+    store: Store = app.state.store
+    f = await store.factor(factor_id)
+    if f is None:
+        raise HTTPException(404, "没有这个因子")
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(400, "退役要写原因")
+    if not await store.retire_factor(factor_id, reason):
+        raise HTTPException(409, "已经退役了")
+    await store.add_tried(f["run_id"], f["hypothesis"], f["expr"], "retired", reason)
+    if app.state.data is not None:
+        asyncio.create_task(_warm(app))
+    return _ok({"id": factor_id})
+
+
+@router.post("/library/{factor_id}/restore")
+async def library_restore(factor_id: str, request: Request):
+    """恢复在役；交易员的勾选不跟着恢复，tried 里那条改回入库"""
+    app = request.app
+    store: Store = app.state.store
+    f = await store.factor(factor_id)
+    if f is None:
+        raise HTTPException(404, "没有这个因子")
+    if not await store.restore_factor(factor_id):
+        raise HTTPException(409, "这条没有退役")
+    await store.add_tried(f["run_id"], f["hypothesis"], f["expr"], "approved", None)
+    if app.state.data is not None:
+        asyncio.create_task(_warm(app))
+    return _ok({"id": factor_id})
 
 
 @router.post("/library/{factor_id}/recheck")
@@ -1204,6 +1248,8 @@ async def trader_select(factor_id: str, body: TraderFactor, request: Request):
     f = await store.factor(factor_id)
     if f is None:
         raise HTTPException(404, "没有这个因子")
+    if body.selected and f["retired_at"] is not None:
+        raise HTTPException(409, "已退役的因子不能勾")
     missing = sorted(set(f["columns"]) - live.COLUMNS)
     if body.selected and missing:
         raise HTTPException(409, f"用到 live 尾巴补不出来的列：{'、'.join('$' + c for c in missing)}")
@@ -1223,6 +1269,8 @@ async def trader_compare(factor_id: str, request: Request):
     factor = await app.state.store.factor(factor_id)
     if factor is None:
         raise HTTPException(404, "没有这个因子")
+    if factor["retired_at"] is not None:
+        raise HTTPException(409, "已退役的因子不能拿来对比")
     job.clear()
     job.update(running=True, startedAt=now_ms(), factorId=factor_id, name=factor["name"], stage="library", error=None,
                finishedAt=None, result=None)
