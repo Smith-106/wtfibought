@@ -18,15 +18,16 @@ def test_parse_object_and_list_tolerate_fences_and_chatter():
 
 
 def test_system_prompt_lists_every_column_and_operator():
-    # 生成、评审、复盘都要读公式，三份系统提示带同一份列和算子说明
-    for text in (prompts.system_gen(FACTS, "zh"), prompts.system_review("zh"), prompts.system_reflect("zh")):
+    # 生成、评审都要读公式，两份系统提示带同一份列和算子说明；复盘不看公式，不带
+    for text in (prompts.system_gen(FACTS, "zh"), prompts.system_review("zh")):
         for c in FEATURE_COLUMNS:
             assert f"${c}" in text
         for name in ops.OPERATORS:
             assert f"- {name}：{prompts.OPERATOR_DOCS[name]}" in text
-        # 复杂度上限三个角色都看得到：评审给的改法也得写得出来
+        # 复杂度上限两个角色都看得到：评审给的改法也得写得出来
         assert "不同的子式 ≤ 40 个、不同的窗口值 ≤ 6 个、不同的常量值 ≤ 6 个" in text and "重复写只算一个" in text
     assert "改法要能在下面的复杂度上限内写出来" in prompts.system_review("zh")
+    assert "- Mean：" not in prompts.system_reflect("zh")
     text = prompts.system_gen(FACTS, "zh")
     assert "2026-04-27" in text and "中文" in text
     assert "强平三列只有产品币有数" in text and "截面因子用不了" in text and "单独排序没有意义" in text
@@ -120,14 +121,28 @@ def test_reflect_message_shows_outcomes_numbers_and_old_lessons():
     good = {**evaluated([]), "seq": 1, "name": "carry", "hypothesis": "费率高的币之后弱", "status": "passed",
             "reason": None, "evaluations": 2}
     bad = {"seq": 2, "name": "bad", "hypothesis": "写不出来", "status": "failed", "reason": "连试三次都没写出合法表达式"}
-    text = prompts.reflect_message([good, bad], [{"kind": "avoid", "text": "别用强平列"}], "en")
-    assert "1. [carry] 假设：费率高的币之后弱\n   最终表达式：Mean($ret, 4)（评估了 2 版）\n   结局：过门" in text
-    assert "盈亏平衡单边成本 3.2 bps" in text
-    assert "2. [bad]" in text and "最终表达式：未写出（评估了 0 版）" in text and "失败（连试三次都没写出合法表达式）" in text
+    gated = {**good, "seq": 3, "name": "gated", "family": "量能", "status": "rejected_gates", "reason": "G5 xx；G9 yy",
+             "gates": [{"id": "G5", "name": "排列检验", "passed": False}, {"id": "G6", "name": "冗余", "passed": True},
+                       {"id": "G9", "name": "增量", "passed": False}]}
+    text = prompts.reflect_message([good, bad, gated], [{"kind": "avoid", "text": "别用强平列"}], "en")
+    # 不给表达式和整段门的备注，只给结局、没过的门和四个数
+    assert "1. [carry] 假设：费率高的币之后弱\n   结局：过门、过评审、过同批 BH，进观察区等人入库；评估了 2 版\n   主档：IC " in text
+    assert "盈亏平衡 3.2 bps" in text and "Mean($ret, 4)" not in text and "$" not in text.split("已有的经验")[0]
+    assert "2. [bad] 假设：写不出来\n   结局：失败（连试三次都没写出合法表达式）；评估了 0 版" in text
+    assert "3. [gated]（量能）" in text and "硬门拒（没过的门：G5 排列检验、G9 增量）" in text and "G5 xx" not in text
     assert "- [avoid] 别用强平列" in text and "英文" in text
-    assert "英文" in prompts.system_reflect("en") and "holdout 之前" in prompts.system_reflect("zh")
+    assert "英文不超过 50 词" in prompts.system_reflect("en") and "holdout 之前" in prompts.system_reflect("zh")
     # 单条候选的结局出题时另有列表，经验只写换个假设也用得上的规律
     assert "不写某一条候选的复盘" in prompts.system_reflect("zh") and "不抄表达式" in prompts.system_reflect("zh")
+
+
+def test_lesson_fits_rejects_expressions_and_overlong_text():
+    assert prompts.lesson_fits("持仓量类的慢因子换手低，单腿能过成本", "zh")
+    assert not prompts.lesson_fits("别写成 Std($oi, 672)", "zh") and not prompts.lesson_fits("x (y)", "zh")
+    # 全角括号是正常中文，不算表达式
+    assert prompts.lesson_fits("不要用（成交额÷笔数）这种笔均", "zh")
+    assert not prompts.lesson_fits("字" * 81, "zh") and prompts.lesson_fits("字" * 80, "zh")
+    assert prompts.lesson_fits(" ".join(["word"] * 50), "en") and not prompts.lesson_fits(" ".join(["word"] * 51), "en")
 
 
 def test_eval_brief_rounds_and_maps_nan():
@@ -160,9 +175,9 @@ def test_eval_brief_rounds_and_maps_nan():
         "mean": 0.02, "icir": 0.4, "months": 3, "sameSignSymbols": 1, "bySymbol": {"BTCUSDT": 0.021234},
         "netReturn": -0.1, "permPct": 0.5}}}
     brief = prompts.eval_brief(ev, gates)
-    # 之前算的 holdout 没有标准误
-    assert brief["holdout"] == {"since": 5, "horizons": {"12h": {"meanIc": 0.05, "icir": None, "se": None, "months": 1,
-                                                                 "monotonic": 0.7, "samples": 60}}}
+    # 之前算的 holdout 没有标准误和逐点的 t
+    assert brief["holdout"] == {"since": 5, "horizons": {"12h": {"meanIc": 0.05, "icir": None, "se": None, "t": None,
+                                                                 "months": 1, "monotonic": 0.7, "samples": 60}}}
     assert brief["timeseries"] == {"horizons": {"12h": {"meanIc": 0.02, "icir": 0.4, "sameSignSymbols": 1,
                                                         "netReturn": -0.1}},
                                    "bySymbol": {"BTCUSDT": 0.0212}}

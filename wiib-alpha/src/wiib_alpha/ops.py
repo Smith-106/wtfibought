@@ -1,6 +1,7 @@
 """DSL 算子的 pandas 实现。
 
 时序算子全部只看 [t−w, t]（含当前 bar），窗口不满或窗内有 NaN 就是 NaN；输入一律是对齐好的 float Series，输出同 index。
+EMA 是例外：从序列起点递推、记着全部历史，之前的 NaN 跳过去不断链，只有当前输入是 NaN 才出 NaN。
 截面算子只看同一时刻：输入是全部在池币拼起来的长 Series 和每行的时刻，按时刻分组算。
 Std / Var / Cov 用样本口径（ddof=1），与 Java FactorMath 同。
 """

@@ -61,6 +61,9 @@ class Thresholds:
     fdr_q: float = 0.10                 # G5：同批 BH-FDR
     sharpe_gain_min: float = 0.10       # G9：加进交易方案后搜索段年化净 Sharpe 至少升这么多；随机因子 95% 升不到（calibrate --g9）
     max_redundancy: float = 0.7         # G6
+    # 入库：它没见过那段（发现那轮的切点起）主档截面 IC 至少这么多个时刻、|均值 / 标准误| 至少这么大，且和搜索段同号
+    admit_min_points: int = 150
+    admit_t_min: float = 2.0
     max_nodes: int = COMPLEXITY["nodes"]        # G7：解析时已经卡住，这里只做报告
     max_windows: int = COMPLEXITY["windows"]
     max_constants: int = COMPLEXITY["constants"]

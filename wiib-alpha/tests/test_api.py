@@ -61,7 +61,7 @@ def prepared(tmp_path, monkeypatch, planted_panels):
     monkeypatch.setattr(scheduler, "loop", idle)
     app = m.app
     app.state.params = EvalParams(test_size=96, embargo=4, min_train=500, iterations=200, seed=7, holdout_days=10)
-    app.state.thresholds = Thresholds(min_samples=30)
+    app.state.thresholds = Thresholds(min_samples=30, admit_min_points=5)
     app.state.authenticator = Authenticator("http://sim", httpx.AsyncClient(transport=httpx.MockTransport(sim)))
     yield app
     config.cache_clear()
@@ -179,6 +179,20 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     assert overview["observing"] == 1 and overview["factors"] == 0
 
     planted_id = items[0]["id"]
+    # 入库条件：先在当前数据上复评过，没复评就是 409
+    assert items[0]["admission"] == {"ok": False, "reason": "还没在当前这版数据上复评"}
+    resp = await client.post(f"/api/alpha/candidates/{planted_id}/approve", headers=ADMIN)
+    assert resp.status_code == 409 and resp.json()["msg"].startswith("还不能入库：还没在当前这版数据上复评")
+    await client.post("/api/alpha/observation/reeval", headers=ADMIN)
+
+    async def reevaluated():
+        return not data(await client.get("/api/alpha/observation", headers=ADMIN))["reeval"]["running"]
+
+    await wait_until(reevaluated, 60)
+    items = data(await client.get("/api/alpha/observation", headers=ADMIN))["items"]
+    # 复评全过，没见过那段（holdout）IC 同号且显著：能入库，原因里是那段的数字
+    assert items[0]["admission"]["ok"], items[0]["admission"]
+    assert items[0]["admission"]["reason"].startswith("没见过那段")
     assert data(await client.post(f"/api/alpha/candidates/{planted_id}/approve", headers=ADMIN)) == {
         "id": planted_id, "name": "planted"}
     # 入过库的不在观察区了：再点入库、丢弃都是 409
@@ -219,16 +233,47 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     assert not out["passed"]
 
 
-async def test_decline_and_duplicate_names(client):
-    """丢弃的不入库；同名的入库时加序号"""
+def fake_reeval(real: dict, cut_ms: int, mean: float = 0.05, t: float | None = 5.0, samples: int = 100,
+                search: float = 0.04, passed: bool = True) -> dict:
+    """拿一份真评估改出能喂给 admission 的复评：主档 24h 的搜索段 IC、holdout 的起点和逐点 t 按参数改"""
+    ev = json.loads(json.dumps(real["eval"]))
+    ev["horizons"]["96"]["ic"]["mean"] = search
+    ev["holdout"] = {"since": cut_ms, "at": 1, "horizons": {"96": {"mean": mean, "icir": None, "se": None, "t": t,
+                                                                  "months": 3, "samples": samples, "monotonic": None}}}
+    return {"at": 1, "direction": 1, "asked": False, "passed": passed, "reason": None if passed else "G2 x", "peers": [],
+            "gates": real["gates"], "eval": ev}
+
+
+async def test_admission_rule_and_duplicate_names(client):
+    """入库条件逐项拒：没过门、没见过那段太短、反号、不显著、数据刷新过；丢弃的不入库；同名的入库时加序号"""
     store = m.app.state.store
+    cut = m.app.state.data.cut_ms
+    real = await evaluated(client, "$volume")
     for run_id, cid in (("r1", "r1-1"), ("r2", "r2-1"), ("r3", "r3-1")):
         await store.create_run(run_id, 1, "", "zh", None)
         await store.upsert_candidate({"id": cid, "run_id": run_id, "seq": 1, "name": "carry", "hypothesis": "h",
-                                      "expr": "$volume", "canonical": "$volume", "status": "observing",
-                                      "eval": {"columns": ["volume"], "horizons": {}}, "gates": [{"id": "G0"}]})
+                                      "expr": "$volume", "canonical": "$volume", "status": "observing"})
     assert data(await client.post("/api/alpha/candidates/r1-1/decline", headers=ADMIN)) == {"id": "r1-1"}
     assert (await store.candidate("r1-1"))["status"] == "declined"
+
+    async def refused(reeval: dict) -> str:
+        await store.set_reeval("r2-1", reeval)
+        resp = await client.post("/api/alpha/candidates/r2-1/approve", headers=ADMIN)
+        assert resp.status_code == 409
+        item = next(c for c in data(await client.get("/api/alpha/observation", headers=ADMIN))["items"] if c["id"] == "r2-1")
+        assert not item["admission"]["ok"] and resp.json()["msg"] == "还不能入库：" + item["admission"]["reason"]
+        return item["admission"]["reason"]
+
+    assert await refused(fake_reeval(real, cut - 1)) == "还没在当前这版数据上复评"
+    assert await refused(fake_reeval(real, cut, passed=False)) == "复评没过门：G2 x"
+    assert await refused(fake_reeval(real, cut, samples=4)) == "没见过那段只有 4 个时刻，要 5 个"
+    assert await refused(fake_reeval(real, cut, mean=-0.05, t=-5.0)) == "没见过那段主档 IC 和搜索段的 0.0400 反号（t -5.0）"
+    assert await refused(fake_reeval(real, cut, t=1.7)) == "没见过那段主档 IC 的 t 1.7 不到 2"
+    assert (await refused(fake_reeval(real, cut, t=None))).startswith("没见过那段算不出主档 IC 的 t")
+    assert (await store.candidate("r2-1"))["status"] == "observing"
+
+    await store.set_reeval("r2-1", fake_reeval(real, cut))
+    await store.set_reeval("r3-1", fake_reeval(real, cut))
     assert data(await client.post("/api/alpha/candidates/r2-1/approve", headers=ADMIN))["name"] == "carry"
     assert data(await client.post("/api/alpha/candidates/r3-1/approve", headers=ADMIN))["name"] == "carry_2"
     factors = {f["id"]: f for f in await store.factors()}
@@ -238,8 +283,8 @@ async def test_decline_and_duplicate_names(client):
     await store.retire_factor("r2-1", "过期")
     await store.create_run("r4", 1, "", "zh", None)
     await store.upsert_candidate({"id": "r4-1", "run_id": "r4", "seq": 1, "name": "carry", "hypothesis": "h",
-                                  "expr": "$volume", "canonical": "$volume", "status": "observing",
-                                  "eval": {"columns": ["volume"], "horizons": {}}, "gates": [{"id": "G0"}]})
+                                  "expr": "$volume", "canonical": "$volume", "status": "observing"})
+    await store.set_reeval("r4-1", fake_reeval(real, cut))
     assert data(await client.post("/api/alpha/candidates/r4-1/approve", headers=ADMIN))["name"] == "carry_3"
 
 
@@ -263,10 +308,10 @@ async def test_retire_and_restore(client):
     assert data(await client.get("/api/alpha/trader/factors", headers=ADMIN))["items"] == []
     assert (await client.put("/api/alpha/trader/factors/f1", json={"selected": True}, headers=ADMIN)).status_code == 409
     assert (await client.post("/api/alpha/trader/compare/f1", headers=ADMIN)).status_code == 409
-    # 出题看得到它退役了和原因；换个窗口再交同一结构，G8 照样拒，G6 不再拿它比
+    # 出题看得到它退役了和原因；换个窗口再交同一结构，G8 不再当已知，G6 也不再拿它比
     assert [(t["outcome"], t["reason"]) for t in await store.tried()] == [("retired", "单腿净收益为负")]
     again = await evaluated(client, "Mean($volume, 8)")
-    assert again["gates"][8]["id"] == "G8" and not again["gates"][8]["passed"]
+    assert again["gates"][8]["id"] == "G8" and again["gates"][8]["passed"]
     assert again["brief"]["redundancy"]["with"] != "lib:vol4"
     # 恢复：回到库里，tried 改回入库；交易员的勾选不跟着恢复
     assert data(await client.post(url + "/restore", headers=ADMIN)) == {"id": "f1"}
@@ -592,6 +637,11 @@ async def test_data_status_and_refresh(client):
     assert pool["loaded"] == {"symbols": 24, "months": 3, "gridPoints": 250, "rows": 6000}
     assert pool["grid"]["ready"] is True and pool["grid"]["running"] is False
     before = status["loadedAt"]
+    # 观察区有候选：刷新完自动复评一遍
+    store = m.app.state.store
+    await store.create_run("old", 1, "", "zh", None)
+    await store.upsert_candidate({"id": "old-1", "run_id": "old", "seq": 1, "name": "vol", "hypothesis": "h",
+                                  "expr": "$volume", "canonical": "$volume", "status": "observing", "direction": 1})
     assert data(await client.post("/api/alpha/data/refresh", headers=ADMIN)) == {"started": True}
 
     async def finished():
@@ -600,6 +650,14 @@ async def test_data_status_and_refresh(client):
 
     await wait_until(finished)
     assert data(await client.get("/api/alpha/data/status", headers=ADMIN))["loadedAt"] >= before
+
+    async def reevaluated():
+        out = data(await client.get("/api/alpha/observation", headers=ADMIN))
+        return out["reeval"].get("finishedAt") is not None and not out["reeval"]["running"]
+
+    await wait_until(reevaluated, 60)
+    item = data(await client.get("/api/alpha/observation", headers=ADMIN))["items"][0]
+    assert item["reeval"]["brief"]["holdout"]["since"] == m.app.state.data.cut_ms and item["admission"]["ok"] is True
 
 
 async def test_reference_run(client):

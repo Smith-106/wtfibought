@@ -27,13 +27,15 @@ def model(reply) -> ScriptedModel:
 
 
 LESSONS = [{"kind": "avoid", "text": "成交笔数没有截面信号"}, {"kind": "try", "text": "成交量平滑后更稳"}]
+# 复盘里不合格式的：超长、抄了表达式；代码要丢掉
+BAD_LESSONS = [{"kind": "avoid", "text": "成交笔数" * 41}, {"kind": "note", "text": "别写成 Sum($trades, 4)"}]
 
 
 def gen_reply(prompt: str) -> str:
     """planted：先少写窗口、再写 $volume 被评审打回、最后 Mean($volume, 4)；noise：$trades，门没过重写成成交笔数的和，都是噪音；
     twin：planted 换个结构（EMA），clone：planted 换个窗口（规范形相同）；k ≥ 3 才轮到后两条；复盘回两条经验"""
     if "这一轮的候选与结局" in prompt:
-        return json.dumps(LESSONS, ensure_ascii=False)
+        return json.dumps(LESSONS + BAD_LESSONS, ensure_ascii=False)
     if "JSON 数组" in prompt:
         return "好的：\n```json\n" + json.dumps([
             {"name": "planted", "family": "量能", "hypothesis": "成交量列藏着信号"},

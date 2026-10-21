@@ -30,12 +30,14 @@ KNOWN = (*reference.KNOWN_EFFECTS, reference.REVERSAL)
 def evaluate(expr: Expr, pool: Pool, vol: np.ndarray, params: EvalParams = EvalParams(),
              reference_grid: Grid | None = None, library: scheme.Base | None = None,
              products: dict[str, pd.DataFrame] | None = None, holdout: bool = False,
-             observing: combo.Combo | None = None) -> dict[str, Any]:
+             observing: combo.Combo | None = None, values: Values | None = None) -> dict[str, Any]:
     """vol 是全量骨架上的 Std($ret, 672)，多空腿按它分仓；reference_grid 没算好是 None（G6 不过）；
     library 是 G9 的基线（库里因子 + 基差 carry 的交易方案），不给就不算增量；
     products 是产品币搜索段面板，给了才出时序报告；holdout 给手填评估用，顺手把 cut 之后的 IC 也算了；
-    observing 是观察区候选在搜索段上的值，和库里因子一起进 G6 的对比集"""
-    values = pool.values(expr)
+    observing 是观察区候选在搜索段上的值，和库里因子一起进 G6 的对比集；
+    values 是调用方已经算好的全池值（之后还要用它算 holdout、同批筛查），不给就在这里算"""
+    if values is None:
+        values = pool.values(expr)
     f = values.f[pool.in_search]
     v = vol[pool.in_search]
     out: dict[str, Any] = {

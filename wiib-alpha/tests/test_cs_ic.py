@@ -130,6 +130,7 @@ def test_summary_only_counts_the_given_range():
     s = cs_ic.summary(p, cs_ic.series(p), 4, 8, PARAMS)
     assert s["mean"] == pytest.approx(-1.0) and s["samples"] == 4 and s["months"] == 1
     assert s["segments"] == pytest.approx([-1.0, -1.0]) and s["monotonic"]["rho"] == pytest.approx(-1.0)
-    assert set(cs_ic.compact(s)) == {"mean", "icir", "se", "months", "samples", "monotonic"}
+    # 四个点的 IC 全是 -1，没波动：逐点的 t 算不出
+    assert set(cs_ic.compact(s)) == {"mean", "icir", "se", "t", "months", "samples", "monotonic"} and np.isnan(s["t"])
     empty = cs_ic.summary(p, cs_ic.series(p), 8, 8, PARAMS)
     assert np.isnan(empty["mean"]) and empty["samples"] == 0 and np.isnan(empty["monotonic"]["rho"])

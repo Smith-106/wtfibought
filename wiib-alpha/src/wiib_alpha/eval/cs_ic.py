@@ -197,6 +197,8 @@ def summary(p: Points, ic: np.ndarray, lo: int, hi: int, params: EvalParams) -> 
         "icir": float(mean / std) if np.isfinite(std) and std > 0 else np.nan,
         # 月度 IC 均值的标准误
         "se": float(std / np.sqrt(len(table))) if np.isfinite(std) else np.nan,
+        # 逐网格点 IC 的均值 ÷ 标准误：不按月分，几个月的短段也算得出，入库条件看它
+        "t": t_stat(part),
         "months": int(len(table)),
         "monthly": {m: float(v) for m, v in table.items()},
         "segments": segments(part, params.segments, params.min_points),
@@ -207,5 +209,6 @@ def summary(p: Points, ic: np.ndarray, lo: int, hi: int, params: EvalParams) -> 
 
 def compact(summary_: dict[str, Any]) -> dict[str, Any]:
     """holdout 和入库后复查只要这几个数"""
-    return {"mean": summary_["mean"], "icir": summary_["icir"], "se": summary_["se"], "months": summary_["months"],
+    return {"mean": summary_["mean"], "icir": summary_["icir"], "se": summary_["se"], "t": summary_["t"],
+            "months": summary_["months"],
             "samples": summary_["samples"], "monotonic": summary_["monotonic"]["rho"]}

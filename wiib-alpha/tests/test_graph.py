@@ -95,7 +95,10 @@ async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, 
     # 复盘：看得到每条的结局和数字，经验存表、推事件
     reflect = next(p for p in seen if "这一轮的候选与结局" in p)
     assert "[planted]" in reflect and "进观察区" in reflect and "硬门拒" in reflect and "评估了 3 版" in reflect
+    # 复盘不给表达式，只给没过的门和几个数；模型回的超长、抄表达式的两条丢掉，只存合格的
+    assert "Mean($volume, 4)" not in reflect and "没过的门：G2 IC" in reflect and "换手" in reflect
     assert {"event": "lessons", "data": {"items": LESSONS}} in [{k: e[k] for k in ("event", "data")} for e in events]
+    assert any(e["event"] == "log" and e["data"]["text"] == "复盘有 2 条超长或带着表达式，丢掉" for e in events)
     stored = await store.lessons()
     assert [(x["kind"], x["text"]) for x in stored] == [(x["kind"], x["text"]) for x in reversed(LESSONS)]
     assert {(x["run_id"], x["campaign_id"]) for x in stored} == {("r1", "c1")}

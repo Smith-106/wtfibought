@@ -221,6 +221,8 @@ export interface HoldoutHorizon {
   icir: number | null;
   /** 月度 IC 均值的标准误；之前算的 holdout 没有 */
   se: number | null;
+  /** 逐网格点 IC 的均值 ÷ 标准误，入库条件看它；之前算的 holdout 没有 */
+  t?: number | null;
   months: number;
   monotonic: number | null;
   samples: number;
@@ -300,6 +302,8 @@ export interface ObservationItem extends Candidate {
   created_at: number;
   updated_at: number;
   reeval: Reeval | null;
+  /** 现在能不能入库和原因：要在当前数据上复评全过，没见过那段主档 IC 同号、够长、t 够大 */
+  admission: { ok: boolean; reason: string };
 }
 
 export interface ReevalJob {

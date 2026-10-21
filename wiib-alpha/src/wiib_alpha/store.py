@@ -248,9 +248,9 @@ class Store:
         return await self._one("SELECT * FROM candidate WHERE id = ?", (candidate_id,))
 
     async def observing(self) -> list[dict[str, Any]]:
-        """观察区：全部 observing 的候选，带它那一轮的开始时间和切点，新的在前"""
+        """观察区：全部 observing 的候选，带它那一轮的开始时间、切点和语言，新的在前"""
         return await self._all(
-            """SELECT c.*, r.created_at AS run_created_at, r.cut_ms AS run_cut_ms
+            """SELECT c.*, r.created_at AS run_created_at, r.cut_ms AS run_cut_ms, r.lang AS run_lang
                FROM candidate c JOIN run r ON r.id = c.run_id
                WHERE c.status = 'observing' ORDER BY r.created_at DESC, c.seq""", ())
 

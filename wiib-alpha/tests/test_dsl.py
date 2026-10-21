@@ -35,6 +35,11 @@ def test_same_shape_different_window_is_same_canonical():
     a = parse("Mean($close, 4) / $close", COLS)
     b = parse("Mean($close, 96) / $close", COLS)
     assert a.canonical() == b.canonical() and str(a) != str(b)
+    # 加法、乘法换个左右也是同一个规范形；减法、除法不是
+    assert parse("$close * Mean($volume, 4)", COLS).canonical() == parse("Mean($volume, 8) * $close", COLS).canonical()
+    assert parse("$close + $ret", COLS).canonical() == parse("$ret + $close", COLS).canonical()
+    assert parse("$close - $ret", COLS).canonical() != parse("$ret - $close", COLS).canonical()
+    assert str(parse("$ret * $close", COLS)) == "($ret * $close)"
 
 
 @pytest.mark.parametrize("text, message", [

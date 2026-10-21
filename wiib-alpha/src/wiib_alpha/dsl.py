@@ -239,7 +239,11 @@ def _render(node: Node, masked: bool) -> str:
         case Neg(x=x):
             return f"-{_render(x, masked)}"
         case Bin(op=op, left=left, right=right):
-            return f"({_render(left, masked)} {op} {_render(right, masked)})"
+            parts = [_render(left, masked), _render(right, masked)]
+            # 规范形不分左右：a + b 和 b + a、a * b 和 b * a 是同一个形状
+            if masked and op in "+*":
+                parts.sort()
+            return f"({parts[0]} {op} {parts[1]})"
         case Call(name=name, args=args, params=params):
             parts = [_render(a, masked) for a in args]
             if params:

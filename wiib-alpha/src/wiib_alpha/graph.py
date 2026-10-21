@@ -68,6 +68,8 @@ class Context:
     thresholds: Thresholds = field(default_factory=Thresholds)
     # 全池求值的并发闸，和手填评估共用：一次评估要把全池几百个币读一遍求值，扇出全开会把内存吃满
     evaluating: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
+    # 候选 id → 最后一版在全量骨架上的值：评估时算的，同批筛查和 holdout 接着用，不再读一遍全池；轮末清掉
+    full: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 def merge_by_id(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -148,8 +150,7 @@ def build_graph(ctx: Context):
             cand["status"], cand["reason"] = "evaluating", None
             await _save(ctx.store, run_id, cand)
             async with evaluating:
-                ev = await asyncio.to_thread(evaluate, expr, ctx.pool, ctx.vol, ctx.params, ctx.reference_grid,
-                                             ctx.base, ctx.products, observing=ctx.observing)
+                ev = await asyncio.to_thread(_evaluate, cand["id"], expr)
             gates = judge(ev, ctx.thresholds, ctx.known, cand["direction"])
             cand["eval"], cand["gates"] = clean(ev), clean(gates)
             # 每评估一次就是一次试验，门没过重写的、被评审打回的版本都算
@@ -187,6 +188,13 @@ def build_graph(ctx: Context):
             break
         await _save(ctx.store, run_id, cand)
         return {"candidates": [cand]}
+
+    def _evaluate(cand_id: str, expr: Expr) -> dict[str, Any]:
+        """全池求值一次，值留在 ctx.full 给同批筛查和 holdout 用"""
+        values = ctx.pool.values(expr)
+        ctx.full[cand_id] = values.f
+        return evaluate(expr, ctx.pool, ctx.vol, ctx.params, ctx.reference_grid, ctx.base, ctx.products,
+                        observing=ctx.observing, values=values)
 
     async def _implement(cand: dict[str, Any], system: str, feedback: str | None, written: dict[str, int],
                          locked: int | None) -> tuple[Expr | None, str | None]:
@@ -244,10 +252,7 @@ def build_graph(ctx: Context):
             await _save(ctx.store, run_id, c)
         total = await ctx.store.bump_trials(len(evaluated) + superseded)
         survivors = [c for c in candidates if c["status"] == "passed"]
-        full = {}
-        for c in survivors:
-            async with evaluating:
-                full[c["id"]] = (await asyncio.to_thread(ctx.pool.values, parse(c["expr"], FEATURE_COLUMNS))).f
+        full = {c["id"]: ctx.full[c["id"]] for c in survivors}
         kept = await asyncio.to_thread(screen_batch, survivors, full, ctx.pool, ctx.base, ctx.params, ctx.thresholds)
         for c in survivors:
             if c["status"] != "passed":
@@ -281,13 +286,19 @@ def build_graph(ctx: Context):
             logger.exception("run %s 复盘失败", run_id)
             await emit(ctx.store, run_id, "log", {"text": f"复盘时模型出错，这一轮不写经验：{str(exc)[:200]}"})
             return {}
-        lessons = []
+        lessons, dropped = [], 0
         for item in items or []:
             if not isinstance(item, dict):
                 continue
             kind, text = str(item.get("kind") or "").strip().lower(), str(item.get("text") or "").strip()
-            if kind in LESSON_KINDS and text:
+            if kind not in LESSON_KINDS or not text:
+                continue
+            if prompts.lesson_fits(text, state["lang"]):
                 lessons.append({"kind": kind, "text": text})
+            else:
+                dropped += 1
+        if dropped:
+            await emit(ctx.store, run_id, "log", {"text": f"复盘有 {dropped} 条超长或带着表达式，丢掉"})
         if not lessons:
             await emit(ctx.store, run_id, "log", {"text": "复盘没给出合法的经验，这一轮不存"})
             return {}
@@ -303,6 +314,7 @@ def build_graph(ctx: Context):
         candidates = [dict(c) for c in state.get("candidates", [])]
         observing = 0
         for c in candidates:
+            ctx.full.pop(c["id"], None)
             if c["status"] == "passed":
                 c["status"] = "observing"
                 observing += 1

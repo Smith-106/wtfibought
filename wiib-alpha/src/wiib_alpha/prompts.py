@@ -92,7 +92,19 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 {_dsl_docs()}
 
 评估是代码硬门，不是人看：
-- G0 前视自检；G1 样本量；G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组、每期收益两头各截掉 5% 后，顶组减底组每期之差和 IC 同向、t ≥ 2（三组的形状只报不判，只有一头有效也行）；G3 四段至少三段同号，且最近一段必须同号；G4 三档同号；G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每边按 7 天波动的倒数分仓，每 24 小时调一次）的截面排列检验显著；这条腿按币的流动性分档扣单边 {tiers} bps 成本、持有期间按真实结算记录付或收资金费（多头付正费率、空头收）后的净收益也会算出来，只报不判；G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名；G7 复杂度（上限见上面表达式语法那段，解析时就会拒）；G8 换个窗口的翻版不算新；G9 加进实盘的交易方案后净 Sharpe 至少升 0.1（随机因子加进去，95% 都升不到这么多，平均还是往下拉）：方案是一半资金做库里因子的组合（每个时刻先转截面秩再加权：权重的符号跟 24 小时 IC，大小是这条因子单独做上面那条多空腿扣完成本和资金费的净收益，单独做不赚钱的权重是 0；多空两头按上面的缓冲带选币、按波动分仓）、一半做基差 carry（做空 7 天溢价高的、做多折价的），24 小时调一次，扣成本和资金费，你的因子加进组合那一半；G10 主档截面 IC 的符号要和你声明的方向一样。另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
+- G0 前视自检。
+- G1 样本量。
+- G2 主档 |IC| ≥ 0.01、月度 IC 均值的 t（ICIR × √月数）≥ 3，且按因子分 3 组、每期收益两头各截掉 5% 后，顶组减底组每期之差和 IC 同向、t ≥ 2（三组的形状只报不判，只有一头有效也行）。
+- G3 四段至少三段同号，且最近一段必须同号。
+- G4 三档同号。
+- G5 多空腿（排进头部 1/5 做多、尾部 1/5 做空，掉出 2/5 才平，中间不动，每边按 7 天波动的倒数分仓，每 24 小时调一次）的截面排列检验显著；这条腿按币的流动性分档扣单边 {tiers} bps 成本、持有期间按真实结算记录付或收资金费（多头付正费率、空头收）后的净收益也会算出来，只报不判。
+- G6 与参照集、库里的因子、观察区里的候选截面相关 |ρ| < 0.7，参照集里有规模（成交额、持仓名义）、换手（成交额 ÷ 持仓）、7 天波动、7 天最大涨幅、7 天和 3 周动量、对 BTC 的 beta、资金费率水平、基差水平这些早有文献的效应，和它们高度相关就是老效应换了个列名。
+- G7 复杂度（上限见上面表达式语法那段，解析时就会拒）。
+- G8 换个窗口的翻版不算新；加法、乘法换个左右也不算。
+- G9 加进实盘的交易方案后净 Sharpe 至少升 0.1（随机因子加进去，95% 都升不到这么多，平均还是往下拉）：方案是一半资金做库里因子的组合（每个时刻先转截面秩再加权：权重的符号跟 24 小时 IC，大小是这条因子单独做上面那条多空腿扣完成本和资金费的净收益，单独做不赚钱的权重是 0；多空两头按上面的缓冲带选币、按波动分仓）、一半做基差 carry（做空 7 天溢价高的、做多折价的），24 小时调一次，扣成本和资金费，你的因子加进组合那一半。
+- G10 主档截面 IC 的符号要和你声明的方向一样。
+- 另外每条都会算"去老效应"：把下面这些已知效应一起回归掉，剩下的 IC 还有原来的百分之几、显不显著；它不是门，但评审和人都会看，老效应和别的量混在一起、相关度压到 0.7 以下的，在这里会露出来。
+- 同批过门的还会互相查一遍：结构重合或截面相关 ≥ 0.7 的只留增量大的那条；留下的再算一次相对排在前面那几条的增量写给人看，不是门。
 - 写表达式时同时声明方向：按假设，因子值越大未来 24 小时相对越强填 1，越弱填 -1。方向由假设决定；把表达式取负、同时把方向翻过来，G10 的结果不变。IC 和假设反号，说明数据不支持这条假设。
 - 已知效应（名字：公式（是什么））；"去老效应"回归掉的是其中 {len(reference.KNOWN_EFFECTS)} 条老效应，再加 24 小时反转（Alpha158 的 {reference.REVERSAL}），G6 除了这些还比 Alpha158 的一百多条量价因子：
 {known}
@@ -231,27 +243,52 @@ def _lessons(lessons: Sequence[Mapping[str, Any]]) -> str:
 # 复盘时的结局说法；passed 是 commit 之前的状态，commit 会把它标成观察中
 _OUTCOMES = {"passed": "过门、过评审、过同批 BH，进观察区等人入库", "rejected_gates": "硬门拒",
              "rejected_review": "评审拒", "rejected_fdr": "同批 BH 拒", "failed": "失败"}
+# 一条经验最长：中文按字数、英文按词数；超了代码直接丢
+LESSON_MAX = {"zh": 80, "en": 50}
+
+
+def lesson_fits(text: str, lang: str) -> bool:
+    """经验得是一句规律：不带 $ 列名和括号（那是在抄表达式），长度不超过 LESSON_MAX"""
+    if "$" in text or "(" in text or ")" in text:
+        return False
+    return (len(text.split()) if lang == "en" else len(text)) <= LESSON_MAX[lang]
 
 
 def system_reflect(lang: str) -> str:
-    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、截尾后顶组减底组、四段、三档、多空腿的排列检验、冗余、复杂度、加进实盘交易方案后净 Sharpe 的增量、IC 方向与假设一致），另报回归掉已知效应后还剩多少 IC，门没过的同一假设最多重写两版，过门的再由评审看一遍。
-你看这一轮全部候选的假设、最终表达式、结局和数字，写下几条经验。它们会原样放进之后几轮的出题提示词里，给出题的人看。
+    limit = f"英文不超过 {LESSON_MAX['en']} 词" if lang == "en" else f"中文不超过 {LESSON_MAX['zh']} 字"
+    return f"""你在给一套加密永续合约的因子挖掘系统做轮后复盘。每一轮生成角色提几条假设、写成表达式，代码硬门按截面口径判（截面 IC、截尾后顶组减底组、四段、三档、多空腿的排列检验、冗余、复杂度、加进实盘交易方案后净 Sharpe 的增量、IC 方向与假设一致），门没过的同一假设最多重写两版，过门的再由评审看一遍。
+你看这一轮全部候选的假设、家族、结局和几个关键数字，写下几条经验。它们会原样放进之后几轮的出题提示词里，给出题的人看。
 出题的人另外能看到之前每条假设的最终表达式、结局和没过的门，所以经验不写某一条候选的复盘，要写换一条假设也用得上的规律：哪类数据、哪种构造、多空两头的资金费怎么付，一再出问题或一再有效，为什么。
-数字全部来自 holdout 之前的搜索段。经验用{_LANG_NAME[lang]}写，每条一两句话、中文不超过 80 字（英文不超过 50 词），不抄表达式，数字最多带一两个关键的。
-公式算的是什么以下面的说明为准，别按算子名字猜：
+数字全部来自 holdout 之前的搜索段。经验用{_LANG_NAME[lang]}写，每条一句话、{limit}，不抄表达式，不出现 $ 列名和括号，数字最多带一两个关键的；超长的、带表达式的代码会直接丢掉。"""
 
-{_dsl_docs()}"""
+
+def _reflect_outcome(c: Mapping[str, Any]) -> str:
+    """结局一句：硬门拒的列没过的门，评审拒的带评语，失败的带原因；都不带数字"""
+    outcome = _OUTCOMES.get(c["status"], c["status"])
+    if c["status"] == "rejected_gates" and c.get("gates"):
+        failed = "、".join(f"{g['id']} {g.get('name') or ''}".strip() for g in c["gates"] if not g["passed"])
+        return f"{outcome}（没过的门：{failed}）"
+    if c["status"] in ("rejected_review", "failed") and c.get("reason"):
+        return f"{outcome}（{c['reason']}）"
+    return outcome
+
+
+def _reflect_numbers(ev: Mapping[str, Any]) -> str:
+    """主档四个数：IC、换手、盈亏平衡、资金费"""
+    h = {int(k): v for k, v in ev["horizons"].items()}[primary_of(ev)]
+    leg = h["leg"]
+    return (f"IC {fmt(h['ic']['mean'])}、换手 {fmt(leg.get('turnover'), 2)}、盈亏平衡 {fmt(leg.get('breakEvenBps'), 1)} bps、"
+            f"多空腿资金费 {fmt(leg.get('fundingBps'), 1)} bps")
 
 
 def reflect_message(candidates: Sequence[Mapping[str, Any]], lessons: Sequence[Mapping[str, Any]], lang: str) -> str:
-    """lessons 是已有的最近几条，最新在前"""
+    """lessons 是已有的最近几条，最新在前。不给表达式：给了模型就写成"某条不要写成某表达式"的单条复盘"""
     blocks = []
     for c in candidates:
-        lines = [f"{c['seq']}. [{c['name']}] 假设：{c['hypothesis']}",
-                 f"   最终表达式：{c.get('expr') or '未写出'}（评估了 {c.get('evaluations', 0)} 版）",
-                 f"   结局：{_OUTCOMES.get(c['status'], c['status'])}" + (f"（{c['reason']}）" if c.get("reason") else "")]
+        lines = [f"{c['seq']}. [{c['name']}]" + (f"（{c['family']}）" if c.get("family") else "") + f" 假设：{c['hypothesis']}",
+                 f"   结局：{_reflect_outcome(c)}；评估了 {c.get('evaluations', 0)} 版"]
         if c.get("eval"):
-            lines.append(f"   主档数字：{key_numbers(c['eval'])}")
+            lines.append(f"   主档：{_reflect_numbers(c['eval'])}")
         blocks.append("\n".join(lines))
     candidates_text = "\n".join(blocks)
     return f"""这一轮的候选与结局：
@@ -260,7 +297,7 @@ def reflect_message(candidates: Sequence[Mapping[str, Any]], lessons: Sequence[M
 已有的经验（最新在前）：
 {_lessons(lessons)}
 
-写 1~5 条之后出题、写公式用得上的经验，别和已有的重复。kind：avoid = 以后别这么做，try = 值得接着试，note = 别的观察。
+写 1~5 条之后出题、写公式用得上的经验，别和已有的重复，别复述某一条候选。kind：avoid = 以后别这么做，try = 值得接着试，note = 别的观察。
 只输出一个 JSON 数组，不要代码块、不要任何别的字：
 [{{"kind": "avoid|try|note", "text": "一句话（用{_LANG_NAME[lang]}）"}}]"""
 
@@ -371,9 +408,10 @@ def horizons_brief(horizons: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def holdout_brief(held: Mapping[str, Any]) -> dict[str, Any]:
-    """se 是后来加的，之前算的 holdout 里没有"""
+    """se、t 是后来加的，之前算的 holdout 里没有"""
     return {"since": held["since"], "horizons": {
-        hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]), "se": _r(h.get("se")), "months": h["months"],
+        hours(bars): {"meanIc": _r(h["mean"]), "icir": _r(h["icir"]), "se": _r(h.get("se")), "t": _r(h.get("t")),
+                      "months": h["months"],
                        "monotonic": _r(h["monotonic"]), "samples": h["samples"]}
         for bars, h in held["horizons"].items()}}
 

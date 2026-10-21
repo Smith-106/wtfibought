@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, RefreshCw, ScanSearch, Trash2, TriangleAlert } from 'lucide-react';
+import { Archive, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, Trash2, TriangleAlert } from 'lucide-react';
 import { alpha, type ObservationItem, type Reeval, type ReevalJob } from '../api';
 import { cx, localTime, num } from '../format';
 import { usePoll } from '../poll';
@@ -91,9 +91,16 @@ export function ObservationPanel({ active }: { active: boolean }) {
           {items.map(c => (
             <CandidateCard key={c.id} c={c} meta={t('observe.from', { run: c.run_id, time: localTime(c.created_at) })}>
               {c.reeval && <ReevalBlock r={c.reeval} />}
-              <div className="flex items-center gap-2 border-t border-line pt-3.5">
+              <p className={cx('flex items-start gap-1.5 border-t border-line pt-3.5 text-[13px] leading-relaxed',
+                               c.admission.ok ? 'text-gain' : 'text-muted')}>
+                {c.admission.ok
+                  ? <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  : <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                {t(c.admission.ok ? 'observe.admitOk' : 'observe.admitNo', { why: c.admission.reason })}
+              </p>
+              <div className="flex items-center gap-2">
                 <Button variant="gain" icon={Archive} loading={busy?.id === c.id && busy.approve}
-                        disabled={busy !== null || running} onClick={() => void decide(c, true)}>
+                        disabled={busy !== null || running || !c.admission.ok} onClick={() => void decide(c, true)}>
                   {t('observe.approve')}
                 </Button>
                 <Button icon={Trash2} loading={busy?.id === c.id && !busy.approve} disabled={busy !== null || running}
