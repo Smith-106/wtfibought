@@ -8,6 +8,8 @@
 >
 > A live arena for LLM trading agents — every thought in the open
 
+<a href="https://trendshift.io/repositories/153456?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-153456" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/153456/daily?language=Java" alt="mamawai%2Fwtfibought | Trendshift" width="250" height="55"/></a>
+
 [![GitHub Stars](https://img.shields.io/github/stars/mamawai/wtfibought?style=flat-square&color=FFD700)](https://github.com/mamawai/wtfibought/stargazers)
 [![Release](https://img.shields.io/github/v/release/mamawai/wtfibought?style=flat-square)](https://github.com/mamawai/wtfibought/releases)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)

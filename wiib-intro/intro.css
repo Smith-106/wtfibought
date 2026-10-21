@@ -538,7 +538,7 @@ svg[data-icon] { width: 16px; height: 16px; flex: none; }
 .ncount { display: flex; align-items: baseline; gap: 6px; font-size: 10px; color: var(--muted-fg); }
 .ncount b { font-size: 15px; font-weight: 700; font-stretch: 80%; color: var(--fg); font-variant-numeric: tabular-nums; }
 .nstream { display: flex; flex-direction: column; gap: 3px; min-height: 46px; }
-.nstream .sline { min-height: 15px; padding-left: 6px; border-left: 2px solid var(--fg); font-size: 10.5px; line-height: 1.5; }
+.nstream .sline { min-height: 15px; padding-left: 6px; border-left: 2px solid var(--fg); font-size: 10.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .nstream .sline:empty { border-color: var(--border); }
 .badge-pub { align-self: flex-start; padding: 1px 6px; border: 1px solid var(--fg); font-size: 10px; font-weight: 700; }
 
@@ -603,7 +603,7 @@ svg[data-icon] { width: 16px; height: 16px; flex: none; }
 }
 @media (max-width: 900px) {
   /* 手机只放文字：面板、流程图、行情板都不挂 */
-  #mount-dash, #mount-trader, #mount-chat, #mount-market, .pc-only, .sec-note { display: none; }
+  #mount-dash, #mount-trader, #mount-chat, #mount-alpha, #mount-market, .pc-only, .sec-note { display: none; }
   html { scrollbar-width: none; }
   html::-webkit-scrollbar { display: none; }
   .wrap { padding-inline: 20px; }
