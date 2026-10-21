@@ -131,9 +131,22 @@ async def wait_campaign(client: httpx.AsyncClient, campaign_id: str, status: str
 # ========== 一个 campaign 跑一轮，观察区入库 ==========
 
 
+async def library_ready(client: httpx.AsyncClient) -> dict:
+    """库列表接口不等后台算库，轮询到算完再拿"""
+    out = {}
+
+    async def done():
+        nonlocal out
+        out = data(await client.get("/api/alpha/library", headers=ADMIN))
+        return not out["computing"]
+
+    await wait_until(done, 120)
+    return out
+
+
 async def test_one_round_campaign_then_approve_from_observation(client, planted_panels):
-    assert data(await client.get("/api/alpha/library", headers=ADMIN)) == {"factors": [], "combo": None, "retired": [],
-                                                                             "reeval": {"running": False}}
+    assert await library_ready(client) == {"factors": [], "combo": None, "computing": False, "retired": [],
+                                           "reeval": {"running": False}}
     started = data(await client.post("/api/alpha/campaigns", json={"rounds": 1, "k": 2}, headers=ADMIN))
     campaign_id, run_id = started["id"], started["runId"]
     # 每一轮记下当时数据的 holdout 切点：之后复评按它算"它没见过的那段"
@@ -202,7 +215,9 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     assert (await client.post("/api/alpha/candidates/nope/approve", headers=ADMIN)).status_code == 404
     assert data(await client.get("/api/alpha/observation", headers=ADMIN))["items"] == []
 
-    lib = data(await client.get("/api/alpha/library", headers=ADMIN))
+    # 刚入库：列表立刻有，组合报告在后台算，算完轮询到
+    assert data(await client.get("/api/alpha/library", headers=ADMIN))["computing"] is True
+    lib = await library_ready(client)
     factors = lib["factors"]
     assert len(factors) == 1 and factors[0]["expr"] == "Mean($volume, 4)" and "eval" not in factors[0]
     assert factors[0]["brief"]["horizons"]["12h"]["meanIc"] > 0.3 and "holdout" in factors[0]["brief"]

@@ -391,8 +391,10 @@ export interface ComboReport {
 export interface LibraryList {
   /** 在役的 */
   factors: Factor[];
-  /** 库空或没装载数据时是 null */
+  /** 库空、没装载数据，或者还在后台算（computing）时是 null */
   combo: ComboReport | null;
+  /** 库刚变过，组合报告在后台重算，一两分钟；轮询到 false 为止 */
+  computing: boolean;
   /** 退役的，最近退役的在前 */
   retired: Factor[];
   /** 库里因子复评任务的进度 */

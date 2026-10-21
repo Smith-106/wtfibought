@@ -317,17 +317,33 @@ async def _graph(app: FastAPI):
     return build_graph(ctx)
 
 
+def _library_key(data: Data, factors: list[dict[str, Any]]) -> tuple:
+    """库缓存的键：数据和在役因子都没变才算同一份"""
+    return data.loaded_at, tuple(f["id"] for f in factors)
+
+
 async def _library(app: FastAPI) -> Library:
     """库或数据变了才重算；同时来几个请求只算一次"""
     data: Data = _data(app)
     async with app.state.library_lock:
         factors = await app.state.store.factors()
-        key = (data.loaded_at, tuple(f["id"] for f in factors))
+        key = _library_key(data, factors)
         cache = app.state.library
         if cache is None or cache[0] != key:
             cache = (key, await asyncio.to_thread(build_library, data, factors, app.state.params))
             app.state.library = cache
     return cache[1]
+
+
+def _library_if_ready(app: FastAPI, factors: list[dict[str, Any]]) -> Library | None:
+    """现成的库；库变了还没算完就起后台算、先给 None：列表接口不能卡着等几分钟"""
+    cache = app.state.library
+    if cache is not None and cache[0] == _library_key(_data(app), factors):
+        return cache[1]
+    task = app.state.library_task
+    if task is None or task.done():
+        app.state.library_task = asyncio.create_task(_warm(app))
+    return None
 
 
 async def _observing(app: FastAPI) -> combo.Combo:
@@ -882,11 +898,14 @@ def _frame(e: dict[str, Any]) -> str:
 
 @router.get("/library")
 async def library(request: Request):
-    """在役因子列表加组合报告，另带退役的列表；没装载数据时没有组合报告。reeval 是库里因子复评任务的进度"""
+    """在役因子列表加组合报告，另带退役的列表；没装载数据时没有组合报告，库刚变过报告在后台算时 computing 为 true、combo 先是 null。
+    reeval 是库里因子复评任务的进度"""
     app = request.app
     store: Store = app.state.store
-    report = (await _library(app)).report if app.state.data else None
-    return _ok({"factors": [_factor_view(f, full=False) for f in await store.factors()], "combo": report,
+    factors = await store.factors()
+    lib = _library_if_ready(app, factors) if app.state.data is not None else None
+    return _ok({"factors": [_factor_view(f, full=False) for f in factors], "combo": lib.report if lib else None,
+                "computing": app.state.data is not None and lib is None,
                 "retired": [_factor_view(f, full=False) for f in await store.retired_factors()],
                 "reeval": app.state.runs.jobs["libraryReeval"]})
 
@@ -1401,6 +1420,8 @@ async def lifespan(app: FastAPI):
     app.state.models = None
     app.state.library = None
     app.state.library_lock = asyncio.Lock()
+    # 库列表接口起的后台算库任务，没算完不重复起
+    app.state.library_task = None
     # 观察区候选在搜索段上的值：(装载时刻, 候选 id → 值)
     app.state.observing = (None, {})
     app.state.observing_lock = asyncio.Lock()

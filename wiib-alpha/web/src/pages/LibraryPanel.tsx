@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, ArchiveRestore, RefreshCw, ScanSearch } from 'lucide-react';
 import { alpha, type ComboReport, type Factor, type FactorDetail, type Recheck, type ReevalJob } from '../api';
-import { cx, HORIZON_BARS, HORIZONS, localTime, num, primaryOf, utcMinute } from '../format';
+import { cx, HORIZON_BARS, HORIZONS, localTime, num, pct, primaryOf, utcMinute } from '../format';
 import { usePoll } from '../poll';
 import { useSort } from '../sort';
 import { useFail } from '../toast';
@@ -37,6 +37,8 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
   const [factors, setFactors] = useState<Factor[] | null>(null);
   const [retired, setRetired] = useState<Factor[]>([]);
   const [combo, setCombo] = useState<ComboReport | null>(null);
+  // 库刚变过，组合报告在后台重算：轮询到算完
+  const [computing, setComputing] = useState(false);
   const [job, setJob] = useState<ReevalJob | null>(null);
   const [detail, setDetail] = useState<FactorDetail | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(() => alpha.library()
-    .then(r => { setFactors(r.factors); setRetired(r.retired); setCombo(r.combo); setJob(r.reeval); })
+    .then(r => { setFactors(r.factors); setRetired(r.retired); setCombo(r.combo); setComputing(r.computing); setJob(r.reeval); })
     .catch(fail), [fail]);
 
   useEffect(() => {
@@ -52,7 +54,7 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
   }, [active, load]);
 
   const running = job?.running ?? false;
-  usePoll(active && running, load, 3000);
+  usePoll(active && (running || computing), load, 3000);
 
   const reeval = async () => {
     setStarting(true);
@@ -100,8 +102,9 @@ export function LibraryPanel({ active, loaded }: { active: boolean; loaded: bool
 
   return (
     <div className="space-y-14">
-      {combo ? <ComboCard combo={combo} /> : factors && factors.length > 0 && !loaded && (
-        <Card><Empty>{t('library.comboNone')}</Empty></Card>
+      {combo ? <ComboCard combo={combo} /> : factors && factors.length > 0 && (computing || !loaded) && (
+        <Card><Empty>{computing ? <span className="inline-flex items-center gap-2"><Spinner />{t('library.comboComputing')}</span>
+                                : t('library.comboNone')}</Empty></Card>
       )}
 
       <Card title={t('library.title')}
@@ -345,6 +348,8 @@ function Diverging({ v, max }: { v: number | null; max: number }) {
 function ComboCard({ combo }: { combo: ComboReport }) {
   const { t } = useTranslation();
   const maxWeight = Math.max(...combo.weights.map(w => Math.abs(w.weight)));
+  // 权重是单腿每期净收益，万分之几的量级：显示成 bps 和占绝对值之和的比例
+  const totalWeight = combo.weights.reduce((s, w) => s + Math.abs(w.weight), 0);
   // 截面信号按从强到弱排：排头的是组合看多的币
   const latest = useMemo(() => Object.entries(combo.latest).sort(([, a], [, b]) => (b ?? -Infinity) - (a ?? -Infinity)),
     [combo.latest]);
@@ -356,13 +361,14 @@ function ComboCard({ combo }: { combo: ComboReport }) {
         <div className="space-y-6">
           <table className="tbl">
             <thead>
-              <tr><th colSpan={3}>{t('library.weights')}</th></tr>
+              <tr><th colSpan={4}>{t('library.weights')}</th></tr>
             </thead>
             <tbody>
               {combo.weights.map(w => (
                 <tr key={w.name}>
                   <td className="font-mono text-[12.5px] font-bold">{w.name}</td>
-                  <td className="r num">{num(w.weight, 3)}</td>
+                  <td className="r num">{num(w.weight * 1e4, 1)} bps</td>
+                  <td className="r num text-muted">{totalWeight > 0 ? pct(Math.abs(w.weight) / totalWeight, 0) : '-'}</td>
                   <td className="w-32 align-middle"><Diverging v={w.weight} max={maxWeight} /></td>
                 </tr>
               ))}
