@@ -13,7 +13,7 @@ import { ProfilePublicToggle } from '../components/ProfilePublicToggle';
 import { LanguageSettingRow } from '../components/LanguageSwitcher';
 import { useNotificationPanel } from '../hooks/useNotificationPanel';
 import { userApi } from '../api';
-import { Trophy, Sun, Moon, LogOut, ChevronRight, User, LineChart, RotateCcw, MessageSquare, Bell, Receipt, FlaskConical, Swords, Info, ExternalLink, type LucideIcon } from 'lucide-react';
+import { Trophy, Sun, Moon, LogOut, ChevronRight, User, LineChart, RotateCcw, MessageSquare, Bell, Receipt, FlaskConical, Swords, Info, ExternalLink, Pickaxe, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export function Me() {
@@ -61,8 +61,8 @@ export function Me() {
     }
   };
 
-  // external=站外地址，走新标签页而不是路由跳转
-  const items: { icon: LucideIcon; label: string; to: string; color: string; external?: boolean }[] = [
+  // external=站外地址，走新标签页而不是路由跳转；page=同域但不是本应用的路由，整页跳过去
+  const items: { icon: LucideIcon; label: string; to: string; color: string; external?: boolean; page?: boolean }[] = [
     // 账单没进顶栏/底栏（导航已经满了），另一个入口在持仓页仓位历史旁边
     { icon: Receipt, label: t('me.nav.ledger'), to: '/ledger', color: 'text-primary' },
     // 竞技场原先只有桌面顶栏那一个入口，手机端零入口只能手敲 URL，排第三位补上
@@ -70,6 +70,8 @@ export function Me() {
     // 移动端底栏只有5槽，策略与排行一样从这里进（桌面走头部导航）
     { icon: LineChart, label: t('me.nav.strategies'), to: '/strategies', color: 'text-violet-400' },
     { icon: FlaskConical, label: t('me.nav.backtest'), to: '/backtest', color: 'text-orange-400' },
+    // 因子挖掘是同域下 wiib-alpha 托管的页面
+    { icon: Pickaxe, label: t('me.nav.alpha'), to: '/alpha/', color: 'text-emerald-400', page: true },
     { icon: Trophy, label: t('me.nav.ranking'), to: '/ranking', color: 'text-amber-400' },
     { icon: MessageSquare, label: t('me.nav.comments'), to: '/comments', color: 'text-teal-400' },
     // 介绍站是单独部署的静态站，手机端从这里进
@@ -134,13 +136,14 @@ export function Me() {
       {/* 功能入口 */}
       <Card>
         <CardContent className="pt-5 divide-y divide-border/50">
-          {items.map(({ icon: Icon, label, to, color, external }) => {
+          {items.map(({ icon: Icon, label, to, color, external, page }) => {
             // 尾巴区分去向：站内是往右进一层，站外是跳出去
             const Tail = external ? ExternalLink : ChevronRight;
             return (
               <button
                 key={to}
-                onClick={() => external ? window.open(to, '_blank', 'noopener,noreferrer') : navigate(to)}
+                onClick={() => external ? window.open(to, '_blank', 'noopener,noreferrer')
+                  : page ? window.location.assign(to) : navigate(to)}
                 className="flex items-center gap-3 w-full py-3.5 first:pt-0 last:pb-0 text-left hover:text-primary transition-colors cursor-pointer group"
               >
                 <div className="w-8 h-8 rounded-lg bg-surface-hover flex items-center justify-center">

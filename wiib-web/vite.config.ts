@@ -80,6 +80,8 @@ export default defineConfig({
       '/api/admin/ai-agent': 'http://localhost:8082',
       '/api': 'http://localhost:8080',
       '/ws': { target: 'http://localhost:8080', ws: true },
+      // 顶栏"因子挖掘"跳的页面：wiib-alpha 托管的打包产物
+      '/alpha': 'http://localhost:8084',
     },
   },
 })

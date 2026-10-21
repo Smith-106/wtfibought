@@ -18,13 +18,16 @@ import {
   BarChart3, User, ChevronDown, List, DollarSign,
   Settings2, Gem, Globe,
   ExternalLink, LogOut,
-  ChartCandlestick, Swords, Trophy, Route, History, MessageSquare, BookOpen,
+  ChartCandlestick, Swords, Trophy, Route, History, MessageSquare, BookOpen, Pickaxe,
 } from 'lucide-react';
 
 interface Props { children: React.ReactNode }
 
 /** 介绍站是单独部署的静态站，不是本应用的路由，只能走外链 */
 const INTRO_URL = 'https://intro.wtfibought.com';
+
+/** 因子挖掘是同域下 wiib-alpha 托管的页面，不是本应用的路由，整页跳过去 */
+const ALPHA_URL = '/alpha/';
 
 /** 桌面 logo 展开态是整词，往下滚折叠成 WIIB.：留 W(hat) I(f) I B(ought)，其余字母挂 go 淡掉 */
 const WORDMARK = 'WHATIFIBOUGHT';
@@ -268,6 +271,11 @@ export function Layout({ children }: Props) {
               <HeaderNavItem to="/ranking" icon={<Trophy />} label={t('nav.ranking')} />
               <HeaderNavItem to="/strategies" icon={<Route />} label={t('nav.strategies')} />
               <HeaderNavItem to="/backtest" icon={<History />} label={t('nav.backtest')} />
+              {/* 因子挖掘：结构样式和普通项一样，永远不带 on；同域，不加外链小箭头 */}
+              <a href={ALPHA_URL} data-nav-item data-label={t('nav.alpha')} className="item">
+                <span className="ico"><Pickaxe /></span>
+                <span className="lab">{t('nav.alpha')}</span>
+              </a>
               <HeaderNavItem to="/comments" icon={<MessageSquare />} label={t('nav.comments')} />
               {/* 外链：结构样式和普通项一样，但永远不带 on；data-nav-item 是给橙方块的抓手 */}
               <a href={INTRO_URL} target="_blank" rel="noopener noreferrer" data-nav-item data-label={t('nav.intro')} className="item">
