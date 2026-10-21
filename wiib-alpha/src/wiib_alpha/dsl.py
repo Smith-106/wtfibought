@@ -19,7 +19,8 @@ from . import ops
 
 MAX_WINDOW = 2016  # 三周
 MAX_TEXT = 500
-# 复杂度上限在解析时就卡住，评估之前拦下堆参数的公式；G7 只做报告。cross 是截面算子个数，每个都要全池多读一遍
+# 复杂度上限在解析时就卡住，评估之前拦下堆参数的公式；G7 只做报告。
+# 都按不同的数：不同的子式、不同的窗口值、不同的常量值、不同的截面算子（每个都要全池多读一遍），同一个东西重复写不多算
 COMPLEXITY = {"nodes": 40, "windows": 6, "constants": 6, "cross": 2}
 _COL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 _MARK = "__col__"
@@ -80,12 +81,13 @@ class Expr:
         return {n.name for n in _walk(self.root) if isinstance(n, Col)}
 
     def complexity(self) -> dict[str, int]:
-        nodes = list(_walk(self.root))
-        windows = sum(1 for n in nodes if isinstance(n, Call) and n.params)
-        constants = sum(1 for n in nodes if isinstance(n, Const))
-        constants += sum(1 for n in nodes if isinstance(n, Call) and len(n.params) > 1)
-        cross = sum(1 for n in nodes if _is_cross(n))
-        return {"nodes": len(nodes), "windows": windows, "constants": constants, "cross": cross}
+        """按不同的数：同一个子式、窗口值、常量值、截面算子重复写只算一个"""
+        nodes = set(_walk(self.root))
+        calls = [n for n in nodes if isinstance(n, Call)]
+        windows = {n.params[0] for n in calls if n.params}
+        constants = {n.value for n in nodes if isinstance(n, Const)} | {n.params[1] for n in calls if len(n.params) > 1}
+        cross = sum(1 for n in calls if _is_cross(n))
+        return {"nodes": len(nodes), "windows": len(windows), "constants": len(constants), "cross": cross}
 
     def cross_nodes(self) -> list[Call]:
         """截面节点，里层的在前、相同的只留一个；求值前要按这个顺序跨币算好"""
@@ -96,9 +98,8 @@ class Expr:
         return out
 
     def evaluate(self, df: pd.DataFrame, cross: Cross | None = None) -> pd.Series:
-        """一币一算；截面节点的值从 cross 里取，不在池的时刻是 NaN。除零之类的 inf 一律变 NaN"""
-        out = _eval(self.root, df, cross or {})
-        return out.replace([np.inf, -np.inf], np.nan)
+        """一币一算；截面节点的值从 cross 里取，不在池的时刻是 NaN。除零之类的 inf 在每个节点都变 NaN"""
+        return _eval(self.root, df, cross or {})
 
 
 def parse(text: str, columns: Iterable[str]) -> Expr:
@@ -261,16 +262,21 @@ def _eval(node: Node, df: pd.DataFrame, cross: Cross) -> pd.Series:
             a, b = _eval(left, df, cross), _eval(right, df, cross)
             with np.errstate(all="ignore"):
                 if op == "+":
-                    return a + b
+                    return _finite(a + b)
                 if op == "-":
-                    return a - b
+                    return _finite(a - b)
                 if op == "*":
-                    return a * b
-                return a / b
+                    return _finite(a * b)
+                return _finite(a / b)
         case Call() if _is_cross(node):
-            return cross[node].reindex(df.index).astype("float64")
+            return _finite(cross[node].reindex(df.index).astype("float64"))
         case Call(name=name, args=args, params=params):
             series = [_eval(a, df, cross) for a in args]
             params = tuple(int(p) if i == 0 else p for i, p in enumerate(params))
-            return ops.OPERATORS[name].fn(*series, *params)
+            return _finite(ops.OPERATORS[name].fn(*series, *params))
     raise TypeError(node)
+
+
+def _finite(s: pd.Series) -> pd.Series:
+    """inf 换成 NaN，上层的 Gt / If / Sign 拿到的就不会是 inf"""
+    return s.replace([np.inf, -np.inf], np.nan)

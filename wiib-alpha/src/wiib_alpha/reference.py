@@ -16,7 +16,7 @@ from .data.panel import FEATURE_COLUMNS, HORIZON_BARS, POOL_COLUMN, PanelStore
 from .data.pool import Pool, on_grid
 from .dsl import Expr, parse
 
-# 参照网格只在主档 12h 的网格点上算
+# 参照网格只在 12h 的网格点上算
 GRID_BARS = HORIZON_BARS[12]
 
 # 基线窗口：12h / 1h / 24h / 24h / 12h，beta 48h，与 Java ContinuousFactorParams.forBarMillis 同
@@ -46,6 +46,8 @@ KNOWN_EFFECTS: dict[str, tuple[str, str]] = {
 
 # Alpha158 的日频窗口 5/10/20/30/60 换成 1h/4h/12h/24h/48h
 ALPHA158_WINDOWS = (4, 16, 48, 96, 192)
+# 24h 反转：去老效应时和老效应一起回归掉；它的截面秩就是 −Sum($ret, 96) 的秩
+REVERSAL = "ROC96"
 
 _KBAR = {
     "KMID": "($close - $open) / $open",

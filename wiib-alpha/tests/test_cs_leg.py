@@ -219,6 +219,20 @@ def test_permutation_matches_the_closed_form():
     assert cs_leg.permutation(p, np.zeros_like(w), np.expm1(p.y), 100, 7) == 0.0
 
 
+def test_permutation_shuffles_vol_scaled_returns():
+    # 波动差几十倍的币混在一起，弱的真信号照样显著：打乱的是收益 / 波动，高波动币的收益不会配到低波动币的大仓位上
+    rng = np.random.default_rng(4)
+    n = 40
+    vol = 0.02 * np.exp(rng.normal(0, 1.0, n))
+    cells = []
+    for _ in range(200):
+        z = rng.normal(size=n)
+        cells.append((z + rng.normal(size=n), vol * (0.08 * z + rng.normal(size=n)), np.ones(n, dtype="int8")))
+    p = points(cells)
+    out = cs_leg.simulate(p, np.tile(vol, 200), np.full(200, 0.1), [Window(10, 10, 200)], 24, PARAMS, PARAMS.iterations)
+    assert out["permPct"] >= 0.95
+
+
 def synthetic(n_points: int = 200, seed: int = 9) -> Points:
     rng = np.random.default_rng(seed)
     cells = []

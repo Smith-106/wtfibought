@@ -27,8 +27,8 @@ def test_parse_renders_canonical_and_counts():
     assert str(e) == "((Mean($close, 48) / $close) - (Quantile($volume, 96, 0.8) * 2))"
     assert e.canonical() == "((Mean($close, w) / $close) - (Quantile($volume, w, c) * c))"
     assert e.columns() == {"close", "volume"}
-    # 节点：Bin, Bin, Call, Col, Col, Bin, Call, Col, Const = 9；窗口 2；常量 = Const 1 + 分位 1
-    assert e.complexity() == {"nodes": 9, "windows": 2, "constants": 2, "cross": 0}
+    # 不同的节点：Bin, Bin, Call, Col（$close 两处算一个）, Bin, Call, Col, Const = 8；窗口 2；常量 = Const 1 + 分位 1
+    assert e.complexity() == {"nodes": 8, "windows": 2, "constants": 2, "cross": 0}
 
 
 def test_same_shape_different_window_is_same_canonical():
@@ -58,8 +58,8 @@ def test_same_shape_different_window_is_same_canonical():
     ("$", "语法错误"),
     ("__import__('os')", "没有这个算子"),
     ("__col__close", "列要写成"),
-    (" + ".join(["$close"] * 21), "节点"),
-    (" + ".join(["Mean($close, 4)"] * 7), "窗口 7"),
+    ("Abs(" * 40 + "$close" + ")" * 40, "节点 41"),
+    (" + ".join(f"Mean($close, {w})" for w in range(1, 8)), "窗口 7"),
     ("$close + 1 + 2 + 3 + 4 + 5 + 6 + 7", "常量 7"),
     ("CsRank($close) + CsZ($volume) - CsDemean($ret)", "截面算子 3"),
     ("CsRank($close, 4)", "参数"),
@@ -69,11 +69,14 @@ def test_rejects(text, message):
         parse(text, COLS)
 
 
-def test_complexity_limits_are_inclusive():
-    parse(" + ".join(["$close"] * 20), COLS)          # 39 个节点
-    parse(" + ".join(["Mean($close, 4)"] * 6), COLS)  # 6 个窗口
-    parse("$close + 1 + 2 + 3 + 4 + 5 + 6", COLS)      # 6 个常量
-    parse("CsRank(CsZ($close))", COLS)                 # 2 个截面算子
+def test_complexity_counts_distinct_and_limits_are_inclusive():
+    # 同一个子式、窗口值、常量值重复写不多算
+    same = parse("Mean($close, 4) / Sum($close, 4) + Mean($close, 4) * 2 - $volume * 2", COLS)
+    assert same.complexity() == {"nodes": 10, "windows": 1, "constants": 1, "cross": 0}
+    parse("Abs(" * 39 + "$close" + ")" * 39, COLS)                      # 40 个节点
+    parse(" + ".join(f"Mean($close, {w})" for w in range(1, 7)), COLS)  # 6 个窗口
+    parse("$close + 1 + 2 + 3 + 4 + 5 + 6", COLS)                       # 6 个常量
+    parse("CsRank(CsZ($close))", COLS)                                  # 2 个截面算子
 
 
 # ========== 截面算子 ==========
@@ -94,7 +97,7 @@ def test_cross_nodes_inner_first_and_deduplicated():
     inner, outer = parse("CsRank(Mean(CsZ($close), 2))", COLS).cross_nodes()
     assert str(dsl.Expr(inner)) == "CsZ($close)" and str(dsl.Expr(outer)) == "CsRank(Mean(CsZ($close), 2))"
     twice = parse("CsZ($close) * CsZ($close)", COLS)
-    assert twice.complexity()["cross"] == 2 and len(twice.cross_nodes()) == 1
+    assert twice.complexity()["cross"] == len(twice.cross_nodes()) == 1
 
 
 def test_evaluate_takes_cross_values_and_nan_outside_the_pool():
@@ -271,3 +274,5 @@ def test_evaluate_keeps_index_and_turns_inf_into_nan():
     df.loc[df.index[3], "volume"] = 0.0
     out = parse("$close / $volume", COLS).evaluate(df)
     assert out.index.equals(df.index) and np.isnan(out.iloc[3])
+    # 中间节点的 inf 也是 NaN：Gt 拿到 NaN 出 NaN，不会把 inf > 0 当成 1
+    assert np.isnan(parse("Gt($close / $volume, 0)", COLS).evaluate(df).iloc[3])

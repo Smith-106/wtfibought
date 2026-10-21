@@ -420,6 +420,17 @@ export interface EvalResult {
   eval: Record<string, unknown>;
 }
 
+/** 手填评估是后台任务；queued 是 campaign 正在评估的两条占着，排队 */
+export interface EvalJob {
+  running: boolean;
+  startedAt?: number;
+  finishedAt?: number | null;
+  expr?: string;
+  stage?: 'queued' | 'evaluating' | null;
+  error?: string | null;
+  result?: EvalResult | null;
+}
+
 /** 公开概览：每轮只有状态和各状态候选数，没有假设、公式和过程 */
 export interface Overview {
   runs: {
@@ -751,7 +762,9 @@ export const alpha = {
   recheck: (id: string) => call<Recheck>('POST', `${ALPHA}/library/${id}/recheck`),
   /** 库里全部因子用当前评估器重算，后台跑，进度看 library().reeval */
   libraryReeval: () => call<{ started: boolean; total: number }>('POST', `${ALPHA}/library/reeval`),
-  evaluate: (expr: string) => call<EvalResult>('POST', `${ALPHA}/eval`, { expr }),
+  /** 后台评估，进度和结果看 evalJob() */
+  evaluate: (expr: string) => call<{ started: boolean }>('POST', `${ALPHA}/eval`, { expr }),
+  evalJob: () => call<EvalJob>('GET', `${ALPHA}/eval`),
   reference: () => call<ReferenceList>('GET', `${ALPHA}/reference`),
   /** windows 为 null 跑全部窗口 */
   referenceRun: (windows: number[] | null) =>

@@ -378,7 +378,10 @@
     "title": "Evaluate an expression",
     "ph": "e.g. Sum($ret, 48) / Std($ret, 48)",
     "run": "Evaluate",
-    "hint": "Runs every gate on the search span and computes a separate holdout for you; not part of a round and not counted as a trial. Ctrl+Enter to submit.",
+    "hint": "Runs every gate on the search span in the background; a holdout is computed only when every gate passes, as in a campaign. Not part of a round and not counted as a trial. Ctrl+Enter to submit.",
+    "queued": "Queued behind the two candidates a campaign is evaluating: {{expr}}",
+    "evaluating": "Evaluating: {{expr}}",
+    "error": "Evaluation failed: {{msg}}",
     "passed": "all gates passed",
     "failed": "did not pass",
     "canonical": "Canonical form"

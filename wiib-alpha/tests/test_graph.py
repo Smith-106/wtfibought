@@ -183,16 +183,18 @@ async def test_no_hypotheses_goes_straight_to_done(store, ctx_of):
 
 
 async def test_direction_is_required_and_checked_by_g10(store, ctx_of):
-    """没给方向带着毛病再要；声明越大越弱、植入信号却是越大越强，G10 拒，换窗口重写两版还是拒"""
+    """没给方向带着毛病再要；声明越大越弱、植入信号却是越大越强，G10 拒；
+    重写时看了 IC 把方向翻成 1 也不算，沿用第一版的 -1，换窗口重写两版还是拒"""
     def gen(prompt: str) -> str:
         if "这一轮的候选与结局" in prompt:
             return "[]"
         if "JSON 数组" in prompt:
             return '[{"name": "nodir", "hypothesis": "成交量高的币之后更弱"}]'
         if "上一版表达式：Mean($volume, 4)（" in prompt:
-            return '{"expr": "Mean($volume, 8)", "direction": -1}'
+            assert "沿用上一版声明的 -1" in prompt
+            return '{"expr": "Mean($volume, 8)", "direction": 1}'
         if "上一版表达式：Mean($volume, 8)（" in prompt:
-            return '{"expr": "Mean($volume, 16)", "direction": -1}'
+            return '{"expr": "Mean($volume, 16)", "direction": 1}'
         if "direction 只能是 1 或 -1" in prompt:
             return '{"expr": "Mean($volume, 4)", "direction": -1}'
         return '{"expr": "Mean($volume, 4)"}'

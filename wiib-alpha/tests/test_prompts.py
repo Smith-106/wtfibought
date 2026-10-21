@@ -24,6 +24,9 @@ def test_system_prompt_lists_every_column_and_operator():
             assert f"${c}" in text
         for name in ops.OPERATORS:
             assert f"- {name}：{prompts.OPERATOR_DOCS[name]}" in text
+        # 复杂度上限三个角色都看得到：评审给的改法也得写得出来
+        assert "不同的子式 ≤ 40 个、不同的窗口值 ≤ 6 个、不同的常量值 ≤ 6 个" in text and "重复写只算一个" in text
+    assert "改法要能在下面的复杂度上限内写出来" in prompts.system_review("zh")
     text = prompts.system_gen(FACTS, "zh")
     assert "2026-04-27" in text and "中文" in text
     assert "强平三列只有产品币有数" in text and "截面因子用不了" in text and "单独排序没有意义" in text
@@ -62,7 +65,9 @@ def test_propose_and_implement_messages():
     # 上一版的意见一直带着，输出本身的毛病接在后面
     text = prompts.implement_message(cand, "上一版表达式：$ret\n评审要求修改：换个窗口", "表达式不合法：x")
     assert text.index("评审要求修改：换个窗口") < text.index("上一次输出的问题：表达式不合法：x")
-    assert prompts.revise_feedback({"expr": "$ret"}, {"suggestion": "", "comment": "太毛"}) == "上一版表达式：$ret\n评审要求修改：太毛"
+    # 评审打回：理由和改法都带上
+    assert (prompts.revise_feedback({"expr": "$ret"}, {"suggestion": "换成 Mean($ret, 96)", "comment": "太毛"})
+            == "上一版表达式：$ret\n评审意见：太毛\n评审建议的改法：换成 Mean($ret, 96)")
 
 
 def evaluated(gates: list[dict]) -> dict:
@@ -91,7 +96,11 @@ def test_gate_feedback_lists_failed_gates_and_the_numbers():
     text = prompts.gate_feedback(evaluated(gates))
     assert text.startswith("上一版表达式：Mean($ret, 4)（声明的方向 -1，因子值越大越弱）\n"
                            "没过的门：\n- G2 IC：ICIR 太低\n- G5 可交易：净收益为负\n")
-    assert "G1" not in text and "主档（12h）" in text
+    assert "G1" not in text and "主档（12h）" in text and "评审" not in text
+    # 上一版是照评审意见改的：门没过重写时那次的理由和改法还带着
+    revised = prompts.gate_feedback({**evaluated(gates), "review": {"verdict": "revise", "comment": "度量不对",
+                                                                     "suggestion": "按时段占比"}})
+    assert "上一版是照评审意见改的，那次的意见：\n评审意见：度量不对\n评审建议的改法：按时段占比" in revised
     for part in ("IC 均值 0.0123", "ICIR 0.25", "截尾后顶组减底组每期 3.1 bps、t 2.5",
                  "三组形状：只有弱的一头有效（中、强两组分不开）", "换手 0.21", "每期资金费 -1.3 bps",
                  "盈亏平衡单边成本 3.2 bps", "与 MA48 的截面 |ρ| 0.42", "这些数字说明了什么由你判断",

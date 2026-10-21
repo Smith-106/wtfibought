@@ -102,6 +102,19 @@ async def wait_until(check, seconds: float = 20.0):
     raise AssertionError("等超时了")
 
 
+async def evaluated(client: httpx.AsyncClient, expr: str) -> dict:
+    """手填评估是后台任务：提交了等它跑完，拿结果"""
+    assert data(await client.post("/api/alpha/eval", json={"expr": expr}, headers=ADMIN)) == {"started": True}
+
+    async def finished():
+        return not data(await client.get("/api/alpha/eval", headers=ADMIN))["running"]
+
+    await wait_until(finished, 60)
+    job = data(await client.get("/api/alpha/eval", headers=ADMIN))
+    assert job["error"] is None and job["finishedAt"] is not None
+    return job["result"]
+
+
 async def campaign_of(client: httpx.AsyncClient, campaign_id: str) -> dict:
     return data(await client.get(f"/api/alpha/campaigns/{campaign_id}", headers=ADMIN))
 
@@ -201,7 +214,7 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     assert "hypothesis" not in overview["runs"][0]
 
     # 入库之后它就进了冗余对比集：再评估同一条表达式，G6 认出是库里的那条
-    out = data(await client.post("/api/alpha/eval", json={"expr": "Mean($volume, 4)"}, headers=ADMIN))
+    out = await evaluated(client, "Mean($volume, 4)")
     assert out["brief"]["redundancy"]["with"] == "lib:planted" and out["brief"]["redundancy"]["maxAbs"] > 0.99
     assert not out["passed"]
 
@@ -350,7 +363,7 @@ async def test_library_reeval(client):
         await store.upsert_candidate({"id": fid, "run_id": "old", "seq": 1, "name": name, "hypothesis": "h", "expr": expr,
                                       "canonical": e.canonical(), "status": "approved", "direction": direction})
         # 入库时那份照 /eval 的样子存一份，复评后要原样还在
-        ev = data(await client.post("/api/alpha/eval", json={"expr": expr}, headers=ADMIN))
+        ev = await evaluated(client, expr)
         await store.add_factor({"id": fid, "name": name, "hypothesis": "h", "expr": expr, "canonical": e.canonical(),
                                 "columns": sorted(e.columns()), "eval": ev["eval"], "gates": ev["gates"],
                                 "approved_at": 1, "run_id": "old"})
@@ -448,7 +461,7 @@ def test_stop_reasons():
 
 
 async def test_eval_endpoint(client):
-    out = data(await client.post("/api/alpha/eval", json={"expr": "$volume"}, headers=ADMIN))
+    out = await evaluated(client, "$volume")
     assert out["passed"] is True and len(out["gates"]) == 11 and out["canonical"] == "$volume"
     # 测试的参照网格里没有老效应：回归掉 0 条，去老效应后剩的就是它自己的 IC
     assert out["brief"]["neutral"]["against"] == 0 and out["brief"]["neutral"]["retained"] == pytest.approx(1.0)
@@ -458,10 +471,21 @@ async def test_eval_endpoint(client):
     assert out["gates"][10]["id"] == "G10" and out["gates"][10]["passed"] and out["gates"][10]["note"] == "没有声明方向，不判"
     assert out["brief"]["redundancy"]["with"] == "noise4" and out["brief"]["redundancy"]["maxAbs"] < 0.2
     assert out["gates"][9]["id"] == "G9" and "加进交易方案后搜索段净 Sharpe" in out["gates"][9]["note"]
-    # 手填的也带 holdout：门看搜索段，holdout 另算
+    # 全过了才带 holdout：门看搜索段，holdout 另算
     assert out["brief"]["holdout"]["horizons"]["12h"]["meanIc"] > 0 and out["eval"]["holdout"]["since"] == out["brief"]["holdout"]["since"]
+    # 没过门的和 campaign 一样碰都不碰 holdout
+    noise = await evaluated(client, "$trades")
+    assert not noise["passed"] and "holdout" not in noise["eval"] and "holdout" not in noise["brief"]
+    # 上一条没跑完再交：409；表达式不合法当场 400，不起任务
+    assert data(await client.post("/api/alpha/eval", json={"expr": "$volume"}, headers=ADMIN)) == {"started": True}
+    assert (await client.post("/api/alpha/eval", json={"expr": "$trades"}, headers=ADMIN)).status_code == 409
     resp = await client.post("/api/alpha/eval", json={"expr": "Mean(close, 5)"}, headers=ADMIN)
     assert resp.status_code == 400 and "列要写成" in resp.json()["msg"]
+
+    async def finished():
+        return not data(await client.get("/api/alpha/eval", headers=ADMIN))["running"]
+
+    await wait_until(finished, 60)
     for body in ({"k": 99}, {"rounds": 51}, {"rounds": 0}, {"deadlineMinutes": 0}):
         assert (await client.post("/api/alpha/campaigns", json=body, headers=ADMIN)).status_code == 422
 

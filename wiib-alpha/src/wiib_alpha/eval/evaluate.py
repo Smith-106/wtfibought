@@ -23,8 +23,8 @@ from .horizon import grid_windows, horizon, oos
 from .params import EvalParams
 from .recheck import recheck
 
-# 去老效应时回归掉的 10 条老效应；5 条手写基线是短窗信号，不算老效应，换皮由 G6 挡
-KNOWN = tuple(reference.KNOWN_EFFECTS)
+# 去老效应时回归掉的：全部老效应加 24h 反转；5 条手写基线不算，换皮由 G6 挡
+KNOWN = (*reference.KNOWN_EFFECTS, reference.REVERSAL)
 
 
 def evaluate(expr: Expr, pool: Pool, vol: np.ndarray, params: EvalParams = EvalParams(),
@@ -155,8 +155,8 @@ def _corr_with(g: np.ndarray, cand: np.ndarray, main: np.ndarray, group: combo.C
 
 
 def _mean_abs_corr(g: np.ndarray, a: np.ndarray, b: np.ndarray, params: EvalParams) -> float:
-    """两条秩在每个主档时刻做 Pearson，跨时刻平均再取绝对值；有数的币不够 min_names 的时刻不算"""
+    """两条秩在参照网格每个时刻做 Pearson，取绝对值再跨时刻平均：按时刻翻号的写法照样算重合；有数的币不够 min_names 的时刻不算"""
     ok = np.isfinite(a) & np.isfinite(b)
     corr, n = cs_ic.corr_by(g[ok], a[ok], b[ok].astype("float64"), int(g.max()) + 1)
     corr = corr[(n >= params.min_names) & np.isfinite(corr)]
-    return abs(float(corr.mean())) if len(corr) else 0.0
+    return float(np.abs(corr).mean()) if len(corr) else 0.0

@@ -35,7 +35,7 @@ from .data.binance import Binance
 from .data.panel import FEATURE_COLUMNS, PanelStore, describe, holdout_cut, truncate
 from .data.pool import Pool
 from .data.refresh import RefreshResult, refresh
-from .dsl import DslError, parse
+from .dsl import DslError, Expr, parse
 from .eval import combo
 from .eval.evaluate import cross_corr, evaluate
 from .eval.gates import judge, passed
@@ -193,11 +193,12 @@ class Runs:
         self.tasks: dict[str, asyncio.Task] = {}
         self.subscribers: dict[str, set[asyncio.Queue]] = {}
         # grid 是启动时补算参照网格（刷新收尾那次算在 refresh 的进度里）；reeval 是观察区复评，libraryReeval 是库里因子复评；
-        # trader 是交易员调仓，compare 是交易员的因子对比
+        # trader 是交易员调仓，compare 是交易员的因子对比，eval 是手填评估
         self.jobs: dict[str, dict[str, Any]] = {"refresh": {"running": False}, "reference": {"running": False},
                                                 "grid": {"running": False}, "reeval": {"running": False},
                                                 "libraryReeval": {"running": False},
-                                                "trader": {"running": False}, "compare": {"running": False}}
+                                                "trader": {"running": False}, "compare": {"running": False},
+                                                "eval": {"running": False}}
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_LIMIT)
@@ -310,7 +311,8 @@ async def _graph(app: FastAPI):
     ctx = Context(gen=gen, review=review, pool=data.pool, vol=data.vol, products=data.products,
                   reference_grid=data.reference_grid, base=lib.base, observing=await _observing(app),
                   known=lib.known | observing, library=library,
-                  facts=data.facts, store=app.state.store, params=app.state.params, thresholds=app.state.thresholds)
+                  facts=data.facts, store=app.state.store, params=app.state.params, thresholds=app.state.thresholds,
+                  evaluating=app.state.evaluating)
     return build_graph(ctx)
 
 
@@ -347,7 +349,7 @@ async def _observing(app: FastAPI) -> combo.Combo:
 
 
 async def _warm(app: FastAPI) -> None:
-    """装载完、入库后先把观察区的值和库算好：手填评估是同步接口，现算几条会顶到 nginx 的 60 秒；
+    """装载完、入库后先把观察区的值和库算好：手填评估、campaign 第一次用到时不用再现算；
     交易员 00:05 调仓也不该现算整个库"""
     try:
         await _observing(app)
@@ -944,16 +946,52 @@ async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str,
 
 @router.post("/eval")
 async def eval_expression(body: EvalBody, request: Request):
-    """手填一条表达式直接评估，不进循环不计试验数；门看搜索段，holdout 另算一份给人看"""
+    """手填一条表达式后台评估，进度与结果看 GET /eval；不进循环不计试验数。
+    门看搜索段，全过了才算 holdout，和 campaign 一样：没过门的看不到 holdout"""
     app = request.app
     data = _data(app)
     expr = parse(body.expr, FEATURE_COLUMNS)
+    job = app.state.runs.jobs["eval"]
+    if job.get("running"):
+        raise HTTPException(409, "上一条还在评估")
+    job.clear()
+    job.update(running=True, startedAt=now_ms(), expr=str(expr), stage="queued", error=None, finishedAt=None,
+               result=None)
+
+    async def work() -> None:
+        try:
+            # campaign 正在评估的两条占着就排队
+            async with app.state.evaluating:
+                job["stage"] = "evaluating"
+                job["result"] = clean(await _eval_expression(app, data, expr))
+            job.update(finishedAt=now_ms())
+        except Exception as exc:
+            logger.exception("手填评估失败")
+            job.update(error=str(exc)[:300])
+        finally:
+            job.update(running=False, stage=None)
+
+    asyncio.create_task(work())
+    return _ok({"started": True})
+
+
+@router.get("/eval")
+async def eval_job(request: Request):
+    """手填评估的进度与最近一次的结果"""
+    return _ok(request.app.state.runs.jobs["eval"])
+
+
+async def _eval_expression(app: FastAPI, data: Data, expr: Expr) -> dict[str, Any]:
+    params = app.state.params
     lib = await _library(app)
-    ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, app.state.params, data.reference_grid, lib.base,
-                                 data.products, True, await _observing(app))
+    ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, params, data.reference_grid, lib.base,
+                                 data.products, False, await _observing(app))
     gates = judge(ev, app.state.thresholds, lib.known)
-    return _ok({"expr": str(expr), "canonical": expr.canonical(), "passed": passed(gates),
-                "brief": eval_brief(ev, gates), "gates": gates, "eval": ev})
+    if passed(gates):
+        full = await asyncio.to_thread(data.pool.values, expr)
+        ev["holdout"] = await asyncio.to_thread(recheck, data.pool.rows, full.f, data.pool.cut_ms, params)
+    return {"expr": str(expr), "canonical": expr.canonical(), "passed": passed(gates),
+            "brief": eval_brief(ev, gates), "gates": gates, "eval": ev}
 
 
 @public.get("/reference")
@@ -1247,6 +1285,8 @@ async def lifespan(app: FastAPI):
     # 观察区候选在搜索段上的值：(装载时刻, 候选 id → 值)
     app.state.observing = (None, {})
     app.state.observing_lock = asyncio.Lock()
+    # campaign 各条候选和手填评估共用：同时最多两条在全池求值
+    app.state.evaluating = asyncio.Semaphore(2)
     app.state.runs = Runs()
     app.state.authenticator = getattr(app.state, "authenticator", None) or Authenticator(cfg.sim_base_url)
     # 交易员用的 fapi 实时接口和 sim 内部接口

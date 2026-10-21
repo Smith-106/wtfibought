@@ -116,7 +116,8 @@ def rebalance(p: Points, w: np.ndarray, unit_costs: tuple[float, float, float]) 
 
 
 def permutation(p: Points, w: np.ndarray, r: np.ndarray, iterations: int, seed: int) -> float:
-    """每个网格点内把仓位在币之间打乱、收益不动，随机毛收益 < 真实毛收益的比例"""
+    """每个网格点内把收益在币之间打乱、仓位不动，随机毛收益 < 真实毛收益的比例；
+    各币收益分布不一样时，调用方先把 r 除以波动、w 乘回去，打乱的就是同尺度的收益"""
     active = np.bincount(p.g, np.abs(w), p.total)[p.g] > 0
     if not active.any():
         return 0.0
@@ -155,6 +156,8 @@ def simulate(p: Points, vol: np.ndarray, ic: np.ndarray, wins: list[Window], bar
     net = (gross - cost)[oos]
     active = (np.bincount(p.g, np.abs(w), p.total) > 0)[oos]
     volume = traded[oos].sum()
+    # 排列检验打乱的是收益 / 波动；w·r 不变
+    scale = np.maximum(vol, 1e-6)
     return {
         "periods": int(oos.sum()),
         "netReturn": compound(net),
@@ -168,5 +171,5 @@ def simulate(p: Points, vol: np.ndarray, ic: np.ndarray, wins: list[Window], bar
         "turnover": float(np.mean(traded[oos]) / 4),
         # 每单位换手量赚的毛收益：单边成本到这个数，净收益正好是 0
         "breakEvenBps": float(gross[oos].sum() / volume * 1e4) if volume > 0 else np.nan,
-        "permPct": permutation(p, w, r, iterations, params.seed) if iterations else None,
+        "permPct": permutation(p, w * scale, r / scale, iterations, params.seed) if iterations else None,
     }

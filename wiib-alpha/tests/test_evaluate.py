@@ -6,11 +6,12 @@ import pytest
 from conftest import PRODUCTS
 
 from wiib_alpha import ops, reference
+from wiib_alpha.data.binance import BAR_MS
 from wiib_alpha.data.pool import on_grid
 from wiib_alpha.data.panel import truncate
 from wiib_alpha.dsl import parse
 from wiib_alpha.eval.combo import Combo
-from wiib_alpha.eval.evaluate import cross_corr, evaluate
+from wiib_alpha.eval.evaluate import cross_corr, evaluate, redundancy
 from wiib_alpha.eval.gates import apply_fdr, judge, passed
 from wiib_alpha.eval.params import EvalParams, Thresholds
 from wiib_alpha.trade import scheme
@@ -88,6 +89,16 @@ def known_grid(pool, column: np.ndarray, name: str = "mom_7d") -> reference.Grid
     return reference.Grid((name,), ranks[:, None].astype("float32"))
 
 
+def test_g6_catches_sign_flipping_over_time(planted_pool):
+    # 隔一个时刻取一次反：每个时刻 |ρ| 都是 1，先跨时刻平均再取绝对值会抵消成 0
+    rows = planted_pool.search
+    f = planted_pool.values(parse("Mean($volume, 4)", COLS)).f[planted_pool.in_search]
+    t = rows["t"].to_numpy()
+    flipped = np.where((t // (reference.GRID_BARS * BAR_MS)) % 2 == 1, -f, f)
+    red = redundancy(rows, flipped, known_grid(planted_pool, f), {}, PARAMS)
+    assert red["maxAbs"] == pytest.approx(1.0)
+
+
 def test_neutral_regresses_out_known_effects(planted_pool, planted_vol):
     expr = parse("Mean($volume, 4)", COLS)
     f = planted_pool.values(expr).f[planted_pool.in_search]
@@ -100,8 +111,9 @@ def test_neutral_regresses_out_known_effects(planted_pool, planted_vol):
     kept = evaluate(expr, planted_pool, planted_vol, PARAMS, known_grid(planted_pool, noise))
     assert kept["neutral"]["against"] == 1
     assert kept["neutral"]["mean"] == pytest.approx(main_of(kept)["ic"]["mean"], rel=0.05)
-    # 老效应就是它自己：回归掉以后几乎什么都不剩
-    gone = evaluate(expr, planted_pool, planted_vol, PARAMS, known_grid(planted_pool, f))
+    # 24h 反转也一起回归；它就是候选自己：回归掉以后几乎什么都不剩
+    gone = evaluate(expr, planted_pool, planted_vol, PARAMS, known_grid(planted_pool, f, reference.REVERSAL))
+    assert gone["neutral"]["against"] == 1
     assert abs(gone["neutral"]["mean"]) < 0.1 < main_of(gone)["ic"]["mean"]
     # 只是标签：几乎什么都不剩也不多挡一道门，挡它的只有 G6（参照里那条就是它自己）
     assert passed(judge(kept, GATES))

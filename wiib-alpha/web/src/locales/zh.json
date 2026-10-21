@@ -378,7 +378,10 @@
     "title": "手填表达式",
     "ph": "比如 Sum($ret, 48) / Std($ret, 48)",
     "run": "评估",
-    "hint": "直接过一遍全部门，门只看搜索段，另算一份 holdout 给你看；不进循环、不计试验数。Ctrl+Enter 提交。",
+    "hint": "后台过一遍全部门，门只看搜索段；全过了才另算一份 holdout，和 campaign 一样。不进循环、不计试验数。Ctrl+Enter 提交。",
+    "queued": "排队中，campaign 正在评估的两条占着：{{expr}}",
+    "evaluating": "评估中：{{expr}}",
+    "error": "评估失败：{{msg}}",
     "passed": "全过",
     "failed": "没过",
     "canonical": "规范形"

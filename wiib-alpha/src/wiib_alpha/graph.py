@@ -66,8 +66,8 @@ class Context:
     store: Store
     params: EvalParams = field(default_factory=EvalParams)
     thresholds: Thresholds = field(default_factory=Thresholds)
-    # 同时跑评估的候选数：一次评估要把全池几百个币读一遍求值，扇出全开会把内存吃满
-    concurrency: int = 2
+    # 全池求值的并发闸，和手填评估共用：一次评估要把全池几百个币读一遍求值，扇出全开会把内存吃满
+    evaluating: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
 
 
 def merge_by_id(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -90,7 +90,7 @@ class RunState(TypedDict, total=False):
 
 
 def build_graph(ctx: Context):
-    evaluating = asyncio.Semaphore(ctx.concurrency)
+    evaluating = ctx.evaluating
 
     async def propose(state: RunState) -> dict[str, Any]:
         await emit(ctx.store, state["run_id"], "status", {"stage": "proposing"})
@@ -132,9 +132,11 @@ def build_graph(ctx: Context):
         settled: tuple[str, str] | None = None
         # 这条假设评估过的表达式 → 第几版，重写写回一模一样的不再评估
         written: dict[str, int] = {}
+        # 门没过重写时沿用的方向：重写的提示里有 IC，方向不能跟着改；评审打回的可以改
+        locked: int | None = None
         revises = rewrites = 0
         while True:
-            expr, problem = await _implement(cand, system, feedback, written)
+            expr, problem = await _implement(cand, system, feedback, written, locked)
             if expr is None:
                 if settled is None:
                     cand["status"], cand["reason"] = "failed", f"连试三次都没写出能用的表达式：{problem}"
@@ -160,6 +162,7 @@ def build_graph(ctx: Context):
                     settled = ("rejected_gates", cand["reason"])
                     await _save(ctx.store, run_id, cand)
                     feedback = prompts.gate_feedback(cand)
+                    locked = cand["direction"]
                     continue
                 cand["status"] = "rejected_gates"
                 break
@@ -174,6 +177,7 @@ def build_graph(ctx: Context):
             if verdict == "revise" and revises < MAX_REVISES:
                 revises += 1
                 feedback = prompts.revise_feedback(cand, review)
+                locked = None
                 cand["status"] = "revise"
                 settled = ("rejected_review", review.get("comment") or verdict)
                 await _save(ctx.store, run_id, cand)
@@ -184,10 +188,10 @@ def build_graph(ctx: Context):
         await _save(ctx.store, run_id, cand)
         return {"candidates": [cand]}
 
-    async def _implement(cand: dict[str, Any], system: str, feedback: str | None,
-                         written: dict[str, int]) -> tuple[Expr | None, str | None]:
+    async def _implement(cand: dict[str, Any], system: str, feedback: str | None, written: dict[str, int],
+                         locked: int | None) -> tuple[Expr | None, str | None]:
         """输出本身有毛病（不是 JSON、表达式不合法、和这条假设评估过的某一版一模一样）就带着毛病再要，feedback 一直带着。
-        写不出来返回 (None, 最后一次的毛病)"""
+        locked 给了就用它当方向，不看模型这次填的。写不出来返回 (None, 最后一次的毛病)"""
         problem = None
         for _ in range(MAX_PARSE_RETRIES + 1):
             cand["attempts"] = cand.get("attempts", 0) + 1
@@ -205,7 +209,7 @@ def build_graph(ctx: Context):
             if str(expr) in written:
                 problem = f"{expr} 和这条假设的第 {written[str(expr)]} 版一模一样，已经评估过了，换一种写法"
                 continue
-            direction = parse_direction(obj.get("direction"))
+            direction = locked if locked is not None else parse_direction(obj.get("direction"))
             if direction is None:
                 problem = "direction 只能是 1 或 -1"
                 continue
