@@ -84,6 +84,8 @@ class Data:
     # 全量骨架上的 Std($ret, 672) 和 basis_7d：多空腿按波动分仓、交易方案的 carry 腿用
     vol: np.ndarray
     basis: np.ndarray
+    # 全量骨架上的 $funding_rate：挖掘的预检看因子值两头的当期资金费
+    funding: np.ndarray
 
 
 def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -> Data | None:
@@ -109,6 +111,7 @@ def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -
         loaded_at=now_ms(),
         vol=pool.values(scheme.VOL).f,
         basis=pool.values(scheme.CARRY).f,
+        funding=pool.values(parse("$funding_rate", FEATURE_COLUMNS)).f,
     )
 
 
@@ -123,6 +126,8 @@ class Library:
     report: dict[str, Any] | None
     # 全量骨架上的值，列与 factors 同序：交易员学组合权重、因子对比用
     full: combo.Combo
+    # lib:名字 → 表达式，冗余报最像的几个时带上
+    exprs: dict[str, str]
 
 
 def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams) -> Library:
@@ -143,7 +148,7 @@ def build_library(data: Data, factors: list[dict[str, Any]], params: EvalParams)
         }
     known = data.reference_canonicals | {f["canonical"] for f in factors}
     base = scheme.Base.of(search, data.basis[pool.in_search], vol, params)
-    return Library(factors, known, base, report, full)
+    return Library(factors, known, base, report, full, {f"lib:{f['name']}": f["expr"] for f in factors})
 
 
 def _facts(described: dict[str, dict[str, Any]], cut_ms: int, params: EvalParams, pool_symbols: int,
@@ -309,9 +314,10 @@ async def _graph(app: FastAPI):
                for f in lib.factors]
     # 观察区里还没入库的也算已知：前几轮留下的，下一轮换个窗口再交一遍按 G8 拒，换个写法高度相关按 G6 拒
     observing = {c["canonical"] for c in await app.state.store.observing()}
-    ctx = Context(gen=gen, review=review, pool=data.pool, vol=data.vol, products=data.products,
-                  reference_grid=data.reference_grid, base=lib.base, observing=await _observing(app),
-                  known=lib.known | observing, library=library,
+    obs, obs_exprs = await _observing(app)
+    ctx = Context(gen=gen, review=review, pool=data.pool, vol=data.vol, funding=data.funding, products=data.products,
+                  reference_grid=data.reference_grid, base=lib.base, observing=obs,
+                  peer_exprs={**lib.exprs, **obs_exprs}, known=lib.known | observing, library=library,
                   facts=data.facts, store=app.state.store, params=app.state.params, thresholds=app.state.thresholds,
                   evaluating=app.state.evaluating)
     return build_graph(ctx)
@@ -346,8 +352,9 @@ def _library_if_ready(app: FastAPI, factors: list[dict[str, Any]]) -> Library | 
     return None
 
 
-async def _observing(app: FastAPI) -> combo.Combo:
-    """观察区候选在搜索段上的值，G6 的对比集；按候选 id 缓存，一条第一次用到要全池求值一遍，数据换了整个作废"""
+async def _observing(app: FastAPI) -> tuple[combo.Combo, dict[str, str]]:
+    """观察区候选在搜索段上的值（G6 的对比集）和 obs:名字 → 表达式；值按候选 id 缓存，一条第一次用到要全池求值一遍，
+    数据换了整个作废"""
     data: Data = _data(app)
     rows = await app.state.store.observing()
     async with app.state.observing_lock:
@@ -362,7 +369,7 @@ async def _observing(app: FastAPI) -> combo.Combo:
     out = combo.Combo.empty(data.pool.search, data.pool.symbols)
     for c in rows:
         out = out.plus(c["name"], cache[c["id"]])
-    return out
+    return out, {f"obs:{c['name']}": c["expr"] for c in rows}
 
 
 async def _warm(app: FastAPI) -> None:
@@ -585,12 +592,13 @@ async def create_campaign(body: CreateCampaign, request: Request, who: Auth = De
     # 参照集和 campaign 一起跑会抢内存和 CPU，超了容器上限会被杀掉
     if jobs["reference"].get("running"):
         raise HTTPException(409, "参照集还在跑，等它算完")
+    specs = await _model_specs(app)
     if app.state.models is None:
-        app.state.models = build_models(await _model_specs(app))
+        app.state.models = build_models(specs)
     campaign_id = uuid.uuid4().hex[:12]
     deadline = now_ms() + body.deadlineMinutes * 60_000 if body.deadlineMinutes else None
     await store.create_campaign(campaign_id, body.rounds, body.k, body.note.strip(), who.lang, body.maxSurvivors,
-                                deadline)
+                                deadline, specs["gen"].model, specs["review"].model)
     run_id = await _start_round(app, await store.campaign(campaign_id))
     return _ok({"id": campaign_id, "runId": run_id})
 
@@ -763,7 +771,7 @@ async def _reeval(app: FastAPI, data: Data, rows: list[dict[str, Any]], job: dic
         expr = parse(c["expr"], FEATURE_COLUMNS)
         values = await asyncio.to_thread(data.pool.values, expr)
         ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, params, data.reference_grid, lib.base,
-                                     data.products, True, values=values)
+                                     data.products, True, values=values, peer_exprs=lib.exprs)
         gates = judge(ev, thresholds, lib.known, direction)
         full[c["id"]] = values.f
         # 发现它的那一轮切点比现在早：从那个切点到现在都是它没见过的，比当前 holdout 长
@@ -1033,7 +1041,7 @@ async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str,
     params, thresholds = app.state.params, app.state.thresholds
     store: Store = app.state.store
     pool = data.pool
-    observing = await _observing(app)
+    observing, obs_exprs = await _observing(app)
     search = combo.Combo(pool.search, pool.symbols, lib.full.names, lib.full.values[pool.in_search])
     basis, vol = data.basis[pool.in_search], data.vol[pool.in_search]
     for j, f in enumerate(lib.factors):
@@ -1045,8 +1053,9 @@ async def _library_reeval(app: FastAPI, data: Data, lib: Library, job: dict[str,
         others = combo.Combo(search.rows, search.symbols, search.names[:j] + search.names[j + 1:],
                              np.delete(search.values, j, axis=1))
         base = await asyncio.to_thread(scheme.Base.of, others, basis, vol, params)
+        exprs = {**{k: v for k, v in lib.exprs.items() if k != f"lib:{f['name']}"}, **obs_exprs}
         ev = await asyncio.to_thread(evaluate, parse(f["expr"], FEATURE_COLUMNS), pool, data.vol, params,
-                                     data.reference_grid, base, data.products, True, observing)
+                                     data.reference_grid, base, data.products, True, observing, peer_exprs=exprs)
         gates = judge(ev, thresholds, lib.known - {f["canonical"]}, direction)
         # 发现它那一轮的切点之后都是它没见过的，比当前 holdout 长
         run = await store.run(f["run_id"])
@@ -1103,8 +1112,9 @@ async def _eval_expression(app: FastAPI, data: Data, expr: Expr) -> dict[str, An
     params = app.state.params
     lib = await _library(app)
     values = await asyncio.to_thread(data.pool.values, expr)
+    observing, obs_exprs = await _observing(app)
     ev = await asyncio.to_thread(evaluate, expr, data.pool, data.vol, params, data.reference_grid, lib.base,
-                                 data.products, False, await _observing(app), values)
+                                 data.products, False, observing, values, peer_exprs={**lib.exprs, **obs_exprs})
     gates = judge(ev, app.state.thresholds, lib.known)
     if passed(gates):
         ev["holdout"] = await asyncio.to_thread(recheck, data.pool.rows, values.f, data.pool.cut_ms, params)

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -30,12 +30,14 @@ KNOWN = (*reference.KNOWN_EFFECTS, reference.REVERSAL)
 def evaluate(expr: Expr, pool: Pool, vol: np.ndarray, params: EvalParams = EvalParams(),
              reference_grid: Grid | None = None, library: scheme.Base | None = None,
              products: dict[str, pd.DataFrame] | None = None, holdout: bool = False,
-             observing: combo.Combo | None = None, values: Values | None = None) -> dict[str, Any]:
+             observing: combo.Combo | None = None, values: Values | None = None,
+             peer_exprs: Mapping[str, str] | None = None) -> dict[str, Any]:
     """vol 是全量骨架上的 Std($ret, 672)，多空腿按它分仓；reference_grid 没算好是 None（G6 不过）；
     library 是 G9 的基线（库里因子 + 基差 carry 的交易方案），不给就不算增量；
     products 是产品币搜索段面板，给了才出时序报告；holdout 给手填评估用，顺手把 cut 之后的 IC 也算了；
     observing 是观察区候选在搜索段上的值，和库里因子一起进 G6 的对比集；
-    values 是调用方已经算好的全池值（之后还要用它算 holdout、同批筛查），不给就在这里算"""
+    values 是调用方已经算好的全池值（之后还要用它算 holdout、同批筛查），不给就在这里算；
+    peer_exprs 是库里因子、观察区候选的表达式（lib:名字、obs:名字 → 表达式），冗余报最像的几个时带上"""
     if values is None:
         values = pool.values(expr)
     f = values.f[pool.in_search]
@@ -52,7 +54,8 @@ def evaluate(expr: Expr, pool: Pool, vol: np.ndarray, params: EvalParams = EvalP
         "horizons": {bars: horizon(pool.search, f, v, bars, params, params.iterations if bars == params.primary else 0)
                      for bars in HORIZON_BARS.values()},
         "redundancy": redundancy(pool.search, f, reference_grid,
-                                 {"lib": library.combo if library else None, "obs": observing}, params),
+                                 {"lib": library.combo if library else None, "obs": observing}, peer_exprs or {},
+                                 params),
         "neutral": neutral(pool.search, f, reference_grid, params),
         "gain": scheme.gain(library, str(expr), f, params) if library is not None else None,
         "timeseries": timeseries.report(expr, products, params, values.at) if products else None,
@@ -80,11 +83,12 @@ def _lookahead_free(expr: Expr, pool: Pool, values: Values, params: EvalParams) 
 
 
 def redundancy(rows: pd.DataFrame, f: np.ndarray, grid: Grid | None, peers: dict[str, combo.Combo | None],
-               params: EvalParams) -> dict[str, Any]:
-    """与参照、库里因子、观察区候选在参照网格那一档上的截面相关，报最大的那个。grid 的行与 rows 里那一档的行对齐；
-    peers 是 前缀 → 一组因子（lib 库里、obs 观察区），名字带前缀报出来"""
+               exprs: Mapping[str, str], params: EvalParams) -> dict[str, Any]:
+    """与参照、库里因子、观察区候选在参照网格那一档上的截面相关，top 是最大的前 3 个带表达式，maxAbs、with 是第一个。
+    grid 的行与 rows 里那一档的行对齐；peers 是 前缀 → 一组因子（lib 库里、obs 观察区），名字带前缀报出来；
+    exprs 是带前缀的名字 → 表达式，参照集的从 reference.expressions() 取"""
     if grid is None:
-        return {"maxAbs": None, "with": None, "ready": False}
+        return {"maxAbs": None, "with": None, "ready": False, "top": []}
     main = on_grid(rows["t"].to_numpy(), GRID_BARS)
     g = np.unique(rows["t"].to_numpy()[main], return_inverse=True)[1]
     cand = cs_ic.ranks(g, f[main])
@@ -92,10 +96,10 @@ def redundancy(rows: pd.DataFrame, f: np.ndarray, grid: Grid | None, peers: dict
     for prefix, group in peers.items():
         if group is not None:
             scores += [(f"{prefix}:{name}", v) for name, v in _corr_with(g, cand, main, group, params)]
-    best_name, best = max(scores, key=lambda x: x[1], default=(None, 0.0))
-    if best == 0:
-        return {"maxAbs": 0.0, "with": None, "ready": True}
-    return {"maxAbs": best, "with": best_name, "ready": True}
+    top = [(name, v) for name, v in sorted(scores, key=lambda x: -x[1])[:3] if v > 0]
+    known = {**reference.expressions(), **exprs}
+    return {"maxAbs": top[0][1] if top else 0.0, "with": top[0][0] if top else None, "ready": True,
+            "top": [{"name": name, "abs": v, "expr": known.get(name)} for name, v in top]}
 
 
 def neutral(rows: pd.DataFrame, f: np.ndarray, grid: Grid | None, params: EvalParams) -> dict[str, Any] | None:

@@ -11,7 +11,7 @@ from fakes import LESSONS, gen_reply, model, review_reply
 from wiib_alpha import main as m
 from wiib_alpha import reference
 from wiib_alpha.auth import Authenticator
-from wiib_alpha.config import config
+from wiib_alpha.config import ModelSpec, config
 from wiib_alpha.data.pool import on_grid
 from wiib_alpha.data.refresh import RefreshResult
 from wiib_alpha.dsl import parse
@@ -68,10 +68,19 @@ def prepared(tmp_path, monkeypatch, planted_panels):
 
 
 @pytest.fixture
-async def client(prepared):
+async def bare(prepared):
+    """还没配模型的服务"""
     async with m.lifespan(prepared):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=prepared), base_url="http://t") as c:
             yield c
+
+
+@pytest.fixture
+async def client(bare):
+    """两个角色的模型都配好了：建 campaign 时记下模型名；模型本身是上面换成的假的，不看这份配置"""
+    for role in m.ROLES:
+        await m.app.state.store.set_model(role, ModelSpec("openai", "", f"fake-{role}", "k", ""))
+    return bare
 
 
 async def events(client: httpx.AsyncClient, run_id: str, after: int = 0) -> list[dict]:
@@ -176,6 +185,8 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     detail = await wait_campaign(client, campaign_id, "done")
     camp = detail["campaign"]
     assert (camp["done_rounds"], camp["survivors"], camp["stop_reason"]) == (1, 1, "跑满 1 轮")
+    # 建的时候两个角色用的模型名记在 campaign 上
+    assert (camp["gen_model"], camp["review_model"]) == ("fake-gen", "fake-review")
     assert [(r["id"], r["counts"]) for r in detail["runs"]] == [(run_id, {"observing": 1, "rejected_gates": 1})]
     assert [x["text"] for x in detail["lessons"]] == [x["text"] for x in reversed(LESSONS)]
     listed = data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"]
@@ -245,6 +256,7 @@ async def test_one_round_campaign_then_approve_from_observation(client, planted_
     # 入库之后它就进了冗余对比集：再评估同一条表达式，G6 认出是库里的那条
     out = await evaluated(client, "Mean($volume, 4)")
     assert out["brief"]["redundancy"]["with"] == "lib:planted" and out["brief"]["redundancy"]["maxAbs"] > 0.99
+    assert out["brief"]["redundancy"]["top"][0]["expr"] == "Mean($volume, 4)"
     assert not out["passed"]
 
 
@@ -401,6 +413,7 @@ async def test_next_round_treats_observation_as_known(client):
     rejected = data(await client.get(f"/api/alpha/runs/{second['id']}", headers=ADMIN))["candidates"][0]
     assert not rejected["gates"][8]["passed"] and "G8" in rejected["reason"]
     assert not rejected["gates"][6]["passed"] and "obs:dup" in rejected["gates"][6]["note"]
+    assert rejected["brief"]["redundancy"]["top"][0]["expr"] == "Mean($volume, 4)"
 
 
 async def test_observation_reeval(client):
@@ -611,32 +624,32 @@ async def test_auth_rules(client):
     assert (await client.get("/api/alpha/me")).json()["code"] == 401
 
 
-async def test_model_config(client, monkeypatch):
+async def test_model_config(bare, monkeypatch):
     app = m.app
-    assert data(await client.get("/api/alpha/models", headers=ADMIN)) == {"gen": None, "review": None}
-    assert (await client.get("/api/alpha/models", headers={"satoken": "user"})).status_code == 403
+    assert data(await bare.get("/api/alpha/models", headers=ADMIN)) == {"gen": None, "review": None}
+    assert (await bare.get("/api/alpha/models", headers={"satoken": "user"})).status_code == 403
     body = {"protocol": "Anthropic", "baseUrl": "https://up.test/", "model": "claude", "effort": "high", "apiKey": ""}
     # 第一次要带 key；角色、协议都要认得
-    assert (await client.put("/api/alpha/models/gen", json=body, headers=ADMIN)).json()["code"] == 400
-    assert (await client.put("/api/alpha/models/judge", json=body, headers=ADMIN)).status_code == 404
-    assert (await client.put("/api/alpha/models/gen", json={**body, "protocol": "azure", "apiKey": "k"}, headers=ADMIN)).status_code == 400
+    assert (await bare.put("/api/alpha/models/gen", json=body, headers=ADMIN)).json()["code"] == 400
+    assert (await bare.put("/api/alpha/models/judge", json=body, headers=ADMIN)).status_code == 404
+    assert (await bare.put("/api/alpha/models/gen", json={**body, "protocol": "azure", "apiKey": "k"}, headers=ADMIN)).status_code == 400
     app.state.models = ("old", "pair")
-    view = data(await client.put("/api/alpha/models/gen", json={**body, "apiKey": "sk-abcd1234"}, headers=ADMIN))
+    view = data(await bare.put("/api/alpha/models/gen", json={**body, "apiKey": "sk-abcd1234"}, headers=ADMIN))
     # key 只回尾 4 位；协议归小写；存过就把建好的模型丢掉
     assert view["apiKeyTail"] == "1234" and view["protocol"] == "anthropic" and view["model"] == "claude"
     assert "sk-abcd1234" not in json.dumps(view) and app.state.models is None
     # 再存留空 key 就沿用
-    view = data(await client.put("/api/alpha/models/gen", json={**body, "model": "claude-2"}, headers=ADMIN))
+    view = data(await bare.put("/api/alpha/models/gen", json={**body, "model": "claude-2"}, headers=ADMIN))
     assert view["apiKeyTail"] == "1234" and view["model"] == "claude-2"
     assert (await app.state.store.models())["gen"]["api_key"] == "sk-abcd1234"
     # 只配了一个角色开不了 campaign（fixture 把 build_models 换成了假的，这里换回真的）
     monkeypatch.setattr(m, "build_models", REAL_BUILD_MODELS)
-    resp = await client.post("/api/alpha/campaigns", json={"k": 1}, headers=ADMIN)
+    resp = await bare.post("/api/alpha/campaigns", json={"k": 1}, headers=ADMIN)
     assert resp.status_code == 400 and "两个角色" in resp.json()["msg"]
-    assert data(await client.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"] == []
+    assert data(await bare.get("/api/alpha/campaigns", headers=ADMIN))["campaigns"] == []
     # 测试连通：按传来的配置建模型发一句话
     monkeypatch.setattr(m, "build_chat_model", lambda spec, role: model(lambda p: f"{role}:{spec.model}:ok"))
-    got = data(await client.post("/api/alpha/models/gen/test", json={**body, "model": "probe"}, headers=ADMIN))
+    got = data(await bare.post("/api/alpha/models/gen/test", json={**body, "model": "probe"}, headers=ADMIN))
     assert got["reply"] == "gen:probe:ok" and got["ms"] >= 0
 
 
@@ -705,7 +718,7 @@ async def test_missing_reference_grid_is_built_in_the_background(prepared, tmp_p
 async def test_restart_marks_running_runs_failed_and_stops_the_campaign(prepared):
     async with m.lifespan(prepared):
         store = prepared.state.store
-        await store.create_campaign("cc", 10, 1, "", "zh", None, None)
+        await store.create_campaign("cc", 10, 1, "", "zh", None, None, "fake-gen", "fake-review")
         await store.create_run("zz", 1, "", "zh", "cc")
         await store.upsert_candidate({"id": "zz-1", "run_id": "zz", "seq": 1, "name": "x", "hypothesis": "h",
                                       "status": "rewrite"})

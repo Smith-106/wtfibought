@@ -24,12 +24,12 @@ import numpy as np
 from .config import ModelSpec
 
 SCHEMA = [
-    # status：running / stopping（这轮跑完就停）/ stopped / done / failed
+    # status：running / stopping（这轮跑完就停）/ stopped / done / failed；gen_model、review_model：建的时候两个角色用的模型名
     """CREATE TABLE IF NOT EXISTS campaign(
         id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, rounds INTEGER NOT NULL,
         k INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, max_survivors INTEGER,
         deadline_ms INTEGER, done_rounds INTEGER NOT NULL DEFAULT 0, survivors INTEGER NOT NULL DEFAULT 0,
-        stop_reason TEXT, error TEXT)""",
+        stop_reason TEXT, error TEXT, gen_model TEXT, review_model TEXT)""",
     # cut_ms：这一轮用的数据的 holdout 切点，之后的数据这一轮的候选都没见过；加这列之前跑的轮是 NULL
     """CREATE TABLE IF NOT EXISTS run(
         id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, k INTEGER NOT NULL,
@@ -90,7 +90,8 @@ _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "rev
                  "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders",
                  "board_json": "board"}
 # 建表之后才加的列：老库启动时补上
-_ADDED_COLUMNS = {"run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
+_ADDED_COLUMNS = {"campaign": {"gen_model": "TEXT", "review_model": "TEXT"},
+                  "run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
                   "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"},
                   "factor": {"reeval_json": "TEXT", "retired_at": "INTEGER", "retire_reason": "TEXT"},
                   "trade_run": {"board_json": "TEXT"}}
@@ -161,11 +162,13 @@ class Store:
     # ========== campaign ==========
 
     async def create_campaign(self, campaign_id: str, rounds: int, k: int, note: str, lang: str,
-                              max_survivors: int | None, deadline_ms: int | None) -> None:
+                              max_survivors: int | None, deadline_ms: int | None, gen_model: str,
+                              review_model: str) -> None:
         await self.db.execute(
-            """INSERT INTO campaign(id, created_at, status, rounds, k, note, lang, max_survivors, deadline_ms)
-               VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
-            (campaign_id, now_ms(), rounds, k, note, lang, max_survivors, deadline_ms))
+            """INSERT INTO campaign(id, created_at, status, rounds, k, note, lang, max_survivors, deadline_ms,
+                                    gen_model, review_model)
+               VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (campaign_id, now_ms(), rounds, k, note, lang, max_survivors, deadline_ms, gen_model, review_model))
         await self.db.commit()
 
     async def update_campaign(self, campaign_id: str, **fields: Any) -> None:
@@ -260,6 +263,11 @@ class Store:
                                     (new, now_ms(), candidate_id, expect))
         await self.db.commit()
         return cur.rowcount == 1
+
+    async def evaluated_candidates(self) -> list[dict[str, Any]]:
+        """评估过、记着主档的候选（现在的口径），出题时统计成败用"""
+        return await self._all("SELECT expr, family, eval_json, gates_json FROM candidate "
+                               "WHERE json_extract(eval_json, '$.primary') IS NOT NULL", ())
 
     async def candidate_counts(self) -> dict[str, dict[str, int]]:
         """每轮各状态的候选数：run_id → {status: 条数}；公开概览只给数字"""

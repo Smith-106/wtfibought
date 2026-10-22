@@ -95,7 +95,7 @@ def test_g6_catches_sign_flipping_over_time(planted_pool):
     f = planted_pool.values(parse("Mean($volume, 4)", COLS)).f[planted_pool.in_search]
     t = rows["t"].to_numpy()
     flipped = np.where((t // (reference.GRID_BARS * BAR_MS)) % 2 == 1, -f, f)
-    red = redundancy(rows, flipped, known_grid(planted_pool, f), {}, PARAMS)
+    red = redundancy(rows, flipped, known_grid(planted_pool, f), {}, {}, PARAMS)
     assert red["maxAbs"] == pytest.approx(1.0)
 
 
@@ -187,7 +187,7 @@ def test_evaluate_output_is_plain_data(planted_pool, planted_vol, planted_panels
     assert ev["columns"] == ["volume"] and ev["complexity"] == {"nodes": 4, "windows": 1, "constants": 1, "cross": 0}
     assert set(ev["horizons"]) == {24, 48, 96} and ev["gain"] is None and ev["primary"] == 96
     # 参照网格没算好：G6 不过
-    assert ev["redundancy"] == {"maxAbs": None, "with": None, "ready": False}
+    assert ev["redundancy"] == {"maxAbs": None, "with": None, "ready": False, "top": []}
     g6 = judge(ev, GATES)[6]
     assert not g6["passed"] and g6["note"] == "参照网格还没算好"
     # 时序报告：产品币按币算，只出数字
@@ -203,9 +203,14 @@ def test_redundancy_and_gain_see_the_library(planted_pool, planted_vol, planted_
     twin = planted_pool.values(parse("$volume * 3 + 1", COLS)).f[pick]
     library = scheme.Base.of(Combo.empty(planted_pool.search, planted_pool.symbols).plus("twin", twin),
                              planted_pool.values(scheme.CARRY).f[pick], planted_vol[pick], PARAMS)
-    ev = evaluate(parse("$volume", COLS), planted_pool, planted_vol, PARAMS, planted_grid, library)
+    ev = evaluate(parse("$volume", COLS), planted_pool, planted_vol, PARAMS, planted_grid, library,
+                  peer_exprs={"lib:twin": "(($volume * 3) + 1)"})
     assert ev["redundancy"]["with"] == "lib:twin" and ev["redundancy"]["maxAbs"] == pytest.approx(1.0)
     assert not judge(ev, GATES)[6]["passed"]
+    # 最像的几个按 |ρ| 从大到小，各带表达式：库里那条排第一，参照网格里那条也在
+    top = ev["redundancy"]["top"]
+    assert top[0] == {"name": "lib:twin", "abs": ev["redundancy"]["maxAbs"], "expr": "(($volume * 3) + 1)"}
+    assert [x["name"] for x in top] == ["lib:twin", "noise4"] and 0 < top[1]["abs"] < top[0]["abs"]
     # 和库里的一样，交易方案加不进新东西
     assert ev["gain"]["sharpe"]["base"] == pytest.approx(library.result["sharpe"])
     assert abs(ev["gain"]["sharpe"]["gain"]) < 1e-6

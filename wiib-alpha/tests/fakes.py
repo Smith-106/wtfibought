@@ -38,10 +38,11 @@ def gen_reply(prompt: str) -> str:
         return json.dumps(LESSONS + BAD_LESSONS, ensure_ascii=False)
     if "JSON 数组" in prompt:
         return "好的：\n```json\n" + json.dumps([
-            {"name": "planted", "family": "量能", "hypothesis": "成交量列藏着信号"},
+            {"name": "planted", "family": "liquidity", "hypothesis": "成交量列藏着信号"},
+            # 不在机制清单里的 family，落库是 other
             {"name": "noise", "family": "量能", "hypothesis": "成交笔数没用"},
-            {"name": "twin", "family": "量能", "hypothesis": "成交量指数平滑"},
-            {"name": "clone", "family": "量能", "hypothesis": "成交量再平滑一点"},
+            {"name": "twin", "family": "liquidity", "hypothesis": "成交量指数平滑"},
+            {"name": "clone", "family": "volume_weighted_basis", "hypothesis": "成交量再平滑一点"},
         ], ensure_ascii=False) + "\n```"
     if "写成一条表达式" in prompt:
         if "[noise]" in prompt:

@@ -5,7 +5,8 @@ from conftest import PRODUCTS
 from fakes import LESSONS, gen_reply, model, review_reply
 
 from wiib_alpha import graph as graph_module
-from wiib_alpha.data.panel import truncate
+from wiib_alpha.data.panel import FEATURE_COLUMNS, truncate
+from wiib_alpha.dsl import parse
 from wiib_alpha.eval.combo import Combo
 from wiib_alpha.eval.params import EvalParams, Thresholds
 from wiib_alpha.graph import Context, build_graph
@@ -37,11 +38,14 @@ def ctx_of(planted_pool, planted_vol, planted_grid, planted_panels):
     empty = Combo.empty(planted_pool.search, planted_pool.symbols)
     # 库是空的：G9 的基线是只有基差 carry 的交易方案
     base = scheme.Base.of(empty, planted_pool.values(scheme.CARRY).f[pick], planted_vol[pick], PARAMS)
+    funding = planted_pool.values(parse("$funding_rate", FEATURE_COLUMNS)).f
 
     def build(store, gen=gen_reply, review=review_blind_to_holdout) -> Context:
         products = {s: truncate(planted_panels[s], planted_pool.cut_ms) for s in PRODUCTS}
-        return Context(gen=model(gen), review=model(review), pool=planted_pool, vol=planted_vol, products=products,
-                       reference_grid=planted_grid, base=base, observing=empty, known=set(), library=[], facts=FACTS,
+        return Context(gen=model(gen), review=model(review), pool=planted_pool, vol=planted_vol, funding=funding,
+                       products=products,
+                       reference_grid=planted_grid, base=base, observing=empty, peer_exprs={}, known=set(), library=[],
+                       facts=FACTS,
                        store=store, params=PARAMS, thresholds=GATES)
     return build
 
@@ -63,6 +67,8 @@ async def run_round(ctx: Context, run_id: str, k: int, campaign_id: str | None =
 async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, planted_pool):
     seen: list[str] = []
     events = await run_round(ctx_of(store, gen=recording(gen_reply, seen)), "r1", 2, "c1")
+    # 第一轮还没有评估过的候选：出题提示里没有成败表
+    assert "提出 2 条" in seen[0] and "按数据类" not in seen[0]
 
     rows = {c["name"]: c for c in await store.candidates("r1")}
     # planted：第一次少窗口重写、第二次 $volume 被评审打回、第三次过，进观察区等人入库
@@ -70,6 +76,8 @@ async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, 
     assert planted["status"] == "observing" and planted["attempts"] == 3 and planted["review"]["verdict"] == "pass"
     assert planted["expr"] == "Mean($volume, 4)" and planted["reason"] is None and planted["direction"] == 1
     assert planted["gates"][10]["id"] == "G10" and planted["gates"][10]["passed"]
+    # 评估前的预检记在 eval 里
+    assert isinstance(planted["eval"]["precheck"]["rankAutocorr"], float)
     # 幸存者带着 holdout 的数字；埋进去的信号在 holdout 上也该是正的
     assert planted["eval"]["holdout"]["since"] == planted_pool.cut_ms
     assert planted["eval"]["holdout"]["horizons"]["48"]["mean"] > 0
@@ -81,12 +89,14 @@ async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, 
     assert noise["status"] == "rejected_gates" and noise["attempts"] == 3 and "G5" in noise["reason"]
     assert noise["expr"] == "Sum($trades, 16)"
     assert "holdout" not in noise["eval"]
+    # family 在机制清单里的原样存，不在的存成 other
+    assert planted["family"] == "liquidity" and noise["family"] == "other"
     rewrites = [e["data"] for e in events if e["event"] == "candidate" and e["data"]["status"] == "rewrite"]
     assert [c["name"] for c in rewrites] == ["noise", "noise"] and all("G5" in c["reason"] for c in rewrites)
     # 重写的提示词：同一假设、上一版表达式、没过的门、主档数字，不替模型下结论
     again = [p for p in seen if "[noise]" in p and "上一版表达式" in p]
     assert len(again) == 2 and "上一版表达式：$trades（声明的方向 1，因子值越大越强）\n没过的门：\n- G" in again[0]
-    assert "盈亏平衡单边成本" in again[0] and "多空腿每期资金费" in again[0]
+    assert "盈亏平衡单边成本" in again[0] and "多空腿每期资金费" in again[0] and "24h 秩自相关" in again[0]
     assert "同一假设，换一种写法；这些数字说明了什么由你判断" in again[0]
     # planted 评估了两版、noise 三版，都计入试验数
     assert any(e["event"] == "log" and "累计试验 5 次" in e["data"]["text"] for e in events)
@@ -116,6 +126,8 @@ async def test_full_round_rewrites_reviews_reflects_and_observes(store, ctx_of, 
     await run_round(ctx_of(store, gen=recording(lambda p: "[]", seen)), "r2", 1)
     propose = seen[0]
     assert propose.index("[try] 成交量平滑后更稳") < propose.index("[avoid] 成交笔数没有截面信号")
+    # 上一轮的两条都用到成交量，按数据类、按机制 ID 进了成败表
+    assert "- 成交量：试过 2、" in propose and "- liquidity：试过 1、" in propose and "- other：试过 1、" in propose
 
 
 async def test_rewrite_that_clears_the_gates_goes_to_observation(store, ctx_of):

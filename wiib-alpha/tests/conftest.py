@@ -19,7 +19,7 @@ REFERENCES = {"noise4": "Mean($trades, 4)"}
 
 
 def planted_panel(seed: int, n: int = PLANTED_N) -> pd.DataFrame:
-    """volume 是埋进去的 AR(1) 预测信号，trades、premium 是纯噪音；全程在池；列够 evaluate 和交易方案用。
+    """volume 是埋进去的 AR(1) 预测信号，trades、premium、funding_rate 是纯噪音；全程在池；列够 evaluate、预检和交易方案用。
     每个币各埋一条：同一时刻 volume 高的币之后也涨得多，截面上就是信号"""
     rng = np.random.default_rng(seed)
     s = np.zeros(n)
@@ -31,6 +31,8 @@ def planted_panel(seed: int, n: int = PLANTED_N) -> pd.DataFrame:
                        "liq_long": np.nan, "liq_short": np.nan, "liq_count": np.nan, "in_pool": 1.0},
                       index=np.arange(n) * BAR_MS + 1_735_689_600_000)
     df["premium"] = rng.normal(0, 0.0005, n)
+    # 像真数据的结算：32 根（8 小时）一个费率，期内不变
+    df["funding_rate"] = np.repeat(rng.normal(0, 1e-4, -(-n // 32)), 32)[:n]
     df.index.name = "close_time"
     for h in (24, 48, 96):
         df[f"fwd_ret_{h}"] = np.log(df["close"].shift(-h) / df["close"])

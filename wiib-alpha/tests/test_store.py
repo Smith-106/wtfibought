@@ -71,11 +71,26 @@ async def test_observation_and_claim_candidate(store):
     assert [r["id"] for r in await store.observing()] == ["r2-1"]
 
 
+async def test_evaluated_candidates_only_count_the_ones_with_a_primary(store):
+    """出题的成败表只统计记着主档的（现在的口径）；老结果没有主档，不算"""
+    await store.create_run("r1", 2, "", "zh", None)
+    base = {"run_id": "r1", "hypothesis": "h", "status": "rejected_gates", "expr": "$ret",
+            "gates": [{"id": "G9", "passed": False}]}
+    await store.upsert_candidate({**base, "id": "r1-1", "seq": 1, "name": "new", "family": "basis",
+                                  "eval": {"primary": 96, "horizons": {}}})
+    await store.upsert_candidate({**base, "id": "r1-2", "seq": 2, "name": "old", "family": "动量",
+                                  "eval": {"horizons": {}}})
+    assert await store.evaluated_candidates() == [{"expr": "$ret", "family": "basis",
+                                                   "eval": {"primary": 96, "horizons": {}},
+                                                   "gates": [{"id": "G9", "passed": False}]}]
+
+
 async def test_campaign_lifecycle_and_lessons(store):
-    await store.create_campaign("c1", 10, 5, "费率", "zh", None, 123)
+    await store.create_campaign("c1", 10, 5, "费率", "zh", None, 123, "gpt-5", "claude-opus")
     camp = await store.campaign("c1")
     assert camp["status"] == "running" and camp["rounds"] == 10 and camp["k"] == 5 and camp["deadline_ms"] == 123
     assert camp["done_rounds"] == 0 and camp["survivors"] == 0 and camp["max_survivors"] is None
+    assert (camp["gen_model"], camp["review_model"]) == ("gpt-5", "claude-opus")
     assert (await store.active_campaign())["id"] == "c1"
     await store.create_run("r1", 5, "费率", "zh", "c1")
     await store.create_run("r2", 5, "费率", "zh", "c1")
@@ -97,13 +112,19 @@ async def test_campaign_lifecycle_and_lessons(store):
     assert [(x["text"], x["run_id"]) for x in await store.lessons(20, "c1")] == [("b", "r1"), ("a", "r1")]
 
 
-async def test_open_adds_campaign_id_to_an_old_run_table(tmp_path):
-    """线上库的 run 表是加 campaign 之前建的：open 时补上这一列，旧行是空的"""
+async def test_open_adds_new_columns_to_old_tables(tmp_path):
+    """线上库的 run 表是加 campaign 之前建的、campaign 表是记模型名之前建的：open 时补上这些列，旧行是空的"""
     path = tmp_path / "old.sqlite"
     conn = sqlite3.connect(path)
     conn.execute("""CREATE TABLE run(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL,
                     k INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, error TEXT)""")
     conn.execute("INSERT INTO run VALUES ('old', 1, 'done', 3, '', 'zh', NULL)")
+    conn.execute("""CREATE TABLE campaign(
+        id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, rounds INTEGER NOT NULL,
+        k INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL, max_survivors INTEGER,
+        deadline_ms INTEGER, done_rounds INTEGER NOT NULL DEFAULT 0, survivors INTEGER NOT NULL DEFAULT 0,
+        stop_reason TEXT, error TEXT)""")
+    conn.execute("INSERT INTO campaign(id, created_at, status, rounds, k, lang) VALUES ('oldc', 1, 'done', 3, 1, 'zh')")
     conn.commit()
     conn.close()
     for _ in range(2):  # 第二次 open 不再加
@@ -111,10 +132,16 @@ async def test_open_adds_campaign_id_to_an_old_run_table(tmp_path):
         columns = [r["name"] for r in await s.db.execute_fetchall("PRAGMA table_info(run)")]
         assert columns.count("campaign_id") == 1 and columns.count("cut_ms") == 1
         assert (await s.run("old"))["campaign_id"] is None and (await s.run("old"))["cut_ms"] is None
+        columns = [r["name"] for r in await s.db.execute_fetchall("PRAGMA table_info(campaign)")]
+        assert columns.count("gen_model") == 1 and columns.count("review_model") == 1
+        old = await s.campaign("oldc")
+        assert old["gen_model"] is None and old["review_model"] is None
         await s.close()
     s = await Store.open(str(path))
     await s.create_run("new", 1, "", "zh", "c1")
-    assert (await s.run("new"))["campaign_id"] == "c1" and await s.campaigns() == []
+    assert (await s.run("new"))["campaign_id"] == "c1" and [c["id"] for c in await s.campaigns()] == ["oldc"]
+    await s.create_campaign("c1", 1, 1, "", "zh", None, None, "gpt-5", "claude-opus")
+    assert (await s.campaign("c1"))["gen_model"] == "gpt-5"
     await s.close()
 
 

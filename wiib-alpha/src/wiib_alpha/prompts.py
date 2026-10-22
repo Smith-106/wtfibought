@@ -11,11 +11,14 @@ import math
 import re
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
 from . import ops, reference
 from .data.panel import FEATURE_COLUMNS
-from .dsl import COMPLEXITY, MAX_TEXT, MAX_WINDOW
+from .dsl import COMPLEXITY, MAX_TEXT, MAX_WINDOW, parse
 from .eval.cs_ic import SHAPES, shape
 from .eval.gates import fmt
+from .eval.params import Thresholds
 
 _LANG_NAME = {"zh": "中文", "en": "英文"}
 
@@ -53,8 +56,28 @@ COLUMN_DOCS = {
 
 WINDOW_TABLE = "4=1h、16=4h、48=12h、96=24h、192=48h、672=7d"
 
-# 纯价格类（动量、反转、突破、波动）不在里面：换手高、成本吃掉毛收益，参照集和前几个 campaign 都证明做不成
-FAMILIES = ["量能", "流动性", "资金费率 carry", "溢价 / 基差", "持仓变化", "多空比", "taker 买卖失衡"]
+# 机制清单：ID → (机制, 用哪些列, 典型持有期)，出题按 ID 选；price 是已证做不成的纯价格类，other 给清单外的机制
+FAMILIES = {
+    "basis": ("基差 / carry：溢价高的币在付费、被做空，折价的反过来", "premium、funding_rate", "7 天到 3 周"),
+    "oi_crowd": ("持仓拥挤：持仓在变而价格没怎么动，有人在悄悄建仓或平仓", "oi、oi_value、ret", "1~7 天"),
+    "ls_split": ("大户与全体分歧：大户持仓多空比和全体账户多空比背离", "ls_top_pos、ls_top_acct、ls_acct", "1~7 天"),
+    "taker_persist": ("taker 失衡的持续性：主动买卖失衡连着多日同一个方向", "taker_buy_quote、quote_volume、taker_ls_vol", "3~7 天"),
+    "liquidity": ("流动性 / 规模：成交额、持仓名义、换手的相对水平和变化", "quote_volume、oi_value、trades", "7 天到 3 周"),
+    "idio_vol": ("对 BTC 的特质波动：剔掉 BTC 带动的部分后这个币自己的波动", "ret、btc_ret", "7 天"),
+    "funding_premium_gap": ("资金费与溢价错位：已结算的费率和当前溢价对不上", "funding_rate、premium", "1~7 天"),
+    "volume_weighted_basis": ("量能给溢价当权重：成交额加权的溢价对比等权的", "premium、quote_volume、volume", "7 天"),
+    "price": ("纯价格类：动量、反转、突破、K 线形态、振幅、相对 BTC。已证做不成：换手高、成本吃掉毛收益，再加空头尾部", "", ""),
+    "other": ("清单外的机制", "", ""),
+}
+
+# 按用到的列分的数据类，出题时统计成败用；强平列只有产品币有数，不算
+DATA_CLASSES = {
+    "溢价": ("premium",), "资金费": ("funding_rate",), "持仓量": ("oi", "oi_value"),
+    "大户多空比": ("ls_top_acct", "ls_top_pos"), "全体多空比": ("ls_acct",),
+    "taker": ("taker_buy_base", "taker_buy_quote", "taker_ls_vol"),
+    "成交量": ("volume", "quote_volume", "trades"), "纯价格": ("open", "high", "low", "close", "ret"),
+    "BTC": ("btc_close", "btc_ret"), "hour": ("hour",),
+}
 
 
 # ========== 生成角色 ==========
@@ -119,25 +142,27 @@ def system_gen(facts: Mapping[str, Any], lang: str) -> str:
 
 
 def propose_message(k: int, library: Sequence[Mapping[str, Any]], tried: Sequence[Mapping[str, Any]],
-                    lessons: Sequence[Mapping[str, Any]], note: str, lang: str) -> str:
-    """lessons、tried 都是最新在前"""
+                    lessons: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Any], note: str, lang: str) -> str:
+    """lessons、tried 都是最新在前；outcomes 是 outcomes() 算的两张成败表"""
     lib = "\n".join(f"- {f['name']}：{f['expr']}（{f['hypothesis']}）" for f in library) or "（空）"
     past = "\n".join(f"- [{t['outcome']}] {t['hypothesis']}｜{t['expr'] or '未写出'}｜{t['reason'] or ''}"
                      for t in tried) or "（无）"
     extra = f"\n本轮方向要求：{note}\n" if note.strip() else ""
     return f"""库里已有的因子（别重复，也别换个窗口翻版）：
 {lib}
-
+{_outcome_lines(outcomes)}
 之前几轮复盘写下的经验（最新在前）：
 {_lessons(lessons)}
 
 已经试过的假设与结果（别再提）：
 {past}
 {extra}
-可选的方向：{'、'.join(FAMILIES)}，只是启发不是限制。
+可选的机制：
+{_families()}
+family 填清单里的 ID；机制不在清单里的填 other。
 
 提出 {k} 条彼此不同的假设。只输出一个 JSON 数组，不要代码块、不要任何别的字：
-[{{"name": "短英文 slug", "family": "方向", "hypothesis": "一两句话（用{_LANG_NAME[lang]}）：什么现象、为什么能预测未来 24 小时哪些币比别的币强"}}]"""
+[{{"name": "短英文 slug", "family": "清单里的 ID", "hypothesis": "一两句话（用{_LANG_NAME[lang]}）：什么现象、为什么能预测未来 24 小时哪些币比别的币强"}}]"""
 
 
 def implement_message(cand: Mapping[str, Any], feedback: str | None, problem: str | None = None) -> str:
@@ -199,27 +224,37 @@ def primary_of(ev: Mapping[str, Any]) -> int:
 
 
 def key_numbers(ev: Mapping[str, Any]) -> str:
-    """主档 IC、ICIR、顶减底、三组形状、换手、资金费、盈亏平衡成本、冗余、去老效应后的 IC，一行；落过库的键是字符串，先归一"""
+    """主档 IC、ICIR、顶减底、三组形状、换手、资金费、盈亏平衡成本、冗余、去老效应后的 IC，算过预检的再带预检的数，一行；
+    落过库的键是字符串，先归一。冗余报最像的前 3 个带表达式；之前落库的结果没有 top，只报最像的那一个"""
     h = {int(k): v for k, v in ev["horizons"].items()}[primary_of(ev)]
     ic, leg, red, pure = h["ic"], h["leg"], ev["redundancy"], neutral_brief(ev)
     mono = ic["monotonic"]
     spread = mono["spread"]
+    top = red.get("top") or []
     if not red["ready"]:
-        redundancy = "参照网格还没算好"
+        redundancy = "冗余：参照网格还没算好"
+    elif top:
+        peers = "、".join(f"{x['name']} {fmt(x['abs'], 2)}（{x['expr']}）" for x in top)
+        redundancy = f"冗余前 {len(top)}（截面 |ρ|）：{peers}"
     elif red["with"]:
-        redundancy = f"与 {red['with']} 的截面 |ρ| {fmt(red['maxAbs'], 2)}"
+        redundancy = f"冗余：与 {red['with']} 的截面 |ρ| {fmt(red['maxAbs'], 2)}"
     else:
-        redundancy = "没有参照因子"
-    return "、".join([
+        redundancy = "冗余：没有参照因子"
+    parts = [
         f"月度截面 IC 均值 {fmt(ic['mean'])}", f"ICIR {fmt(ic['icir'], 2)}",
         f"截尾后顶组减底组每期 {fmt(None if spread is None else spread * 1e4, 1)} bps、t {fmt(mono['spreadT'], 1)}",
         f"三组形状：{SHAPES.get(shape(mono, ic['mean']), '算不出')}",
         f"每期换手 {fmt(leg.get('turnover'), 2)}（两条腿全换是 1）",
         f"多空腿每期资金费 {fmt(leg.get('fundingBps'), 1)} bps（正是收、负是付，已算进收益）",
-        f"盈亏平衡单边成本 {fmt(leg.get('breakEvenBps'), 1)} bps", f"冗余：{redundancy}",
+        f"盈亏平衡单边成本 {fmt(leg.get('breakEvenBps'), 1)} bps", redundancy,
         (f"回归掉 {pure['against']} 条老效应后 IC {fmt(pure['meanIc'])}（剩原来的 {fmt(pure['retained'], 2)}），t {fmt(pure['t'], 1)}"
          if pure else "去老效应：参照网格还没算好"),
-    ])
+    ]
+    pre = ev.get("precheck")
+    if pre:
+        parts.append(f"24h 秩自相关 {fmt(pre['rankAutocorr'], 2)}、覆盖 {fmt(pre['coverage'], 2)}、"
+                     f"因子值高的一头资金费 {fmt(pre['fundingHigh'], 1)} bps / 低的一头 {fmt(pre['fundingLow'], 1)} bps")
+    return "、".join(parts)
 
 
 def neutral_brief(ev: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -236,6 +271,64 @@ def neutral_brief(ev: Mapping[str, Any]) -> dict[str, Any] | None:
 
 def _lessons(lessons: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(f"- [{x['kind']}] {x['text']}" for x in lessons) or "（还没有）"
+
+
+def _families() -> str:
+    """机制清单一条一行；没有列和持有期的（price、other）只写机制"""
+    return "\n".join(f"- {fid}：{what}（列：{cols}；持有期：{hold}）" if cols else f"- {fid}：{what}"
+                     for fid, (what, cols, hold) in FAMILIES.items())
+
+
+def outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    """评估过的候选（store.evaluated_candidates）在主档上的成败，按用到的数据类、按机制 ID 各汇总一张：
+    试过几条、有信号几条（和 G2 同口径）、单条多空腿扣完成本还赚几条、过 G9 几条，换手和盈亏平衡成本的中位数。
+    用到几类数据就在几类里各算一次；family 不在清单里的（老候选是中文）算 other"""
+    t = Thresholds()
+    by_class: dict[str, list[dict[str, Any]]] = {}
+    by_family: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        ev = r["eval"]
+        h = ev["horizons"][str(ev["primary"])]
+        ic, leg = h["ic"], h["leg"]
+        item = {"signal": abs(_f(ic["mean"])) >= t.ic_min and abs(_f(ic["icir"])) * math.sqrt(ic["months"]) >= t.t_min,
+                "net": _f(leg.get("netReturn")) > 0,
+                "g9": any(g["id"] == "G9" and g["passed"] for g in r["gates"]),
+                "turnover": leg.get("turnover"), "breakEven": leg.get("breakEvenBps")}
+        columns = parse(r["expr"], FEATURE_COLUMNS).columns()
+        for name, cols in DATA_CLASSES.items():
+            if columns & set(cols):
+                by_class.setdefault(name, []).append(item)
+        by_family.setdefault(r["family"] if r["family"] in FAMILIES else "other", []).append(item)
+    return {"byClass": {name: _tally(by_class[name]) for name in DATA_CLASSES if name in by_class},
+            "byFamily": {fid: _tally(by_family[fid]) for fid in FAMILIES if fid in by_family}}
+
+
+def _tally(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """成败表的一行；没数的不进中位数"""
+    def median(key: str) -> float | None:
+        xs = [x[key] for x in items if x[key] is not None]
+        return float(np.median(xs)) if xs else None
+
+    return {"tried": len(items), "signal": sum(x["signal"] for x in items), "net": sum(x["net"] for x in items),
+            "g9": sum(x["g9"] for x in items), "turnover": median("turnover"), "breakEven": median("breakEven")}
+
+
+def _outcome_lines(table: Mapping[str, Any]) -> str:
+    """两张成败表；都空（还没有现在口径的候选）整段不出"""
+    if not table["byClass"] and not table["byFamily"]:
+        return ""
+    t = Thresholds()
+
+    def line(name: str, x: Mapping[str, Any]) -> str:
+        turnover = "—" if x["turnover"] is None else f"{x['turnover']:.2f}"
+        even = "—" if x["breakEven"] is None else f"{x['breakEven']:.1f} bps"
+        return (f"- {name}：试过 {x['tried']}、有信号 {x['signal']}、扣成本还赚 {x['net']}、过 G9 {x['g9']}、"
+                f"换手中位 {turnover}、盈亏平衡中位 {even}")
+
+    classes = "\n".join(line(name, x) for name, x in table["byClass"].items())
+    families = "\n".join(line(fid, x) for fid, x in table["byFamily"].items())
+    return (f"\n已试过的候选按数据类的成败（搜索段数字；有信号 = |IC| ≥ {t.ic_min:g} 且 t ≥ {t.t_min:g}）：\n{classes}\n"
+            f"按机制 ID：\n{families}\n")
 
 
 # ========== 轮后复盘 ==========
@@ -362,18 +455,26 @@ def _first(text: str, pattern: str, kind: type) -> Any:
 
 
 def eval_brief(ev: Mapping[str, Any], gates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """给评审和页面看的精简数字：判门用的主档、三档截面 IC、单调性与多空腿、每门一句；算过增量、holdout、时序报告的再各带一段"""
+    """给评审和页面看的精简数字：判门用的主档、三档截面 IC、单调性与多空腿、每门一句；算过预检、增量、holdout、时序报告的再各带一段"""
     primary = primary_of(ev)
     red = ev["redundancy"]
     out = {
         "primary": hours(primary),
         "horizons": horizons_brief(ev["horizons"]),
-        "redundancy": {"maxAbs": _r(red["maxAbs"]), "with": red["with"], "ready": red["ready"]},
+        "redundancy": {"maxAbs": _r(red["maxAbs"]), "with": red["with"], "ready": red["ready"],
+                       "top": [{"name": x["name"], "abs": _r(x["abs"]), "expr": x["expr"]}
+                               for x in red.get("top") or []]},
         "complexity": ev["complexity"],
         "gates": [{"id": g["id"], "passed": g["passed"], "note": g["note"]} for g in gates],
     }
     if ev.get("neutral"):
         out["neutral"] = neutral_brief(ev)
+    # 挖掘时评估前算的预检；手填评估、复评没有
+    if ev.get("precheck"):
+        pre = ev["precheck"]
+        out["precheck"] = {"rankAutocorr": _r(pre["rankAutocorr"]), "coverage": _r(pre["coverage"]),
+                           "points": pre["points"], "fundingHigh": _r(pre["fundingHigh"]),
+                           "fundingLow": _r(pre["fundingLow"])}
     if ev.get("gain"):
         # 老结果的 G9 是加进库组合后三档 IC 的变化，现在的是加进交易方案后的净 Sharpe
         if ev["gain"].get("horizons"):

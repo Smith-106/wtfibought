@@ -47,14 +47,18 @@ def test_propose_and_implement_messages():
     text = prompts.propose_message(3, [{"name": "mom", "expr": "$ret", "hypothesis": "h"}],
                                    [{"outcome": "rejected_gates", "hypothesis": "old", "expr": "$x", "reason": "G2"}],
                                    [{"kind": "try", "text": "新的"}, {"kind": "avoid", "text": "旧的"}],
-                                   "只看资金费率", "zh")
+                                   prompts.outcomes([]), "只看资金费率", "zh")
     assert "mom：$ret" in text and "[rejected_gates] old" in text and "只看资金费率" in text and "提出 3 条" in text
     assert "- [try] 新的\n- [avoid] 旧的" in text
-    # 可选方向里是截面上做得了的：没有强平（只有产品币有数）和时段（同一时刻所有币一样），也没有做不成的纯价格类
-    assert "溢价 / 基差" in text and "强平" not in text and "时段" not in text
-    assert not {"动量", "反转", "突破", "波动"} & set(prompts.FAMILIES)
+    # 还没有现在口径的候选：成败表整段不出
+    assert "按数据类" not in text and "（h）\n\n之前几轮复盘写下的经验" in text
+    # 机制清单带 ID，纯价格类列着但标明做不成，other 不带空括号
+    assert "- basis：" in text and "- price：" in text and "已证做不成" in text
+    assert "- other：清单外的机制\nfamily 填清单里的 ID" in text
+    # 清单里没有强平（只有产品币有数）和时段（同一时刻所有币一样）
+    assert "强平" not in text and "时段" not in text
     assert "已折算成每 8 小时的等价费率" in prompts.system_gen(FACTS, "zh")
-    assert "经验（最新在前）：\n（还没有）" in prompts.propose_message(1, [], [], [], "", "zh")
+    assert "经验（最新在前）：\n（还没有）" in prompts.propose_message(1, [], [], [], prompts.outcomes([]), "", "zh")
     cand = {"name": "carry", "hypothesis": "费率高做空"}
     plain = prompts.implement_message(cand, None)
     assert "上一版" not in plain and "上一次输出的问题" not in plain and '"direction": 1 或 -1' in plain
@@ -69,6 +73,45 @@ def test_propose_and_implement_messages():
     # 评审打回：理由和改法都带上
     assert (prompts.revise_feedback({"expr": "$ret"}, {"suggestion": "换成 Mean($ret, 96)", "comment": "太毛"})
             == "上一版表达式：$ret\n评审意见：太毛\n评审建议的改法：换成 Mean($ret, 96)")
+
+
+def scored(expr: str, family: str, ic: dict, leg: dict, g9: bool) -> dict:
+    """store.evaluated_candidates 的一行：落过库，档的键是字符串"""
+    return {"expr": expr, "family": family, "gates": [{"id": "G9", "passed": g9}],
+            "eval": {"primary": 96, "horizons": {"96": {"ic": ic, "leg": leg}}}}
+
+
+def test_outcomes_tally_by_data_class_and_family():
+    rows = [
+        # 有信号（t = 0.8 × √20 ≈ 3.6）、扣成本还赚、过 G9；用到溢价和成交量，两类各算一次
+        scored("$premium + Mean($volume, 4)", "basis", {"mean": 0.03, "icir": 0.8, "months": 20},
+               {"netReturn": 0.2, "turnover": 0.25, "breakEvenBps": 15.0}, True),
+        # IC 够了但 t 不够（0.5 × √16 = 2）；净收益、盈亏平衡落库成了 None
+        scored("$premium", "basis", {"mean": -0.02, "icir": -0.5, "months": 16},
+               {"netReturn": None, "turnover": 0.75, "breakEvenBps": None}, False),
+        # IC 不够；多空腿没有样本外期数；老候选的中文 family 算 other
+        scored("Sum($ret, 96)", "动量", {"mean": 0.005, "icir": 2.0, "months": 20}, {"periods": 0}, False),
+    ]
+    table = prompts.outcomes(rows)
+    assert table["byClass"] == {
+        "溢价": {"tried": 2, "signal": 1, "net": 1, "g9": 1, "turnover": 0.5, "breakEven": 15.0},
+        "成交量": {"tried": 1, "signal": 1, "net": 1, "g9": 1, "turnover": 0.25, "breakEven": 15.0},
+        "纯价格": {"tried": 1, "signal": 0, "net": 0, "g9": 0, "turnover": None, "breakEven": None},
+    }
+    assert table["byFamily"] == {
+        "basis": {"tried": 2, "signal": 1, "net": 1, "g9": 1, "turnover": 0.5, "breakEven": 15.0},
+        "other": {"tried": 1, "signal": 0, "net": 0, "g9": 0, "turnover": None, "breakEven": None},
+    }
+    text = prompts.propose_message(1, [], [], [], table, "", "zh")
+    assert ("已试过的候选按数据类的成败（搜索段数字；有信号 = |IC| ≥ 0.01 且 t ≥ 3）：\n"
+            "- 溢价：试过 2、有信号 1、扣成本还赚 1、过 G9 1、换手中位 0.50、盈亏平衡中位 15.0 bps\n"
+            "- 成交量：试过 1、有信号 1、扣成本还赚 1、过 G9 1、换手中位 0.25、盈亏平衡中位 15.0 bps\n"
+            "- 纯价格：试过 1、有信号 0、扣成本还赚 0、过 G9 0、换手中位 —、盈亏平衡中位 —\n"
+            "按机制 ID：\n"
+            "- basis：试过 2、有信号 1、扣成本还赚 1、过 G9 1、换手中位 0.50、盈亏平衡中位 15.0 bps\n"
+            "- other：试过 1、有信号 0、扣成本还赚 0、过 G9 0、换手中位 —、盈亏平衡中位 —\n") in text
+    # 放在库和经验之间
+    assert text.index("库里已有的因子") < text.index("按数据类") < text.index("之前几轮复盘写下的经验")
 
 
 def evaluated(gates: list[dict]) -> dict:
@@ -111,17 +154,29 @@ def test_gate_feedback_lists_failed_gates_and_the_numbers():
     ev["redundancy"] = {"maxAbs": None, "with": None, "ready": False}
     ev["horizons"]["48"]["leg"]["breakEvenBps"] = None
     assert "参照网格还没算好" in prompts.key_numbers(ev) and "盈亏平衡单边成本 NaN bps" in prompts.key_numbers(ev)
+    # 现在的结果报最像的前 3 个，各带表达式
+    ev["redundancy"] = {"maxAbs": 0.98, "with": "lib:twin", "ready": True, "top": [
+        {"name": "lib:twin", "abs": 0.98, "expr": "Mean($ret, 8)"},
+        {"name": "obs:carry", "abs": 0.4, "expr": "$premium"},
+        {"name": "MA48", "abs": 0.21, "expr": "Mean($close, 48) / $close"}]}
+    assert ("冗余前 3（截面 |ρ|）：lib:twin 0.98（Mean($ret, 8)）、obs:carry 0.40（$premium）、"
+            "MA48 0.21（Mean($close, 48) / $close）") in prompts.key_numbers(ev)
     # 现在的结果记着主档 24h，数字取那一档
     ev["horizons"]["96"] = copy.deepcopy(ev["horizons"].pop("48"))
     ev["horizons"]["96"]["ic"]["mean"] = 0.0456
     assert "IC 均值 0.0456" in prompts.key_numbers({**ev, "primary": 96})
+    # 挖掘时算过预检的，末尾带上预检的数
+    assert "秩自相关" not in text
+    ev["precheck"] = {"rankAutocorr": 0.9123, "coverage": 0.98, "points": 52, "fundingHigh": 1.234, "fundingLow": -0.56}
+    assert prompts.key_numbers({**ev, "primary": 96}).endswith(
+        "、24h 秩自相关 0.91、覆盖 0.98、因子值高的一头资金费 1.2 bps / 低的一头 -0.6 bps")
 
 
 def test_reflect_message_shows_outcomes_numbers_and_old_lessons():
     good = {**evaluated([]), "seq": 1, "name": "carry", "hypothesis": "费率高的币之后弱", "status": "passed",
             "reason": None, "evaluations": 2}
     bad = {"seq": 2, "name": "bad", "hypothesis": "写不出来", "status": "failed", "reason": "连试三次都没写出合法表达式"}
-    gated = {**good, "seq": 3, "name": "gated", "family": "量能", "status": "rejected_gates", "reason": "G5 xx；G9 yy",
+    gated = {**good, "seq": 3, "name": "gated", "family": "liquidity", "status": "rejected_gates", "reason": "G5 xx；G9 yy",
              "gates": [{"id": "G5", "name": "排列检验", "passed": False}, {"id": "G6", "name": "冗余", "passed": True},
                        {"id": "G9", "name": "增量", "passed": False}]}
     text = prompts.reflect_message([good, bad, gated], [{"kind": "avoid", "text": "别用强平列"}], "en")
@@ -129,7 +184,7 @@ def test_reflect_message_shows_outcomes_numbers_and_old_lessons():
     assert "1. [carry] 假设：费率高的币之后弱\n   结局：过门、过评审、过同批 BH，进观察区等人入库；评估了 2 版\n   主档：IC " in text
     assert "盈亏平衡 3.2 bps" in text and "Mean($ret, 4)" not in text and "$" not in text.split("已有的经验")[0]
     assert "2. [bad] 假设：写不出来\n   结局：失败（连试三次都没写出合法表达式）；评估了 0 版" in text
-    assert "3. [gated]（量能）" in text and "硬门拒（没过的门：G5 排列检验、G9 增量）" in text and "G5 xx" not in text
+    assert "3. [gated]（liquidity）" in text and "硬门拒（没过的门：G5 排列检验、G9 增量）" in text and "G5 xx" not in text
     assert "- [avoid] 别用强平列" in text and "英文" in text
     assert "英文不超过 50 词" in prompts.system_reflect("en") and "holdout 之前" in prompts.system_reflect("zh")
     # 单条候选的结局出题时另有列表，经验只写换个假设也用得上的规律
@@ -163,9 +218,16 @@ def test_eval_brief_rounds_and_maps_nan():
     # 之前落库的老结果没有顶减底的 t 和形状
     assert brief["horizons"]["12h"]["spreadT"] is None and brief["horizons"]["12h"]["shape"] is None
     assert brief["horizons"]["12h"]["breakEvenBps"] == 7.1235 and brief["horizons"]["12h"]["turnover"] is None
-    assert brief["redundancy"] == {"maxAbs": 0.2, "with": "MA48", "ready": True}
+    # 之前落库的结果没有最像的前几个
+    assert brief["redundancy"] == {"maxAbs": 0.2, "with": "MA48", "ready": True, "top": []}
+    top = [{"name": "MA48", "abs": 0.212345, "expr": "Mean($close, 48) / $close"}]
+    assert prompts.eval_brief({**ev, "redundancy": {**ev["redundancy"], "top": top}}, [])["redundancy"]["top"] == [
+        {"name": "MA48", "abs": 0.2123, "expr": "Mean($close, 48) / $close"}]
     assert brief["gates"] == [{"id": "G0", "passed": True, "note": "ok"}]
-    assert "holdout" not in brief and "timeseries" not in brief
+    assert "holdout" not in brief and "timeseries" not in brief and "precheck" not in brief
+    pre = {"rankAutocorr": 0.912345, "coverage": 1.0, "points": 52, "fundingHigh": 1.23456, "fundingLow": None}
+    assert prompts.eval_brief({**ev, "precheck": pre}, gates)["precheck"] == {
+        "rankAutocorr": 0.9123, "coverage": 1.0, "points": 52, "fundingHigh": 1.2346, "fundingLow": None}
     review = prompts.review_message({"name": "x", "hypothesis": "h", "expr": "$ret", "direction": -1}, brief)
     assert "MA48" in review and "声明的方向：因子值越大，未来 24 小时相对越弱" in review
     # 落过库的 holdout、时序报告键是字符串，NaN 已经成了 None

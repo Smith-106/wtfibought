@@ -2,7 +2,7 @@ import httpx
 import pytest
 from conftest import POOL_SYMBOLS
 from fakes import FakeFapi, FakeSim
-from test_api import ADMIN, client, data, prepared, wait_until  # noqa: F401  fixtures
+from test_api import ADMIN, bare, client, data, prepared, wait_until  # noqa: F401  fixtures
 
 from wiib_alpha import main as m
 from wiib_alpha.data import binance as b

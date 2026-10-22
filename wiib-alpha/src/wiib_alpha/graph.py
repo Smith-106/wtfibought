@@ -29,6 +29,7 @@ from .eval.combo import Combo
 from .eval.evaluate import cross_corr, evaluate
 from .eval.gates import apply_fdr, fmt, judge, origin_gate, passed
 from .eval.params import EvalParams, Thresholds
+from .eval.precheck import precheck
 from .eval.recheck import recheck
 from .reference import Grid
 from .store import Store, clean
@@ -52,6 +53,8 @@ class Context:
     pool: Pool
     # 全量骨架上的 Std($ret, 672)，多空腿按它分仓
     vol: np.ndarray
+    # 全量骨架上的 $funding_rate，预检看因子值两头的当期资金费
+    funding: np.ndarray
     # 产品币搜索段面板，只给时序报告
     products: dict[str, pd.DataFrame]
     # 参照网格没算好是 None，G6 不过
@@ -60,6 +63,8 @@ class Context:
     base: Base
     # 观察区候选在搜索段上的值，和库里因子一起进 G6 的对比集
     observing: Combo
+    # 库里因子、观察区候选的表达式：lib:名字、obs:名字 → 表达式，冗余报最像的几个时带上
+    peer_exprs: dict[str, str]
     known: set[str]
     library: list[dict[str, Any]]
     facts: dict[str, Any]
@@ -98,17 +103,20 @@ def build_graph(ctx: Context):
         await emit(ctx.store, state["run_id"], "status", {"stage": "proposing"})
         tried = await ctx.store.tried()
         lessons = await ctx.store.lessons()
+        outcomes = prompts.outcomes(await ctx.store.evaluated_candidates())
         system = prompts.system_gen(ctx.facts, state["lang"])
-        message = prompts.propose_message(state["k"], ctx.library, tried, lessons, state.get("note", ""), state["lang"])
+        message = prompts.propose_message(state["k"], ctx.library, tried, lessons, outcomes, state.get("note", ""),
+                                          state["lang"])
         items = await ask_json(ctx.gen, system, message, prompts.parse_list)
         hypotheses = []
         for item in items or []:
             if isinstance(item, dict) and item.get("name") and item.get("hypothesis"):
                 seq = len(hypotheses) + 1
+                family = str(item.get("family") or "").strip()
                 hypotheses.append({
                     "id": f"{state['run_id']}-{seq}", "run_id": state["run_id"], "seq": seq,
                     "name": str(item["name"]).strip(), "hypothesis": str(item["hypothesis"]).strip(),
-                    "family": str(item.get("family") or "").strip(), "status": "proposed", "attempts": 0,
+                    "family": family if family in prompts.FAMILIES else "other", "status": "proposed", "attempts": 0,
                 })
             if len(hypotheses) >= state["k"]:
                 break
@@ -190,11 +198,15 @@ def build_graph(ctx: Context):
         return {"candidates": [cand]}
 
     def _evaluate(cand_id: str, expr: Expr) -> dict[str, Any]:
-        """全池求值一次，值留在 ctx.full 给同批筛查和 holdout 用"""
+        """全池求值一次，值留在 ctx.full 给同批筛查和 holdout 用；先算预检，再正式评估，预检的数记进 eval"""
         values = ctx.pool.values(expr)
         ctx.full[cand_id] = values.f
-        return evaluate(expr, ctx.pool, ctx.vol, ctx.params, ctx.reference_grid, ctx.base, ctx.products,
-                        observing=ctx.observing, values=values)
+        pick = ctx.pool.in_search
+        pre = precheck(ctx.pool.search, values.f[pick], ctx.funding[pick], ctx.params)
+        ev = evaluate(expr, ctx.pool, ctx.vol, ctx.params, ctx.reference_grid, ctx.base, ctx.products,
+                      observing=ctx.observing, values=values, peer_exprs=ctx.peer_exprs)
+        ev["precheck"] = pre
+        return ev
 
     async def _implement(cand: dict[str, Any], system: str, feedback: str | None, written: dict[str, int],
                          locked: int | None) -> tuple[Expr | None, str | None]:
