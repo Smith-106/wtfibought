@@ -134,7 +134,7 @@ class ChatRegenerateTest {
                 .isInstanceOf(BizException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.CHAT_REGENERATE_UNAVAILABLE.getCode());
         // 名额没还的话这个用户此后永久占线，比不给重新生成严重得多
-        assertThat(h.gate().tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(h.gate().tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
         // 拒绝就什么都别动
         verify(h.contextStore(), never()).save(any(), anyLong(), any());
         verify(h.history(), never()).deleteMessage(anyLong());
@@ -287,6 +287,6 @@ class ChatRegenerateTest {
                 .isInstanceOf(BizException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.CHAT_REGENERATE_UNAVAILABLE.getCode());
         // 归属校验在拿名额之前，闸门根本没被碰过
-        assertThat(h.gate().tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(h.gate().tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 }

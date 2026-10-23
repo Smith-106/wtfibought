@@ -403,6 +403,7 @@
     "emptyTitle": "有什么可以帮你？",
     "emptyHint": "行情 · 新闻 · 你的交易员 · 深度研判，都归 {{hub}} 调度",
     "background": "{{hub}} 在后台继续研判，完成后自动展示答案",
+    "promptGenBusy": "提示词生成正在进行中，结束后自动继续",
     "thinking": "{{hub}} 分析问题中",
     "stopTitle": "停止这一轮",
     "stop": "停止",

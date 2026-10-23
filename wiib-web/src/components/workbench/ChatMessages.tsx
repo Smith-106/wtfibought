@@ -397,7 +397,7 @@ export function AssistantAnswer({ item, canRegenerate, onRegenerate }: {
  * <p>
  * 摘要：live（本轮还在跑、答案没开始）时"正在研判 · N 步"扫光 + 小星慢转 + 从本轮开跑起算的秒表
  * （和"分析问题中"那行的表接得上）；有后台任务在跑就报几个；都完了报搜了几个站，不显示时长——答案底部的读数里有耗时。
- * label 给了就用它当摘要（提示词生成那边只读数据，不叫"研判"）。
+ * label：调用方自己定的摘要文案，不给就用"研判"那套。
  */
 export function ProcessRail({ steps, live, since, open, onToggle, label }: {
   steps: RailStep[]; live: boolean; since: number | null; open: boolean; onToggle: () => void;

@@ -11,6 +11,8 @@ export const CHAT_ERROR = {
   REGENERATE_UNAVAILABLE: 2206,
   /** 发起唤醒轮时会话已不欠（别的标签页接走了，或后端重启丢了标记） */
   NOTHING_PENDING: 2208,
+  /** 这个用户的那一轮被提示词生成占着：处理同 ALREADY_RUNNING，只是等待那行换个说法 */
+  PROMPT_GEN_RUNNING: 2211,
 } as const;
 
 /**
@@ -73,6 +75,8 @@ export interface ChatState {
   loading: boolean;
   /** true=刷新后发现会话还在后台跑（无 token 流，轮询等结果） */
   background: boolean;
+  /** true=后台等的那一轮是提示词生成（同一用户同时只跑一轮），等待那行据此换说法 */
+  promptGenBusy: boolean;
   /** true=后端说没配 LLM 或配置不可用，面板显示"去配置"引导条而不是干显示一行红字 */
   needsConfig: boolean;
   sessionId: string | null;
@@ -91,6 +95,7 @@ let state: ChatState = {
   items: [],
   loading: false,
   background: false,
+  promptGenBusy: false,
   needsConfig: false,
   sessionId: sessionStorage.getItem(SESSION_KEY),
   runId: 0,
@@ -520,7 +525,7 @@ function startPolling() {
           .map(q => ({ kind: 'user' as const, content: q.text, at: Date.now(), queued: true, queuedId: q.id }));
         set({
           ...(msgs && status ? { items: [...toItems(msgs), ...runningChildren(status.children), ...pendingForms(), ...queued] } : {}),
-          loading: false, background: false,
+          loading: false, background: false, promptGenBusy: false,
         });
         settle();
       } catch { /* 网络抖动下轮再试 */ } finally {
@@ -585,7 +590,7 @@ async function send(message: string, opts?: { noBubble?: boolean; requeueAs?: Qu
   if (!opts?.noBubble) {
     updateItems(prev => [...prev, { kind: 'user', content: msg, at: Date.now(), queuedId }]);
   }
-  set({ loading: true, background: false, runId: state.runId + 1, turnStartedAt: Date.now() });
+  set({ loading: true, background: false, promptGenBusy: false, runId: state.runId + 1, turnStartedAt: Date.now() });
   const abort = new AbortController();
   abortCtrl = abort;
   liveStreams.add(abort);
@@ -602,9 +607,10 @@ async function send(message: string, opts?: { noBubble?: boolean; requeueAs?: Qu
     if (bubbleId != null) unopenedBubbles.delete(bubbleId);
     if (!abort.signal.aborted) {
       const code = err instanceof ApiError ? err.code : 0;
-      if (code === CHAT_ERROR.ALREADY_RUNNING) {
+      if (code === CHAT_ERROR.ALREADY_RUNNING || code === CHAT_ERROR.PROMPT_GEN_RUNNING) {
         // 后端占线：本条转入排队。排队续发与无气泡的自动指令都塞回队头保序，新消息入队尾；
         // 气泡标成排队中（排队续发那只在 drainQueue 里摘过标记，这里挂回去）
+        set({ promptGenBusy: code === CHAT_ERROR.PROMPT_GEN_RUNNING });
         if (opts?.requeueAs) {
           sendQueue.unshift(opts.requeueAs);
         } else if (opts?.noBubble) {
@@ -687,7 +693,7 @@ function settle() {
 async function runWake(sid: string) {
   if (abortCtrl || state.sessionId !== sid) return;
   stopPolling();
-  set({ loading: true, background: false, runId: state.runId + 1, turnStartedAt: Date.now() });
+  set({ loading: true, background: false, promptGenBusy: false, runId: state.runId + 1, turnStartedAt: Date.now() });
   const abort = new AbortController();
   abortCtrl = abort;
   liveStreams.add(abort);
@@ -701,8 +707,9 @@ async function runWake(sid: string) {
   } catch (err) {
     if (!abort.signal.aborted) {
       const code = err instanceof ApiError ? err.code : 0;
-      if (code === CHAT_ERROR.ALREADY_RUNNING) {
+      if (code === CHAT_ERROR.ALREADY_RUNNING || code === CHAT_ERROR.PROMPT_GEN_RUNNING) {
         busy = true;
+        set({ promptGenBusy: code === CHAT_ERROR.PROMPT_GEN_RUNNING });
       } else {
         wakePending = false;
         if (code !== CHAT_ERROR.NOTHING_PENDING) {
@@ -753,7 +760,7 @@ async function regenerate() {
   const cutAt = regenCutIndex(state.items);
   if (cutAt < 0) return;
   stopPolling();
-  set({ loading: true, runId: state.runId + 1, turnStartedAt: Date.now() });
+  set({ loading: true, promptGenBusy: false, runId: state.runId + 1, turnStartedAt: Date.now() });
   const abort = new AbortController();
   abortCtrl = abort;
   liveStreams.add(abort);
@@ -908,7 +915,7 @@ async function openSession(sid: string) {
   // 表单卡是 trader 动作、不属于哪个会话（跟排队消息不同），换会话也带过去，别抹掉填一半的
   const forms = pendingForms();
   setSession(sid);
-  set({ items: [...toItems(msgs), ...runningChildren(status.children), ...forms], loading: status.running, background: status.running });
+  set({ items: [...toItems(msgs), ...runningChildren(status.children), ...forms], loading: status.running, background: status.running, promptGenBusy: false });
   if (status.running) startPolling();
   else settle();
 }
@@ -936,7 +943,7 @@ function newSession() {
   sendQueue = [];
   wakePending = false;
   setSession(null);
-  set({ items: [], loading: false, background: false, turnStartedAt: null });
+  set({ items: [], loading: false, background: false, promptGenBusy: false, turnStartedAt: null });
 }
 
 export const chatStore = {

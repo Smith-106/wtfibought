@@ -40,6 +40,7 @@
   "composerPh": "想改哪里直接说…",
   "doneHint": "写完了，复制正文粘到我的 Trader 保存；还想改直接说",
   "send": "发送",
+  "lastFailed": "上一轮没跑完：{{message}}",
   "wrote": "写出了 v{{no}}",
   "wrotePruned": "写出了 v{{no}}（只留最近 3 版，这版已被挤掉）",
   "versions": "版本",

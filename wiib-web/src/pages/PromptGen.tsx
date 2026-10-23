@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowUp, BadgeCheck, ChevronLeft, CircleHelp, Copy, FileText, Loader2, MessagesSquare, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
+import { ArrowUp, BadgeCheck, ChevronLeft, CircleHelp, Copy, FileText, Loader2, MessagesSquare, Play, RotateCcw, SkipForward, Square, Undo2 } from 'lucide-react';
 import { llmEndpointApi, promptGenApi, userApi } from '../api';
 import { LlmEndpointSelect } from '../components/LlmEndpointSelect';
 import { Markdown } from '../components/Markdown';
 import { FluidOrb } from '../components/ui/fluid-orb';
 import { useToast } from '../components/ui/use-toast';
+import { MAX_MESSAGE_CHARS, SEND_BTN } from '../components/workbench/ChatComposer';
 import { ProcessRail, ThinkingRow } from '../components/workbench/ChatMessages';
 import { PULSE_DOT, type RailStep } from '../components/workbench/chatView';
 import { useIsDark } from '../hooks/useIsDark';
@@ -16,8 +17,6 @@ import type { LlmEndpointView, PromptGenEvent, PromptGenItem, PromptGenQuestion,
 
 /** 指令正文上限，与后端 TraderService.MAX_CUSTOM_PROMPT 同数 */
 const MAX_CHARS = 4000;
-/** 单条消息上限，与后端 ChatWorkbenchController.MAX_MESSAGE_CHARS 同数 */
-const MAX_MESSAGE_CHARS = 10_000;
 /** 上一轮在后台跑时多久看一眼，与工作台同值 */
 const POLL_MS = 3000;
 /** 输入框自动长高的上限 */
@@ -33,9 +32,9 @@ const CURSOR = 'inline-block w-1.5 h-3.5 bg-primary/80 ml-0.5 align-middle anima
 const SECTION_LINE = /^\s*(【[^】]+】|\[[A-Za-z][^\]]*\])\s*$/;
 
 type Stage = 'thinking' | 'reading' | 'writing';
-type ToolCall = { name: string; args?: Record<string, unknown> };
-/** 这一轮还没落库的现场：agent 一段段说的话、一批批读的数据 */
-type LiveEntry = { kind: 'text'; text: string } | { kind: 'tools'; calls: ToolCall[]; active: boolean };
+type ToolCall = { name: string; args?: Record<string, unknown>; active?: boolean };
+/** 这一轮还没落库的现场：agent 一段段说的话、读的数据（中间没说话的几批并成一条，和历史里一样）、写出的版本 */
+type LiveEntry = { kind: 'text'; text: string } | { kind: 'tools'; calls: ToolCall[] } | { kind: 'version'; no: number };
 /** 对话里的一块：相邻的读数据并成一条过程轨 */
 type Block = { kind: 'item'; item: PromptGenItem; index: number } | { kind: 'rail'; key: string; calls: ToolCall[] };
 /** 对话区的一行；side=agent 的连着几行只挂一次署名，mark（版本分隔线）不打断 */
@@ -57,11 +56,28 @@ function groupItems(items: PromptGenItem[]): Block[] {
 }
 
 /** 拼成工作台过程轨认的条目；rid 只当 key 用 */
-function railSteps(calls: ToolCall[], active: boolean): RailStep[] {
+function railSteps(calls: ToolCall[]): RailStep[] {
   return calls.map((c, i) => ({
-    item: { kind: 'tool' as const, rid: i, id: String(i), name: c.name, args: c.args, active },
+    item: { kind: 'tool' as const, rid: i, id: String(i), name: c.name, args: c.args, active: !!c.active },
     index: i,
   }));
+}
+
+/** 对话末尾用户说的那句是不是 said */
+function landed(view: PromptGenView, said: string): boolean {
+  for (let i = view.items.length - 1; i >= 0; i--) {
+    const item = view.items[i];
+    if (item.type === 'user') return item.text === said;
+    if (item.type === 'question' && item.answer != null) return item.answer === said;
+  }
+  return false;
+}
+
+/** 亮着的读数据全标成读完 */
+function settleCalls(live: LiveEntry[]): LiveEntry[] {
+  return live.map(x => (x.kind === 'tools' && x.calls.some(c => c.active)
+    ? { ...x, calls: x.calls.map(c => ({ ...c, active: false })) }
+    : x));
 }
 
 /**
@@ -85,6 +101,8 @@ export function PromptGen() {
   const [stage, setStage] = useState<Stage | null>(null);
   /** 上一轮在后台跑（刷新进来、或流断了）：没有流可收，轮询等它落库 */
   const [background, setBackground] = useState(false);
+  /** 点了停止、这一轮还没收尾 */
+  const [stopping, setStopping] = useState(false);
   const [live, setLive] = useState<LiveEntry[]>([]);
   /** agent 正在一个字一个字地说：这时候不挂「在想」那行 */
   const [speaking, setSpeaking] = useState(false);
@@ -99,7 +117,7 @@ export function PromptGen() {
   const [viewing, setViewing] = useState<number | null>(null);
   /** 题卡上选中的那项 */
   const [picked, setPicked] = useState('');
-  /** 过程轨的开合；没点过的：历史轨收着，这一轮的展开 */
+  /** 过程轨的开合；没点过的都展开，和工作台一样 */
   const [railOpen, setRailOpen] = useState<Record<string, boolean>>({});
   /** 手机上一次只看一栏 */
   const [tab, setTab] = useState<'chat' | 'doc'>('chat');
@@ -150,6 +168,7 @@ export function PromptGen() {
         .then(v => {
           if (v.running) return;
           setBackground(false);
+          setStopping(false);
           apply(v);
         })
         .catch(() => { /* 网络抖动下回再看 */ });
@@ -178,7 +197,7 @@ export function PromptGen() {
         setSpeaking(false);
         newSegmentRef.current = true;
         // 阶段切了 = 上一批数据读完了
-        setLive(s => s.map(x => (x.kind === 'tools' && x.active ? { ...x, active: false } : x)));
+        setLive(settleCalls);
         break;
       case 'text': {
         const fresh = newSegmentRef.current;
@@ -195,10 +214,14 @@ export function PromptGen() {
       case 'tool_calls':
         setSpeaking(false);
         newSegmentRef.current = true;
-        setLive(s => [
-          ...s.map(x => (x.kind === 'tools' && x.active ? { ...x, active: false } : x)),
-          { kind: 'tools', calls: e.calls, active: true },
-        ]);
+        setLive(s => {
+          const settled = settleCalls(s);
+          const fresh = e.calls.map(c => ({ ...c, active: true }));
+          const last = settled[settled.length - 1];
+          return last?.kind === 'tools'
+            ? [...settled.slice(0, -1), { kind: 'tools', calls: [...last.calls, ...fresh] }]
+            : [...settled, { kind: 'tools', calls: fresh }];
+        });
         break;
       case 'draft':
         setDraft(d => (d ?? '') + e.text);
@@ -212,15 +235,14 @@ export function PromptGen() {
         });
         setViewing(null);
         setDraft(null);
-        break;
-      case 'error':
-        toast(e.message, 'error');
+        // 对话里当场插一条「写出了 vN」
+        setLive(s => [...settleCalls(s), { kind: 'version', no: e.no }]);
         break;
       default:
-        // done：轮结束统一拉 session
+        // done / error：轮结束统一拉 session（失败原因 session 里带着）
         break;
     }
-  }, [toast]);
+  }, []);
 
   /**
    * @param restore 后端没接下这一轮（一帧都没收到，比如名额被占）时把用户的输入放回去：这句没落库，
@@ -239,9 +261,11 @@ export function PromptGen() {
     setStartedAt(Date.now());
     let accepted = false;
     let failure: Error | null = null;
+    let streamError: string | null = null;
     try {
       await call(e => {
         accepted = true;
+        if (e.type === 'error') streamError = e.message;
         onEvent(e);
       }, ctrl.signal);
     } catch (err) {
@@ -253,7 +277,11 @@ export function PromptGen() {
     // 流断了但这一轮还在后台跑：不算出错，接着等它
     if (v?.running) setBackground(true);
     else if (failure) toast(failure.message, 'error');
-    if (!accepted) restore?.();
+    // 失败原因对话末尾会显示；session 里没有的才弹出来
+    else if (streamError && !v?.failure) toast(streamError, 'error');
+    // 这句没落进对话（后端开跑先落库这句）就放回输入框
+    if (!accepted && said != null && (!v || !landed(v, said))) restore?.();
+    if (!v?.running) setStopping(false);
     setStage(null);
     setLive([]);
     setSpeaking(false);
@@ -294,8 +322,18 @@ export function PromptGen() {
       .catch(err => toast((err as Error).message, 'error'));
   };
 
-  const toggleRail = (key: string, fallback: boolean) =>
-    setRailOpen(prev => ({ ...prev, [key]: !(prev[key] ?? fallback) }));
+  /** 叫停在跑的这一轮；后端跑到下一个检查点收尾，收尾照常走 done 或轮询 */
+  const stop = () => {
+    setStopping(true);
+    promptGenApi.cancel()
+      .then(ok => { if (!ok) setStopping(false); })
+      .catch(err => {
+        setStopping(false);
+        toast((err as Error).message, 'error');
+      });
+  };
+
+  const toggleRail = (key: string) => setRailOpen(prev => ({ ...prev, [key]: !(prev[key] ?? true) }));
   const railLabel = (count: number) => ({ live: t('railLive', { count }), done: t('railDone', { count }) });
 
   /** 旧的在左 */
@@ -326,8 +364,8 @@ export function PromptGen() {
       const { key, calls } = block;
       rows.push({
         key, side: 'agent', node: (
-          <ProcessRail steps={railSteps(calls, false)} live={false} since={null}
-                       open={railOpen[key] ?? false} onToggle={() => toggleRail(key, false)} label={railLabel(calls.length)} />
+          <ProcessRail steps={railSteps(calls)} live={false} since={null}
+                       open={railOpen[key] ?? true} onToggle={() => toggleRail(key)} label={railLabel(calls.length)} />
         ),
       });
       continue;
@@ -374,22 +412,35 @@ export function PromptGen() {
       });
       return;
     }
+    if (entry.kind === 'version') {
+      rows.push({
+        key: `lv${i}`, side: 'mark',
+        node: <VersionMark label={t('wrote', { no: entry.no })} onOpen={() => openVersion(entry.no)} />,
+      });
+      return;
+    }
     const key = `live-${startedAt}-${i}`;
     rows.push({
       key, side: 'agent', node: (
-        <ProcessRail steps={railSteps(entry.calls, entry.active)} live={entry.active} since={startedAt}
-                     open={railOpen[key] ?? true} onToggle={() => toggleRail(key, true)} label={railLabel(entry.calls.length)} />
+        <ProcessRail steps={railSteps(entry.calls)} live={entry.calls.some(c => c.active)} since={startedAt}
+                     open={railOpen[key] ?? true} onToggle={() => toggleRail(key)} label={railLabel(entry.calls.length)} />
       ),
     });
   });
   const lastLive = live[live.length - 1];
   // 过程轨在亮、或者字正在出，都不必再说「在想」
-  if (busy && !speaking && !(lastLive?.kind === 'tools' && lastLive.active)) {
+  if (busy && !speaking && !(lastLive?.kind === 'tools' && lastLive.calls.some(c => c.active))) {
     rows.push({
       key: 'thinking', side: 'agent', node: (
         <ThinkingRow text={background ? t('background') : t(`stage.${stage ?? 'thinking'}`)}
                      since={background ? null : startedAt} />
       ),
+    });
+  }
+  if (active && !busy && view?.failure) {
+    rows.push({
+      key: 'failure', side: 'agent',
+      node: <p className="text-[12.5px] leading-relaxed text-loss">{t('lastFailed', { message: view.failure })}</p>,
     });
   }
   if (question) {
@@ -507,7 +558,7 @@ export function PromptGen() {
             )}
           </div>
           {active && (
-            <Composer canSend={!busy} onSend={say}
+            <Composer busy={busy} stopping={stopping} onSend={say} onStop={stop}
                       placeholder={question ? t('freePh') : view?.done ? t('doneHint') : t('composerPh')} />
           )}
         </section>
@@ -715,12 +766,14 @@ function OptionRow({ text, on, onPick, badge, reason }: {
   );
 }
 
-/** 底部输入框：多行自适应，Enter 发送、Shift+Enter 换行；跑着时可以先打字，等这一轮完了再发 */
-function Composer({ canSend, placeholder, onSend }: {
-  canSend: boolean;
+/** 底部输入框：多行自适应，Enter 发送、Shift+Enter 换行；跑着时可以先打字，发送键换成停止键 */
+function Composer({ busy, stopping, placeholder, onSend, onStop }: {
+  busy: boolean;
+  stopping: boolean;
   placeholder: string;
   /** restore：后端没接下时把这句放回输入框 */
   onSend: (text: string, restore: () => void) => void;
+  onStop: () => void;
 }) {
   const { t } = useTranslation(['promptGen', 'ai']);
   const [text, setText] = useState('');
@@ -736,7 +789,7 @@ function Composer({ canSend, placeholder, onSend }: {
 
   const send = () => {
     const msg = text.trim();
-    if (!msg || !canSend) return;
+    if (!msg || busy) return;
     setText('');
     onSend(msg, () => setText(msg));
   };
@@ -761,11 +814,19 @@ function Composer({ canSend, placeholder, onSend }: {
         />
         <div className="flex items-center gap-2 px-1.5 pb-1.5 pt-1">
           <span className="pl-1.5 text-[10px] text-muted-foreground/60 truncate">{t('ai:composer.hint')}</span>
-          <button type="button" onClick={send} disabled={!canSend || !text.trim()}
-                  title={t('send')} aria-label={t('send')}
-                  className="ml-auto w-8 h-8 bg-foreground text-background flex items-center justify-center shrink-0 active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100">
-            <ArrowUp className="w-4 h-4" />
-          </button>
+          {busy ? (
+            <button type="button" onClick={onStop} disabled={stopping}
+                    title={stopping ? t('ai:chat.stopping') : t('ai:chat.stopTitle')}
+                    aria-label={stopping ? t('ai:chat.stopping') : t('ai:chat.stopTitle')}
+                    className={SEND_BTN}>
+              {stopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3 h-3 fill-current" />}
+            </button>
+          ) : (
+            <button type="button" onClick={send} disabled={!text.trim()}
+                    title={t('send')} aria-label={t('send')} className={SEND_BTN}>
+              <ArrowUp className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

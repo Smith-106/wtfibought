@@ -785,5 +785,7 @@ export const promptGenApi = {
     postSse<PromptGenEvent>('/api/ai/prompt-gen/reply', body, onEvent, signal),
   /** 用第 no 版当时的对话替换当前对话；版本列表不动 */
   rollback: (no: number) => api.post<unknown, PromptGenView>('/ai/prompt-gen/rollback', { no }),
+  /** 叫停在跑的这一轮（包括页面断开后在后台跑的）；false=没在跑 */
+  cancel: () => api.post<unknown, boolean>('/ai/prompt-gen/cancel'),
 };
 

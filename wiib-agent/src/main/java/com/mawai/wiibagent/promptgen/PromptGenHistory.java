@@ -81,7 +81,10 @@ final class PromptGenHistory {
                         continue;
                     }
                     if (!ASK_USER.equals(call.name()) && !WRITE_DRAFT.equals(call.name())) {
-                        reads.add(new Tool(call.name(), args(call)));
+                        // 回执不是 JSON 就是没执行（保险丝的占位回执）
+                        if (isJson(data)) {
+                            reads.add(new Tool(call.name(), args(call)));
+                        }
                         continue;
                     }
                     JsonNode result = json(data);
@@ -169,10 +172,14 @@ final class PromptGenHistory {
         return out.toString().strip();
     }
 
-    /** 落库前去掉末尾没配上回执的工具调用：留着它，续聊时上游直接 400 */
+    /** 落库前去掉末尾没配上回执的工具调用（留着它，续聊时上游直接 400）；那条里说过的话留下 */
     static List<Message> trimDangling(List<Message> messages) {
         if (!messages.isEmpty() && messages.getLast() instanceof AssistantMessage reply && reply.hasToolCalls()) {
-            return new ArrayList<>(messages.subList(0, messages.size() - 1));
+            List<Message> trimmed = new ArrayList<>(messages.subList(0, messages.size() - 1));
+            if (reply.getText() != null && !reply.getText().isBlank()) {
+                trimmed.add(AssistantMessage.builder().content(reply.getText()).build());
+            }
+            return trimmed;
         }
         return messages;
     }
@@ -181,7 +188,7 @@ final class PromptGenHistory {
         return raw == null ? "" : raw.strip().toLowerCase(Locale.ROOT);
     }
 
-    /** 工具调用的参数；不是 JSON 当空对象 */
+    /** 工具调用的参数；没给或不是 JSON 当空对象 */
     static JsonNode args(AssistantMessage.ToolCall call) {
         return json(call.arguments());
     }
@@ -207,14 +214,27 @@ final class PromptGenHistory {
 
     /**
      * 工具的 String 返回值被框架再编码成 JSON 字符串，这里剥一层。只读第一个值：保险丝会在最后一条回执后面拼一句预算提示。
-     * 不是 JSON（保险丝的占位回执）当空对象
+     * 没有（有的网关不给无参工具的参数）或不是 JSON（保险丝的占位回执）当空对象
      */
     private static JsonNode json(String raw) {
+        if (raw == null) {
+            return MAPPER.createObjectNode();
+        }
         try {
             JsonNode node = FIRST_VALUE.readTree(raw);
             return node.isString() ? FIRST_VALUE.readTree(node.asString()) : node;
         } catch (JacksonException e) {
             return MAPPER.createObjectNode();
+        }
+    }
+
+    /** 执行过的工具回执都被框架编码成 JSON */
+    private static boolean isJson(String raw) {
+        try {
+            FIRST_VALUE.readTree(raw);
+            return true;
+        } catch (JacksonException e) {
+            return false;
         }
     }
 }

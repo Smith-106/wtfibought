@@ -9,11 +9,11 @@ import java.util.Set;
 
 /**
  * 页面上的生成器状态：对话部分全部从历史推出来。
- * running = 有一轮还在后台跑、没落库，这时对话是那一轮开始前的样子
+ * running = 有一轮还没跑完，这时对话停在用户这一句；failure = 上一轮失败的原因，没有是 null
  */
 public record PromptGenView(boolean active, Long endpointId, String outputLang, List<Item> items,
                             Question question, Integer currentNo, boolean done, boolean running,
-                            List<Version> versions) {
+                            String failure, List<Version> versions) {
 
     /**
      * 对话里的一条。type：agent / user 只带 text；question 带题和回答；version 只带版本号；
@@ -44,12 +44,12 @@ public record PromptGenView(boolean active, Long endpointId, String outputLang, 
     }
 
     /** 还没开过对话：只有版本 */
-    static PromptGenView empty(boolean running, List<Version> versions) {
-        return new PromptGenView(false, null, null, List.of(), null, null, false, running, versions);
+    static PromptGenView empty(boolean running, String failure, List<Version> versions) {
+        return new PromptGenView(false, null, null, List.of(), null, null, false, running, failure, versions);
     }
 
     static PromptGenView of(PromptGenSession session, List<PromptGenHistory.Step> steps, Set<String> required,
-                            boolean running, List<Version> versions) {
+                            boolean running, String failure, List<Version> versions) {
         Set<String> unanswered = Set.copyOf(PromptGenHistory.missing(steps, required));
         List<Item> items = steps.stream().map(step -> switch (step) {
             case PromptGenHistory.AgentText t -> new Item("agent", t.text(), null, null, null, null);
@@ -62,6 +62,6 @@ public record PromptGenView(boolean active, Long endpointId, String outputLang, 
         PromptGenHistory.Drafted last = PromptGenHistory.lastDraft(steps);
         return new PromptGenView(true, session.getEndpointId(), session.getOutputLang(), items,
                 pending == null ? null : Question.of(pending, unanswered),
-                last == null ? null : last.no(), PromptGenHistory.done(steps), running, versions);
+                last == null ? null : last.no(), PromptGenHistory.done(steps), running, failure, versions);
     }
 }

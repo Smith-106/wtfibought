@@ -43,7 +43,7 @@ interface ChatPanelProps {
 export function ChatPanel({ onClose, onGoConfig, fullscreen, onToggleFullscreen }: ChatPanelProps) {
   const { t } = useTranslation(['ai', 'common']);
   const { toast } = useToast();
-  const { items, loading, background, sessionId, needsConfig, runId, turnStartedAt } = useSyncExternalStore(chatStore.subscribe, chatStore.getSnapshot);
+  const { items, loading, background, promptGenBusy, sessionId, needsConfig, runId, turnStartedAt } = useSyncExternalStore(chatStore.subscribe, chatStore.getSnapshot);
   // 在途的那张确认卡（按 requestId 认）。面板里可能同时挂着几张，用一个布尔会把别的卡一起禁掉
   const [hitlBusy, setHitlBusy] = useState<{ requestId: string; approved: boolean } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -393,7 +393,9 @@ export function ChatPanel({ onClose, onGoConfig, fullscreen, onToggleFullscreen 
                   停止键在输入区 */}
               {loading && !streamingNow && !liveRailKey && (
                 <ThinkingRow
-                  text={background ? t('chat.background', { hub: HUB_NAME }) : t('chat.thinking', { hub: HUB_NAME })}
+                  text={background
+                    ? (promptGenBusy ? t('chat.promptGenBusy') : t('chat.background', { hub: HUB_NAME }))
+                    : t('chat.thinking', { hub: HUB_NAME })}
                   since={background ? null : turnStartedAt}
                 />
               )}

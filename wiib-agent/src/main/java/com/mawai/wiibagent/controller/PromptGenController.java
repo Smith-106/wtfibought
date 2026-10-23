@@ -36,7 +36,7 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 /**
  * 提示词生成（写主人的交易指令）。/start、/reply 走 SSE，事件 status / text / tool_calls / draft / version / done / error；
  * 题卡不走事件，一轮结束页面拉 /session 拿。名额与工作台共用（每用户同时一轮）。
- * 页面断开不停：这一轮在后台跑完照常落库，刷新回来看 /session 的 running。
+ * 页面断开不停：这一轮在后台跑完照常落库，刷新回来看 /session 的 running；要停走 /cancel。
  */
 @Slf4j
 @Tag(name = "提示词生成")
@@ -77,7 +77,7 @@ public class PromptGenController {
                 .orElseThrow(() -> new BizException(ErrorCode.PARAM_ERROR));
         ChatModel model = service.model(userId, req.endpointId());
         // 旧对话在这一轮的任务里才覆盖，那时名额已经在手
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.PROMPT_GEN);
         return stream(userId, channel -> service.start(channel, userId, model, req.endpointId(), outputLang));
     }
 
@@ -93,7 +93,7 @@ public class PromptGenController {
             throw new BizException(ErrorCode.CHAT_MESSAGE_TOO_LONG);
         }
         // 先占名额再读对话：读早了，上一轮收尾写进去的东西会被这一轮整份覆盖掉
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.PROMPT_GEN);
         PromptGenSession session;
         ChatModel model;
         List<Message> history;
@@ -111,11 +111,17 @@ public class PromptGenController {
         return stream(userId, channel -> service.reply(channel, userId, model, session, history));
     }
 
+    @PostMapping("/cancel")
+    @Operation(summary = "叫停在跑的这一轮（跑到下一个检查点收尾，已经说的、读的照常落库）；没在跑返回 false")
+    public Result<Boolean> cancel(@CurrentUserId long userId) {
+        return Result.ok(service.cancel(userId));
+    }
+
     @PostMapping("/rollback")
     @Operation(summary = "用某一版当时的对话替换当前对话，接着从那里聊")
     public Result<PromptGenView> rollback(@CurrentUserId long userId, @RequestBody RollbackRequest req) {
         // 占着名额换对话：有一轮在跑时换了，那一轮收尾会把它覆盖回去
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.PROMPT_GEN);
         try {
             return Result.ok(service.rollback(userId, req.no()));
         } finally {

@@ -64,6 +64,21 @@ class PromptGenHistoryTest {
                 ask -> assertThat(ask.answer()).isEqualTo("均衡"));
     }
 
+    /** 网关没给参数的读数据照样认（参数当空对象）；保险丝拦下没执行的不算看过 */
+    @Test
+    void readWithoutArgumentsCountsButBlockedReadDoesNot() {
+        List<Message> history = new ArrayList<>(List.of(new UserMessage("开场")));
+        history.addAll(callWithRawResponse("trader_overview", null, MAPPER.writeValueAsString("{}")));
+        history.addAll(callWithRawResponse("trader_trades", "{}", "未执行"));
+
+        List<PromptGenHistory.Step> steps = PromptGenHistory.steps(history);
+
+        assertThat(steps).singleElement().isInstanceOfSatisfying(PromptGenHistory.Tool.class, tool -> {
+            assertThat(tool.name()).isEqualTo("trader_overview");
+            assertThat(tool.args().isEmpty()).isTrue();
+        });
+    }
+
     /** 被拒的题、保险丝的占位回执（不是 JSON）都不算问过 */
     @Test
     void refusedOrPlaceholderAsksAreNotCounted() {
@@ -140,7 +155,7 @@ class PromptGenHistoryTest {
     }
 
     @Test
-    void trimDanglingDropsOnlyAnUnansweredToolCall() {
+    void trimDanglingDropsOnlyTheUnansweredToolCallAndKeepsWhatWasSaid() {
         List<Message> answered = new ArrayList<>(List.of(new UserMessage("开场")));
         answered.addAll(ask("direction"));
         assertThat(PromptGenHistory.trimDangling(answered)).hasSize(3);
@@ -149,10 +164,19 @@ class PromptGenHistoryTest {
         dangling.add(AssistantMessage.builder().content("")
                 .toolCalls(List.of(new AssistantMessage.ToolCall("x", "function", "write_draft", "{}"))).build());
         assertThat(PromptGenHistory.trimDangling(dangling)).isEqualTo(answered);
+
+        // 点停止时那条里已经说出来的话留下
+        List<Message> spoken = new ArrayList<>(answered);
+        spoken.add(AssistantMessage.builder().content("我先看看你的持仓")
+                .toolCalls(List.of(new AssistantMessage.ToolCall("y", "function", "trader_positions", "{}"))).build());
+        assertThat(PromptGenHistory.trimDangling(spoken).getLast()).isInstanceOfSatisfying(AssistantMessage.class, reply -> {
+            assertThat(reply.getText()).isEqualTo("我先看看你的持仓");
+            assertThat(reply.hasToolCalls()).isFalse();
+        });
     }
 
     private static boolean pendingRequired(List<Message> history) {
-        return PromptGenView.of(new PromptGenSession(), PromptGenHistory.steps(history), REQUIRED, false, List.of())
+        return PromptGenView.of(new PromptGenSession(), PromptGenHistory.steps(history), REQUIRED, false, null, List.of())
                 .question().required();
     }
 

@@ -1583,8 +1583,10 @@ export interface PromptGenView {
   /** 当前对话里最后写出的那版 */
   currentNo: number | null;
   done: boolean;
-  /** 有一轮还在后台跑、没落库：这时的对话是那一轮开始前的样子 */
+  /** 有一轮还没跑完：这时对话停在用户这一句 */
   running: boolean;
+  /** 上一轮失败的原因；没有是 null */
+  failure: string | null;
   /** 新的在前 */
   versions: PromptGenVersion[];
 }

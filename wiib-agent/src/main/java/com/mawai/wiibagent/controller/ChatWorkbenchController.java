@@ -165,7 +165,7 @@ public class ChatWorkbenchController {
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
         // 占线直接拒，前端把消息排队、这轮结束自动续发
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.WORKBENCH);
 
         // sessionId 绑定 userId 前缀，防跨用户续聊他人会话
         String sessionId = request.getSessionId() != null && request.getSessionId().startsWith("wb-" + userId + "-")
@@ -189,7 +189,7 @@ public class ChatWorkbenchController {
             throw new BizException(ErrorCode.CHAT_NOTHING_PENDING);
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.WORKBENCH);
         return streamTurn(userId, sessionId, null, leaves, null, null, true);
     }
 
@@ -219,7 +219,7 @@ public class ChatWorkbenchController {
             throw new BizException(ErrorCode.CHAT_REGENERATE_UNAVAILABLE);
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
-        concurrencyGate.acquireOrThrow(userId);
+        concurrencyGate.acquireOrThrow(userId, ChatConcurrencyGate.Owner.WORKBENCH);
         ChatTurnRewinder.Rollback rollback;
         try {
             // 名额到手后才回退，理由见 rewind 的 javadoc；回不去的几种原因在 HTTP 上是同一个码

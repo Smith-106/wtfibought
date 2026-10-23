@@ -42,6 +42,7 @@
   "composerPh": "Say what to change…",
   "doneHint": "Done — copy the body into My Trader; say what to change if you want more",
   "send": "Send",
+  "lastFailed": "The last round didn't finish: {{message}}",
   "wrote": "Wrote v{{no}}",
   "wrotePruned": "Wrote v{{no}} (only the latest 3 are kept; this one is gone)",
   "versions": "Versions",

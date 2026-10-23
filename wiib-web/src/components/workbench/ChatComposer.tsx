@@ -23,16 +23,16 @@ const TRADER_ACTIONS: { form: TraderFormKind; labelKey: string; icon: typeof Zap
   { form: 'review', labelKey: 'term.reviewNow', icon: BookOpenCheck },
 ];
 
-/** 单条消息字符上限，与后端 ChatWorkbenchController.MAX_MESSAGE_CHARS 同值 */
-const MAX_MESSAGE_CHARS = 10_000;
+/** 单条消息字符上限，与后端 ChatWorkbenchController.MAX_MESSAGE_CHARS 同值；提示词生成的输入框也用它 */
+export const MAX_MESSAGE_CHARS = 10_000;
 
 /** 输入框自动长高的上限 */
 const INPUT_MAX_H = 200;
 
 /** Plus 菜单里的一项 */
 const MENU_ITEM = 'w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-surface-hover transition-colors';
-/** 发送键与停止键同一个壳，轮流占同一个位置 */
-const SEND_BTN = 'ml-auto w-8 h-8 bg-foreground text-background flex items-center justify-center shrink-0 active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100';
+/** 发送键与停止键同一个壳，轮流占同一个位置；提示词生成的输入框也用它 */
+export const SEND_BTN = 'ml-auto w-8 h-8 bg-foreground text-background flex items-center justify-center shrink-0 active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100';
 
 /** 用户自己配过的那份；null=没配过，交给出厂四条（它们要随语言走，不能在这儿定死） */
 function loadSuggests(): string[] | null {

@@ -220,7 +220,7 @@ class ChatWakeTest {
         // 不欠：2208，名额没被碰过
         assertThatThrownBy(() -> controller.wake(1L, request, mock(HttpServletResponse.class)))
                 .isInstanceOf(BizException.class).hasFieldOrPropertyWithValue("code", 2208);
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
         gate.release(1L);
 
         // 欠着：放行，跑的是唤醒轮（没有用户提问，消息是唤醒指令）

@@ -102,6 +102,7 @@ promptgen:
   requiredMissing: 必问项还没答完：{{keys}}。先用 ask_user 问这几项（key 用这些名字），再写稿。
   draftOnce: 这一批里已经写过一版了，这次没有写。
   draftAfterAsk: 这一轮已经给用户推了题卡，这次没有写。等用户回答后再写。
+  writeCancelled: 用户点了停止，这一版没有写成。
   emptyDraft: 写稿人没写出正文，这一版没有存。可以再调一次 write_draft。
   noPlayStats: 没拿到论点战绩：可能本局还没有能和计划配对上的已平仓交易，也可能这次取数失败。
 

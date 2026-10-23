@@ -88,6 +88,7 @@ error:
   chatNothingPending: 这个会话没有待补充的回答
   promptGenNoSession: 还没有开始对话，先点开始
   promptGenVersionNotFound: 这一版已经不在了（只保留最近 3 版）
+  promptGenRunning: 提示词生成正在进行中，结束后再试
 
   # 登录态异常：sa-token 的各类 NotLoginException，统一按 401 下发
   token:

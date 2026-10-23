@@ -409,6 +409,7 @@
     "emptyTitle": "What can I help with?",
     "emptyHint": "Market data · news · your trader · deep analysis, all orchestrated by {{hub}}",
     "background": "{{hub}} keeps working in the background; the answer shows up when it is done",
+    "promptGenBusy": "Prompt generation is in progress; this continues automatically when it finishes",
     "thinking": "{{hub}} is working on it",
     "stopTitle": "Stop this round",
     "stop": "Stop",

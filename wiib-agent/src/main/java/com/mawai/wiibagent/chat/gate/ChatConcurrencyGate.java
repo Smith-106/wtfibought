@@ -5,12 +5,12 @@ import com.mawai.wiibcommon.exception.BizException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 
 /**
- * 对话并发闸门：全局 N 轮 + 每用户 1 轮，超限直接拒绝。
+ * 对话并发闸门：全局 N 轮 + 每用户 1 轮，超限直接拒绝。工作台对话和提示词生成共用这一套。
  * <p>
  * 不排队：排队意味着 SSE 连接挂着干等，还要另外处理等待超时。
  * <p>
@@ -26,16 +26,19 @@ public class ChatConcurrencyGate {
     /** 拒因。调用方要据此给两个不同的错误码：是"你已有一轮在跑"还是"人满了"，对用户是两回事 */
     public enum Acquire { OK, USER_BUSY, GLOBAL_FULL }
 
+    /** 这个用户的那一轮是谁在跑：工作台对话还是提示词生成 */
+    public enum Owner { WORKBENCH, PROMPT_GEN }
+
     private final Semaphore slots;
-    private final Set<Long> activeUsers = ConcurrentHashMap.newKeySet();
+    private final Map<Long, Owner> activeUsers = new ConcurrentHashMap<>();
 
     public ChatConcurrencyGate(@Value("${agent.workbench.max-concurrent-chats:10}") int globalLimit) {
         this.slots = new Semaphore(globalLimit);
     }
 
-    public Acquire tryAcquire(long userId) {
+    public Acquire tryAcquire(long userId, Owner owner) {
         // 先占用户位自己的再占全局的
-        if (!activeUsers.add(userId)) {
+        if (activeUsers.putIfAbsent(userId, owner) != null) {
             return Acquire.USER_BUSY;
         }
         if (!slots.tryAcquire()) {
@@ -45,18 +48,24 @@ public class ChatConcurrencyGate {
         return Acquire.OK;
     }
 
-    /** 占名额，占不到按拒因抛对应错误码；占到了调用方负责配对 release */
-    public void acquireOrThrow(long userId) {
-        Acquire acquired = tryAcquire(userId);
-        if (acquired != Acquire.OK) {
-            throw new BizException(acquired == Acquire.USER_BUSY
-                    ? ErrorCode.CHAT_ALREADY_RUNNING : ErrorCode.CHAT_CAPACITY_FULL);
+    /**
+     * 占名额，占不到按拒因抛对应错误码；占到了调用方负责配对 release。
+     * 用户位被提示词生成占着时单给一个码，工作台据此说"提示词生成中"
+     */
+    public void acquireOrThrow(long userId, Owner owner) {
+        Acquire acquired = tryAcquire(userId, owner);
+        if (acquired == Acquire.GLOBAL_FULL) {
+            throw new BizException(ErrorCode.CHAT_CAPACITY_FULL);
+        }
+        if (acquired == Acquire.USER_BUSY) {
+            throw new BizException(activeUsers.get(userId) == Owner.PROMPT_GEN
+                    ? ErrorCode.PROMPT_GEN_RUNNING : ErrorCode.CHAT_ALREADY_RUNNING);
         }
     }
 
     /** 这个用户此刻有没有一轮在跑（不分会话） */
     public boolean isBusy(long userId) {
-        return activeUsers.contains(userId);
+        return activeUsers.containsKey(userId);
     }
 
     /**
@@ -65,7 +74,7 @@ public class ChatConcurrencyGate {
      * 许可的还与不还跟着 activeUsers.remove 走，所以重复释放不会凭空多出名额。
      */
     public void release(long userId) {
-        if (activeUsers.remove(userId)) {
+        if (activeUsers.remove(userId) != null) {
             slots.release();
         }
     }

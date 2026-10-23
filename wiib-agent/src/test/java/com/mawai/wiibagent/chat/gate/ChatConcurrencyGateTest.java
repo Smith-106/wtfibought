@@ -1,5 +1,6 @@
 package com.mawai.wiibagent.chat.gate;
 
+import com.mawai.wiibcommon.enums.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -8,7 +9,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.mawai.wiibagent.chat.gate.ChatConcurrencyGate.Owner.PROMPT_GEN;
+import static com.mawai.wiibagent.chat.gate.ChatConcurrencyGate.Owner.WORKBENCH;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 行情配额按 IP 算，BYOK 分摊得了 LLM 成本、分摊不了它。闸门是把并发夹死的唯一手段，
@@ -28,11 +32,11 @@ class ChatConcurrencyGateTest {
     void 同一用户只能占一个名额() {
         ChatConcurrencyGate gate = new ChatConcurrencyGate(1);
 
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.USER_BUSY);
+        assertThat(gate.tryAcquire(1L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(1L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.USER_BUSY);
 
         gate.release(1L);
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(1L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
     /**
@@ -44,15 +48,28 @@ class ChatConcurrencyGateTest {
         ChatConcurrencyGate gate = new ChatConcurrencyGate(1);
         assertThat(gate.isBusy(1L)).isFalse();
 
-        gate.tryAcquire(1L);
+        gate.tryAcquire(1L, WORKBENCH);
         assertThat(gate.isBusy(1L)).isTrue();
         assertThat(gate.isBusy(2L)).isFalse();
 
-        assertThat(gate.tryAcquire(2L)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
+        assertThat(gate.tryAcquire(2L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
         assertThat(gate.isBusy(2L)).isFalse();
 
         gate.release(1L);
         assertThat(gate.isBusy(1L)).isFalse();
+    }
+
+    /** 用户位被提示词生成占着时给单独的码，工作台据此说"提示词生成中"；被工作台占着还是原来的码 */
+    @Test
+    void 占着用户位的是谁决定拒绝码() {
+        ChatConcurrencyGate gate = new ChatConcurrencyGate(10);
+        gate.tryAcquire(1L, PROMPT_GEN);
+        gate.tryAcquire(2L, WORKBENCH);
+
+        assertThatThrownBy(() -> gate.acquireOrThrow(1L, WORKBENCH))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.PROMPT_GEN_RUNNING.getCode());
+        assertThatThrownBy(() -> gate.acquireOrThrow(2L, PROMPT_GEN))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.CHAT_ALREADY_RUNNING.getCode());
     }
 
     /** 全局满了就拒绝，不排队——排队会让 SSE 连接挂着等，还要额外处理超时 */
@@ -60,26 +77,26 @@ class ChatConcurrencyGateTest {
     void 全局满了拒绝新用户() {
         ChatConcurrencyGate gate = new ChatConcurrencyGate(2);
 
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
-        assertThat(gate.tryAcquire(2L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
-        assertThat(gate.tryAcquire(3L)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
+        assertThat(gate.tryAcquire(1L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(2L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(3L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
 
         gate.release(1L);
-        assertThat(gate.tryAcquire(3L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(3L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
     /** 释放没占过的名额不能把额度凭空变多——否则一次误调用就击穿了上限 */
     @Test
     void 重复释放不会凭空多出名额() {
         ChatConcurrencyGate gate = new ChatConcurrencyGate(1);
-        gate.tryAcquire(1L);
+        gate.tryAcquire(1L, WORKBENCH);
 
         gate.release(1L);
         gate.release(1L);
         gate.release(1L);
 
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
-        assertThat(gate.tryAcquire(2L)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
+        assertThat(gate.tryAcquire(1L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(2L, WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.GLOBAL_FULL);
     }
 
     /** 并发抢占下拿到的名额总数不能超过上限 */
@@ -98,7 +115,7 @@ class ChatConcurrencyGateTest {
             Thread th = new Thread(() -> {
                 try {
                     start.await();
-                    if (gate.tryAcquire(uid) == ChatConcurrencyGate.Acquire.OK) {
+                    if (gate.tryAcquire(uid, WORKBENCH) == ChatConcurrencyGate.Acquire.OK) {
                         acquired.incrementAndGet();
                     }
                 } catch (Throwable e) {

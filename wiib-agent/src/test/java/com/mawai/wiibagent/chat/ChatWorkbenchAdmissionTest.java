@@ -88,7 +88,7 @@ class ChatWorkbenchAdmissionTest {
 
         assertRejectedWithCode(2201, () -> chat(controller(gate), 1L));
 
-        assertThat(gate.tryAcquire(9L)).as("被拒的请求不能占住名额").isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(9L, ChatConcurrencyGate.Owner.WORKBENCH)).as("被拒的请求不能占住名额").isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
     /** 配置能过保存校验但仍可能建不出模型（协议对不上等），这类错误必须在建流前暴露 */
@@ -100,7 +100,7 @@ class ChatWorkbenchAdmissionTest {
 
         assertRejectedWithCode(2202, () -> chat(controller(gate), 1L));
 
-        assertThat(gate.tryAcquire(9L)).as("被拒的请求不能占住名额").isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(9L, ChatConcurrencyGate.Owner.WORKBENCH)).as("被拒的请求不能占住名额").isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
     /** 拒因要分得清：这条给的是"你已有一轮在跑"，不是下面那条"人满了" */
@@ -108,7 +108,7 @@ class ChatWorkbenchAdmissionTest {
     void 本人已有一轮在跑时拒绝() {
         when(llmConfigService.chatEndpoints(1L)).thenReturn(ChatTestEndpoints.eps(1L, "gpt-5"));
         ChatConcurrencyGate gate = new ChatConcurrencyGate(10);
-        gate.tryAcquire(1L); // 这个用户自己的上一轮还占着名额
+        gate.tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH); // 这个用户自己的上一轮还占着名额
 
         assertRejectedWithCode(2203, () -> chat(controller(gate), 1L));
     }
@@ -117,7 +117,7 @@ class ChatWorkbenchAdmissionTest {
     void 全局名额满时拒绝() {
         when(llmConfigService.chatEndpoints(1L)).thenReturn(ChatTestEndpoints.eps(1L, "gpt-5"));
         ChatConcurrencyGate gate = new ChatConcurrencyGate(1);
-        gate.tryAcquire(2L); // 唯一的名额被别人占着
+        gate.tryAcquire(2L, ChatConcurrencyGate.Owner.WORKBENCH); // 唯一的名额被别人占着
 
         assertRejectedWithCode(2204, () -> chat(controller(gate), 1L));
     }
@@ -137,7 +137,7 @@ class ChatWorkbenchAdmissionTest {
 
         assertThatThrownBy(() -> chat(controller, 1L)).isInstanceOf(RejectedExecutionException.class);
 
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
     /** 一轮正常跑完也要还，否则同一个人第二句话就再也发不出去了 */
@@ -157,7 +157,7 @@ class ChatWorkbenchAdmissionTest {
         chat(controller(gate), 1L);
 
         assertThat(released.await(30, TimeUnit.SECONDS)).as("名额被还回来").isTrue();
-        assertThat(gate.tryAcquire(1L)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
+        assertThat(gate.tryAcquire(1L, ChatConcurrencyGate.Owner.WORKBENCH)).isEqualTo(ChatConcurrencyGate.Acquire.OK);
     }
 
 }

@@ -13,6 +13,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
 
 import static com.mawai.wiibagent.promptgen.PromptGenToolkit.ASK_USER;
@@ -34,6 +35,8 @@ final class PromptGenRun implements ReactLoop.Listener {
     private final List<Message> messages;
     /** 往页面推一帧；通道断了 SseChannel 自己吞掉 */
     private final BiConsumer<String, ObjectNode> emitter;
+    /** 用户点了停止就完成 */
+    private final CompletableFuture<Void> cancel;
     private final PromptGenStore store;
 
     private PromptGenHistory.Drafted staged;
@@ -41,13 +44,14 @@ final class PromptGenRun implements ReactLoop.Listener {
 
     /** @param trader 可空：还没建 trader */
     PromptGenRun(long userId, AgentLang lang, AgentLang outputLang, AiTrader trader, List<Message> history,
-                 BiConsumer<String, ObjectNode> emitter, PromptGenStore store) {
+                 BiConsumer<String, ObjectNode> emitter, CompletableFuture<Void> cancel, PromptGenStore store) {
         this.userId = userId;
         this.lang = lang;
         this.outputLang = outputLang;
         this.trader = trader;
         this.messages = new ArrayList<>(history);
         this.emitter = emitter;
+        this.cancel = cancel;
         this.store = store;
     }
 
@@ -70,6 +74,14 @@ final class PromptGenRun implements ReactLoop.Listener {
 
     List<Message> messages() {
         return messages;
+    }
+
+    CompletableFuture<Void> cancel() {
+        return cancel;
+    }
+
+    boolean cancelled() {
+        return cancel.isDone();
     }
 
     PromptGenStore store() {
@@ -132,8 +144,8 @@ final class PromptGenRun implements ReactLoop.Listener {
                 emit("version", MAPPER.valueToTree(PromptGenView.Version.of(staged)));
                 staged = null;
             }
-            // 推了题卡这一轮就收工了，别的回执回来 agent 接着想
-            if (responses.getResponses().stream().noneMatch(r -> ASK_USER.equals(r.name()))) {
+            // 真推出了题卡这一轮就收工了；没推（被拒、或这批没出题）agent 接着想
+            if (!asked) {
                 status("thinking");
             }
         }
