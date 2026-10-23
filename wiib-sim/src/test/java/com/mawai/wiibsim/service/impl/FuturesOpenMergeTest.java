@@ -80,6 +80,7 @@ class FuturesOpenMergeTest {
         when(userService.getById(UID)).thenReturn(user);
         when(cacheService.getFuturesPrice(SYMBOL)).thenReturn(new BigDecimal("110"));
         when(cacheService.getMarkPrice(SYMBOL)).thenReturn(new BigDecimal("110"));
+        when(cacheService.getMarkPriceAt(SYMBOL)).thenReturn(System.currentTimeMillis());
         when(bracketRegistry.getEffectiveMaxLeverage(anyString(), any())).thenReturn(150);
         when(positionMapper.atomicIncreasePosition(anyLong(), any(), any(), any())).thenReturn(1);
         // 资金方法返"变动后余额"，非 null 即成功；具体数值本类不断言，给个占位即可。

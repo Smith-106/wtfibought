@@ -16,7 +16,6 @@ import com.mawai.wiibsim.service.BStockService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
 import com.mawai.wiibsim.service.CrossMarginService;
 import com.mawai.wiibsim.service.CryptoPositionService;
-import com.mawai.wiibsim.service.FundingRateService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.FuturesRiskService;
 import com.mawai.wiibsim.service.MarginAccountService;
@@ -84,7 +83,7 @@ class LimitOrderRecoverGapTest {
                 mock(UserMapper.class), mock(FuturesPositionMapper.class), orderMapper, mock(TradingConfig.class),
                 mock(FuturesLeverageBracketRegistry.class), cacheService, mock(FuturesPositionIndexService.class),
                 mock(FuturesRiskService.class), mock(CrossMarginService.class), mock(CrossLiquidationService.class),
-                mock(FairLockRegistry.class), mock(FundingRateService.class),
+                mock(FairLockRegistry.class),
                 new LedgerTx(new TransactionTemplate(mock(PlatformTransactionManager.class))));
     }
 

@@ -17,6 +17,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -27,6 +28,9 @@ import java.util.List;
  */
 @Component
 public class ByokModelBuilder {
+
+    /** 阻塞调用整体超时，四个协议同一个值：思考模型长回答，openai SDK 默认 60s 不够 */
+    static final Duration CALL_TIMEOUT = Duration.ofMinutes(10);
 
     /**
      * 落点主机必须还是用户填的那个：baseUrl 的地址校验只在它上面做过，跨主机跳走的落点没校验。
@@ -73,12 +77,12 @@ public class ByokModelBuilder {
                            boolean webSearch) {
         String effort = reasoningEffort == null || reasoningEffort.isBlank() ? null : reasoningEffort;
         return switch (AiProtocols.normalize(protocol)) {
-            case AiProtocols.RESPONSES ->
-                    new ResponsesChatModel(apiKey, baseUrl, model, null, effort, toolCallingManager, webSearch);
-            case AiProtocols.ANTHROPIC ->
-                    new AnthropicChatModel(apiKey, baseUrl, model, null, effort, toolCallingManager, webSearch);
-            case AiProtocols.GEMINI ->
-                    new GeminiChatModel(apiKey, baseUrl, model, null, effort, toolCallingManager, webSearch);
+            case AiProtocols.RESPONSES -> new ResponsesChatModel(apiKey, baseUrl, model, null, effort,
+                    toolCallingManager, webSearch, CALL_TIMEOUT);
+            case AiProtocols.ANTHROPIC -> new AnthropicChatModel(apiKey, baseUrl, model, null, effort,
+                    toolCallingManager, webSearch, CALL_TIMEOUT);
+            case AiProtocols.GEMINI -> new GeminiChatModel(apiKey, baseUrl, model, null, effort,
+                    toolCallingManager, webSearch, CALL_TIMEOUT);
             default -> openAiModel(baseUrl, apiKey, model, effort);
         };
     }
@@ -88,18 +92,18 @@ public class ByokModelBuilder {
         // timeout 非空是硬约束（SDK 是 Kotlin，null 运行时 NPE）；超时/maxRetries 与自研协议同值，阻塞路径的重试归模型层
         OpenAIClient client = OpenAiSetup.setupSyncClient(
                 OpenAiBaseUrl.forSdk(baseUrl), apiKey, null, null, null, null,
-                false, false, model, SseChatModel.CALL_TIMEOUT, 3, null, null,
+                false, false, model, CALL_TIMEOUT, 3, null, null,
                 observationRegistry, null, REJECT_CROSS_HOST_REDIRECT);
         // async 也必须显式给：builder 见 openAiClientAsync 为空就拿 options 自建，而 options 里没 key，
         // SDK 当场抛 "At least one credential source must be specified"（哪怕根本不走流式）
         OpenAIClientAsync clientAsync = OpenAiSetup.setupAsyncClient(
                 OpenAiBaseUrl.forSdk(baseUrl), apiKey, null, null, null, null,
-                false, false, model, SseChatModel.CALL_TIMEOUT, 3, null, null,
+                false, false, model, CALL_TIMEOUT, 3, null, null,
                 observationRegistry, null, REJECT_CROSS_HOST_REDIRECT);
         // 不设 temperature：走各模型默认值，思考模型（多数拒收或忽略温度）也安全。
         // timeout 必须显式给：2.0.1 起每请求都把它传给 SDK，缺省 60s 会盖掉上面 client 的 10 分钟
         OpenAiChatOptions.Builder options = OpenAiChatOptions.builder().model(model)
-                .timeout(SseChatModel.CALL_TIMEOUT);
+                .timeout(CALL_TIMEOUT);
         if (effort != null) {
             options.reasoningEffort(effort);
         }
@@ -122,7 +126,7 @@ public class ByokModelBuilder {
                 // model 参数只在 Azure/GitHub 分支参与 URL 计算，探针还没选模型，占位即可
                 OpenAIClient client = OpenAiSetup.setupSyncClient(
                         OpenAiBaseUrl.forSdk(baseUrl), apiKey, null, null, null, null,
-                        false, false, "list-models", SseChatModel.CALL_TIMEOUT, 3, null, null,
+                        false, false, "list-models", CALL_TIMEOUT, 3, null, null,
                         observationRegistry, null, REJECT_CROSS_HOST_REDIRECT);
                 yield client.models().list().data().stream().map(Model::id).sorted().toList();
             }

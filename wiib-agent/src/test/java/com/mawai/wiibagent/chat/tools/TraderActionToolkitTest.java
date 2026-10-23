@@ -23,7 +23,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
 /**
- * 挂在 summarizer 上的三个动作工具。这一层只做一件事：<b>把待填的表单卡推出去</b>，
+ * 挂在主 agent 上的三个动作工具。这一层只做一件事：<b>把待填的表单卡推出去</b>，
  * 再按推没推出去分叉话术——工具本身没有执行能力，动作语义（钳制/准入/互斥）
  * 全在 {@code TraderActionServiceTest}，从这里够不着。
  */

@@ -30,6 +30,7 @@
       "arena": "AI竞技场",
       "strategies": "策略",
       "backtest": "回测",
+      "alpha": "因子挖掘",
       "testnet": "模拟盘",
       "ranking": "排行榜",
       "comments": "留言板",
@@ -113,6 +114,7 @@
     "page": "第 {{page}} / {{pages}} 页"
   },
   "admin": {
+    "alphaLink": "因子挖掘",
     "title": "任务管理",
     "actionFailed": "操作失败",
     "fn": {

@@ -112,7 +112,8 @@ public class FuturesTradingServiceImpl implements FuturesTradingService {
                 .filter(p -> p.getSide().equals(request.getSide())).findFirst().orElse(null);
 
         if ("MARKET".equals(request.getOrderType())) {
-            BigDecimal price = getPrice(request.getSymbol());
+            // 只认 feed 30 秒内写过的价：断线时不按停住的价开仓
+            BigDecimal price = freshFuturesPrice(cacheService, request.getSymbol());
             // 交易过滤器（对齐Binance exchangeInfo）：步长对齐 + 名义额≥minNotional，加仓单同样受限
             tradeFilterRegistry.validateFuturesOrder(request.getSymbol(), request.getQuantity(), price);
             // 同向已有仓位：Binance 无独立"加仓"概念，同向下单即并入现有仓位

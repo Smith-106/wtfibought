@@ -30,7 +30,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * 执行工具：拼错工具名回执报错；同批多个 tool_call 并发跑、回执按 tool_call 顺序；
- * 批里有串行工具就整批串行；收件箱里的消息在下一次调模型前追加进历史。
+ * 批里有串行工具就整批串行；收件箱里的消息在下一次调模型前追加进历史；调用方说收工就在回执入历史后结束。
  */
 class ReactLoopTest {
 
@@ -177,6 +177,20 @@ class ReactLoopTest {
         assertThat(tools.started).containsExactly("quote", "trade");
     }
 
+    /** 调用方说收工：这批回执进了历史就结束，不再拿它去调模型 */
+    @Test
+    void stopWhenEndsRunOnceRepliesAreInHistory() {
+        ReactLoop.Result result = ReactLoop.builder()
+                .client(client(modelCalling(List.of(call("c1", "echo", "{\"text\":\"问题\"}"))), new EchoTools()))
+                .limiter(new ModelCallLimiter(5, "未执行", "预算已用完"))
+                .stopWhen(() -> true)
+                .build()
+                .run(List.of(new UserMessage("问用户")), null, null, null);
+
+        assertThat(result.modelCalls()).isEqualTo(1);
+        assertThat(result.messages().getLast()).isInstanceOf(ToolResponseMessage.class);
+    }
+
     private static AssistantMessage.ToolCall call(String id, String name, String arguments) {
         return new AssistantMessage.ToolCall(id, "function", name, arguments);
     }
@@ -194,15 +208,18 @@ class ReactLoopTest {
     }
 
     private static ReactLoop loop(ChatModel model, Set<String> serialTools, Object toolkit) {
-        ResilientChatService chat = ResilientChatService.builder()
+        return ReactLoop.builder()
+                .client(client(model, toolkit))
+                .limiter(new ModelCallLimiter(5, "未执行", "预算已用完"))
+                .serialTools(serialTools)
+                .build();
+    }
+
+    private static LlmClient client(ChatModel model, Object toolkit) {
+        return LlmClient.builder()
                 .model(model)
                 .systemPrompt("测试")
                 .tools(new LocalizedToolCallbacks(new PromptCatalog()).of(AgentLang.ZH, toolkit))
-                .build();
-        return ReactLoop.builder()
-                .chat(chat)
-                .limiter(new ModelCallLimiter(5, "未执行", "预算已用完"))
-                .serialTools(serialTools)
                 .build();
     }
 

@@ -107,7 +107,7 @@ class GeminiChatModelTest {
         httpStatus = 0;
         // 用户手滑带上的 /v1beta 要被剥掉，否则拼成 /v1beta/v1beta/models
         return new GeminiChatModel("AIza-test", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1beta/",
-                "gemini-test", null, effort, tcm, webSearch);
+                "gemini-test", null, effort, tcm, webSearch, ByokModelBuilder.CALL_TIMEOUT);
     }
 
     private static GeminiChatModel model() {
@@ -199,7 +199,7 @@ class GeminiChatModelTest {
                 new ToolResponseMessage.ToolResponse(GeminiChatModel.SYNTHETIC_ID_PREFIX + "1_get_price",
                         "get_price", "{\"price\":60000}"))).build();
         model().call(new Prompt(List.of(new UserMessage("问题"), new UserMessage("补充"),
-                synthetic, syntheticResult, new UserMessage("专家结论"))));
+                synthetic, syntheticResult, new UserMessage("子运行报告"))));
 
         JsonNode contents = body().get("contents");
         assertThat(contents).hasSize(3);
@@ -217,7 +217,7 @@ class GeminiChatModelTest {
         assertThat(response.has("id")).isFalse();
         // 回执本身是 JSON 对象就直接用
         assertThat(response.get("response").path("price").asInt(0)).isEqualTo(60000);
-        assertThat(userParts.get(1).path("text").asString(null)).isEqualTo("专家结论");
+        assertThat(userParts.get(1).path("text").asString(null)).isEqualTo("子运行报告");
 
         // 上游给了 id 的原样带回；文本回执包一层
         AssistantMessage real = AssistantMessage.builder().content("").toolCalls(List.of(
@@ -246,7 +246,7 @@ class GeminiChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         GeminiChatModel m = new GeminiChatModel("AIza-test", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1beta",
-                "gemini-test", 0.30, "low", tcm, true);
+                "gemini-test", 0.30, "low", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String parts = """
                 [{"text":"想一下","thought":true,"thoughtSignature":"c2ln/+="},
                  {"functionCall":{"id":"call_real","name":"get_price","args":{"qty":0.010,"n":3,"note":null}},"thoughtSignature":"c2ln2"}]""";

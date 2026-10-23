@@ -9,7 +9,7 @@ spring:
       - optional:file:../.env.local[.properties]
   ai:
     # Spring AI 2.0 起弃用 spring-retry，spring.ai.retry.* 已无人读取；重试在
-    # ResponsesChatModel(协议层) 与 ResilientChatService(叶子的模型调用层) 两处代码里。
+    # ResponsesChatModel(协议层) 与 LlmClient(调模型的客户端) 两处代码里。
     # 下面 6 类必须全关：各自独立开关，只关 chat 其余仍会因缺 api-key 拒启动。LLM 配置唯一来源是 DB
     model:
       chat: none
@@ -207,12 +207,6 @@ sim:
 internal:
   api:
     token: ${INTERNAL_API_TOKEN}
-
-# 降噪：主 agent 用文本收尾时框架必打"JSON 路由解析失败"WARN+堆栈，
-# 那是 FINISH 判定机制(解析失败=本轮结束)，预期路径非故障，压到 ERROR 零损失
-logging:
-  level:
-    com.alibaba.cloud.ai.graph.agent.flow.node.MainAgentNodeAction: error
 
 ---
 # 哨兵模式(线上高可用，配合 redis-compose.yml)：.env 里 SPRING_PROFILES_ACTIVE=sentinel 启用，

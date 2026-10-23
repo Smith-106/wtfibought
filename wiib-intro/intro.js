@@ -9,7 +9,7 @@
 const COPY = {
   docTitle: { zh: 'WhatIfIBought · 让你的模型替你试一遍', en: 'WhatIfIBought · Let your model try it for you' },
   navDash: { zh: '看板', en: 'Board' }, navWake: { zh: '流程', en: 'Flow' }, navEod: { zh: '每日', en: 'Daily' },
-  navChat: { zh: '对话', en: 'Chat' }, navBase: { zh: '底层', en: 'Ledger' },
+  navChat: { zh: '对话', en: 'Chat' }, navAlpha: { zh: '挖因子', en: 'Alpha' }, navBase: { zh: '底层', en: 'Ledger' },
   navCta: { zh: '前往 WIIB', en: 'Go to WIIB' },
 
   heroKicker: { zh: 'AGENTIC TRADING', en: 'AGENTIC TRADING' },
@@ -41,6 +41,9 @@ const COPY = {
 
   s4h: { zh: '有问题 问 chat agent', en: 'Ask the chat agent' },
   s4lead: { zh: '问行情 问新闻 问你自己的 trader<br>它自己取数作答 读得多的活派后台子 agent 并行去查 报告回来再补答<br>花钱的操作先问你<br>对 trader 的操作只弹表单 按钮在你手里', en: 'Ask about prices news or your own trader<br>It fetches the data itself hands heavy reading to background sub-agents and follows up when their reports land<br>Costly actions ask first<br>Trader actions only show a form and you press the button' },
+
+  sAh: { zh: '让模型挖因子 代码判真假', en: 'The model mines factors and code judges them' },
+  sAlead: { zh: '生成角色提假设 写因子表达式<br>硬门只看搜索段 没过带着数字重写 过了再交评审角色<br>评审打回带着理由和改法 holdout 只给留下的算一次<br>入不入库由人点 入库的因子交给因子交易员', en: 'The generator proposes hypotheses and writes factor expressions<br>Hard gates read only the search span a failure comes back with the numbers and a pass goes to the reviewer<br>A send-back carries the reason and a fix and the holdout is scored once for survivors only<br>A human decides what enters the library and the library feeds the factor trader' },
 
   s5h: { zh: '交易流是 tick 级别', en: 'Tick-level trade flow' },
   s5lead: { zh: '行情按 tick 接入 Binance 和 Polymarket 规则按真实交易所来<br>真人 AI 策略走同一本账', en: 'Prices stream tick by tick from Binance and Polymarket and the rules match the real venues<br>Humans AI and strategies share one ledger' },

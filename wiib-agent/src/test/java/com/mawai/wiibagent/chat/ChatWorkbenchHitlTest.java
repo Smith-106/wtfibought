@@ -25,7 +25,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 import tools.jackson.databind.JsonNode;
@@ -123,11 +122,8 @@ class ChatWorkbenchHitlTest {
                 .toolCalls(List.of(new AssistantMessage.ToolCall(id, "function", name, args))).build();
     }
 
-    /** 生产装配的叶子（真 {@link ChatAgentFactory#leavesFor}） */
+    /** 生产装配的叶子（真 {@link ChatAgentFactory#leavesFor}）。深研判工具要拿 childRuns，先调 controller() */
     private ChatAgentFactory.Leaves productionLeaves() {
-        // ChatService 建请求时无条件读 getOptions() 挂工具，null 会 NPE
-        when(deep.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        when(light.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         ChatModelFactory chatModelFactory = mock(ChatModelFactory.class);
         when(chatModelFactory.modelsFor(any())).thenReturn(new ChatModelFactory.Models(deep, light));
         // 每轮：先要一次深研判（闸门在这儿拦），拿到回执后再说一句话收尾。
@@ -198,8 +194,8 @@ class ChatWorkbenchHitlTest {
      */
     @Test
     void 确认标识对不上时拒绝授权() {
-        ChatAgentFactory.Leaves leaves = productionLeaves();
         ChatWorkbenchController controller = controller();
+        ChatAgentFactory.Leaves leaves = productionLeaves();
 
         JsonNode card = turn(leaves, "深度研判 BTC").events("hitl_request").getFirst();
         assertThat(card.path("requestId").asString(null)).isNotBlank();
@@ -224,8 +220,8 @@ class ChatWorkbenchHitlTest {
      */
     @Test
     void 用户没点的确认卡不会在下一轮重复弹() {
-        ChatAgentFactory.Leaves leaves = productionLeaves();
         controller();
+        ChatAgentFactory.Leaves leaves = productionLeaves();
 
         assertThat(turn(leaves, "深度研判 BTC").events("hitl_request")).hasSize(1);
 
@@ -246,8 +242,8 @@ class ChatWorkbenchHitlTest {
      */
     @Test
     void 拒绝之后下一轮拿到拒绝回执而不是新卡() {
-        ChatAgentFactory.Leaves leaves = productionLeaves();
         ChatWorkbenchController controller = controller();
+        ChatAgentFactory.Leaves leaves = productionLeaves();
 
         JsonNode card = turn(leaves, "深度研判 BTC").events("hitl_request").getFirst();
         assertThat(controller.approve(1L, decision(card.path("requestId").asString(null), false)).getCode()).isZero();
@@ -270,8 +266,8 @@ class ChatWorkbenchHitlTest {
      */
     @Test
     void 确认后的续跑轮仍看得见上一轮的上下文() {
-        ChatAgentFactory.Leaves leaves = productionLeaves();
         ChatWorkbenchController controller = controller();
+        ChatAgentFactory.Leaves leaves = productionLeaves();
 
         RecordingEmitter first = turn(leaves, "深度研判 BTC");
         JsonNode card = first.events("hitl_request").getFirst();

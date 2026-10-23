@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * ChatModel 装饰器：把一次运行里所有模型调用的 token 用量累加起来。
  * 装饰器包在最外层，这么写为了把 ReAct 循环里的每一次调用都收进来。
  * <p>
- * <b>getOptions 必须原样透传</b>：返回自己造的 options 会让 ResilientChatService 挂出去的工具列表变成空数组。
+ * <b>getOptions 必须原样透传</b>：返回自己造的 options 会让 LlmClient 挂出去的工具列表变成空数组。
  * <p>
  * 账按轮记在 {@link TokenLedger} 上：调用在发起那一刻抓住当时那本账，终止时记回它。
  * {@link #reset()} 整本换新，晚到的入账（用户中断丢下的在途调用）只会落进旧账本，新一轮天然干净。
@@ -120,7 +120,7 @@ public class UsageTrackingChatModel implements ChatModel {
 
     @Override
     public @NonNull Flux<ChatResponse> stream(@NonNull Prompt prompt) {
-        // defer：每次订阅（ResilientChatService 的流式重试会重订阅）各自一套 last/recorded，各自入账一次
+        // defer：每次订阅（LlmClient 的流式重试会重订阅）各自一套 last/recorded，各自入账一次
         return Flux.defer(() -> {
             TokenLedger book = ledger;
             // 流式的 usage 只挂在最后一个 chunk 上，且通常是本次调用的累计值，逐块相加会翻倍。

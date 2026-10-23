@@ -75,9 +75,9 @@ tool:
     Useful for judging whether the options market is pricing in larger moves than realized volatility suggests.
 
   funding_history: |-
-    Get recent funding rate history (last 30 settlements, 8h apart) plus the next funding
-    time and current mark price for a crypto perpetual symbol. Rates are raw decimals per
-    8h settlement: 0.0001 = 0.01%. Useful for carry judgment:
+    Get recent funding rate history (last 30 settlements; the interval is per contract, 8h for
+    most, 4h or 1h for some) plus the next funding time and current mark price for a crypto
+    perpetual symbol. Rates are raw decimals per settlement: 0.0001 = 0.01%. Useful for carry judgment:
     persistently positive funding = longs paying shorts (crowded long), negative = the opposite.
 
   orderbook_depth: |-
@@ -141,7 +141,7 @@ tool:
     What you get is the computed path plus focus_bars — the last N candles and the ones
     around each key point; `klines` is the tool that hands you every raw bar instead.
 
-  # ---- The trader read-only profile tools (held by the chat summarizer; userId baked in at leaf build) ----
+  # ---- The trader read-only profile tools (held by the chat main agent; userId baked in at leaf build) ----
   trader_overview: |-
     Get the current user's AI trader profile: status (RUNNING/PAUSED/LIQUIDATED and why),
     equity vs initial balance, round number, traded symbols, wake interval, risk spec,
@@ -172,7 +172,7 @@ tool:
     stop and target) and, for a manual close, the close reason it wrote. Also count, wins and total
     realized PnL over the returned trades. Returns hasTrader=false when the user has not created a trader yet.
 
-  # ---- The three form tools that act on the trader (held by the chat summarizer; they only open a form) ----
+  # ---- The three form tools that act on the trader (held by the chat main agent; they only open a form) ----
   wake_trader: |-
     Open the "wake trader now" form for the user. IMPORTANT: this does NOT wake the trader.
     It only shows a card with when it last woke, when it wakes next, and a button the user presses themselves.
@@ -261,3 +261,19 @@ tool:
     The full report is rendered as a card in the chat UI. Your job afterwards is to talk about
     it, not to recite every number - unless cardShown is false, in which case the user cannot
     see the card and you must state the key findings yourself.
+
+  # Instruction generator: the thesis record is paired and computed by code; tags with few trades show counts only
+  trader_play_stats: |-
+    Get the owner's trader closed-trade record in the current round grouped by thesis tag (playType):
+    trade count, wins/losses and PnL per tag, paired and computed by code.
+
+  # Instruction generator: showing a card ends the turn; the answer comes back as the next user message
+  ask_user: |-
+    Show the user one question card and end this turn; their answer arrives as the next message.
+    A card has the question, your recommended option with the reason, and 2-4 other options;
+    the user can also skip the options and type their own answer.
+
+  # Instruction generator: the writer streams the body, then it comes back to the agent
+  write_draft: |-
+    Have the writer produce the next version of the instruction from the Q&A so far. The body is streamed
+    to the user; when done you get the body and notes back.

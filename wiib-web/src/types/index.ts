@@ -170,13 +170,13 @@ export interface FuturesBracket {
   maintAmount: number;
 }
 
-/** 资金费率（GET /futures/funding-rate）：后端只读结算点缓存，无合约的标的返回 null。rate 是小数，0.0001=0.01% */
+/** 资金费率（GET /futures/funding-rate）：后端只读 feed 从 markPrice 推送写的当期费率，没有合约行情的标的返回 null。rate 是小数，0.0001=0.01% */
 export interface FundingRateView {
   symbol: string;
   rate: number;
-  /** 结算点拉取时刻 */
+  /** feed 写入时刻 */
   fetchedAt: number;
-  /** 下一个 0/8/16 点 */
+  /** 下次结算时刻（各合约间隔不同） */
   nextTime: number;
 }
 
@@ -509,7 +509,7 @@ export interface ForceOrder {
 // feed WS 流健康（Admin 面板：状态展示 + 手动重试）
 export interface FeedStreamHealth {
   name: string;
-  status: 'CONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'DISCONNECTED';
+  status: 'CONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'DISCONNECTED' | 'IDLE';
   lastMessageAt: number;   // epoch millis，前端本地算"距上次数据 Xs"
   reconnectAttempt: number;
 }
@@ -566,7 +566,7 @@ export type WorkbenchEvent =
   // 行为分析报告：整份结构化数据只走这条通道给前端渲染成卡片，模型手里是裁剪版
   //（少了 overview.trend 那 30 天逐日快照——对模型是噪音，对卡片是那条资产曲线）
   | { type: 'behavior_report'; report: BehaviorAnalysisReport }
-  // 汇总者的服务端搜索过程：searching=开搜（query 可能还没有）、searched=搜完（sources 是命中站点）、
+  // 主 agent 的服务端搜索过程：searching=开搜（query 可能还没有）、searched=搜完（sources 是命中站点）、
   // cited=正文引用了某来源（只并入后端攒的来源随 done 回来，过程轨不画）
   | { type: 'search'; phase: 'searching' | 'searched' | 'cited'; query?: string | null; sources: SearchSource[] }
   // meta 是本轮读数。
@@ -712,7 +712,7 @@ export interface LlmEndpointView {
   model: string;
   /** 任意上游认的档位值（none/low/medium/high/xhigh…），null=不传给上游走模型默认 */
   reasoningEffort: string | null;
-  /** 服务端联网搜索（responses / anthropic / gemini 协议端点可开；只有对话汇总者用它） */
+  /** 服务端联网搜索（responses / anthropic / gemini 协议端点可开；只有对话的主 agent 与调研子 agent 用它） */
   webSearch: boolean;
   apiKeyTail: string;
   /** 默认端点：没按用途绑定的地方都用它 */
@@ -1538,4 +1538,57 @@ export interface BacktestResultPayload {
   /** 降采样权益曲线：[closeTimeMs, equity] */
   equity: [number, number][];
 }
+
+// ========== 交易指令生成器（agent，/api/ai/prompt-gen） ==========
+
+/** 一张题卡：一个推荐项 + 几个其他选项，用户也能自己填；required=必问题，没有跳过 */
+export interface PromptGenQuestion {
+  key: string;
+  question: string;
+  recommended: string;
+  reason: string;
+  options: string[];
+  required: boolean;
+}
+
+/** 对话里的一条：agent / user 只有 text，question 带题和回答（还没答是 null），version 只有版本号 */
+export interface PromptGenItem {
+  type: 'agent' | 'user' | 'question' | 'version';
+  text: string | null;
+  question: PromptGenQuestion | null;
+  answer: string | null;
+  no: number | null;
+}
+
+/** 一版指令：body 是正文，notes 是这版改了什么 + 做不到的写法；finalVersion=agent 认为写完了 */
+export interface PromptGenVersion {
+  no: number;
+  body: string;
+  notes: string;
+  finalVersion: boolean;
+}
+
+/** 当前对话（从历史推出来）+ 最近 3 版；没开过对话时 active=false，只有 versions */
+export interface PromptGenView {
+  active: boolean;
+  endpointId: number | null;
+  outputLang: string | null;
+  items: PromptGenItem[];
+  /** 还在等回答的那道题 */
+  question: PromptGenQuestion | null;
+  /** 当前对话里最后写出的那版 */
+  currentNo: number | null;
+  done: boolean;
+  /** 新的在前 */
+  versions: PromptGenVersion[];
+}
+
+/** 生成器 SSE 事件；题卡不走事件，一轮结束页面重新拉 session 拿到 */
+export type PromptGenEvent =
+  | { type: 'status'; stage: 'thinking' | 'reading' | 'writing' }
+  | { type: 'text'; text: string }
+  | { type: 'draft'; text: string }
+  | ({ type: 'version' } & PromptGenVersion)
+  | { type: 'done' }
+  | { type: 'error'; message: string };
 

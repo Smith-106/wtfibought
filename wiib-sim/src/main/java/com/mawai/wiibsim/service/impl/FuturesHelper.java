@@ -156,6 +156,22 @@ final class FuturesHelper {
         return price;
     }
 
+    /** 市价开仓只认 feed 这么久内写过标记价的币 */
+    static final long OPEN_PRICE_MAX_AGE_MS = 30_000L;
+
+    /**
+     * 市价开仓用的价：同 latestFuturesPrice，但 feed 超过 30 秒没写过这个币的标记价就当没有价（断线时价格停住，不按停住的价开仓）。
+     * 心跳看标记价不看最新价：markPrice@1s 每秒必推，miniTicker 没成交就不推，成交稀的币会几十秒没帧。
+     * 平仓不走这里：下架的币要能按最后价平掉。
+     */
+    static BigDecimal freshFuturesPrice(CacheService cacheService, String symbol) {
+        Long at = cacheService.getMarkPriceAt(symbol);
+        if (at == null || System.currentTimeMillis() - at > OPEN_PRICE_MAX_AGE_MS) {
+            throw new BizException(ErrorCode.CRYPTO_PRICE_UNAVAILABLE);
+        }
+        return latestFuturesPrice(cacheService, symbol);
+    }
+
     /** mark 价：mark 优先，合约最新价兜底（三处调用方曾各写一份，其中一份还把兜底写成了现货价）。 */
     static BigDecimal markPrice(CacheService cacheService, String symbol) {
         BigDecimal mp = cacheService.getMarkPrice(symbol);

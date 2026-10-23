@@ -114,9 +114,10 @@ trader:
     Costs: fees are charged on notional — taker (market orders, stop-loss and take-profit fills,
     liquidation) 0.04% per side, maker (limit fills) 0.02% per side; one market-order round trip is about
     0.08%. Example: 1000U of margin at 10x is 10000U notional, so the round trip is about 8U = 0.8% of the
-    margin. Every 8 hours an open position settles funding on its notional (next settlement time is in
-    funding_history): a positive rate means longs pay shorts, a negative one the reverse; a 0.01% rate at
-    10x = 0.1% of margin per 8h, and in extreme conditions ten times that.
+    margin. An open position settles funding on its notional at the contract's own interval (8h for most,
+    4h or 1h for some; next settlement time is in funding_history): a positive rate means longs pay shorts,
+    a negative one the reverse; a 0.01% rate at 10x = 0.1% of margin per settlement, and in extreme
+    conditions ten times that.
 
     Closing: you must end in the fixed closing format at the end of this prompt — a {{mark}} block, one
     section per tradable symbol. System-enforced; even your owner's instructions cannot change it. It is
@@ -278,7 +279,7 @@ trader:
   # system prompt uses.
   wake:
     routineHeader: A new {{interval}} candle has closed ({{time}}).
-    snapshotHeader: "Market snapshot (check the details yourself with the tools; funding rates are raw decimals per 8h, 0.0001 = 0.01%):"
+    snapshotHeader: "Market snapshot (check the details yourself with the tools; funding rates are raw decimals per settlement, 8h for most contracts and 4h or 1h for some, 0.0001 = 0.01%):"
     snapshotRow: "- {{symbol}} mark price {{price}}, funding rate {{funding}}"
     routineQuestion: "This round: handle every tradable symbol by your owner's trading instructions - whether to keep and how to manage each position, whether each open order stays, whether to enter or exit new opportunities. Read the facts above first; verify your judgement with the tools. Close with the fixed {{mark}} format, one section per tradable symbol."
     # Observation pack (TraderWakeupRunner.observation): events + account + last round's conclusion + recent trajectory; sits after the header facts, before the snapshot.

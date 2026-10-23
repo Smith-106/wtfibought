@@ -1,9 +1,12 @@
 package com.mawai.wiibsim.task;
 
+import com.mawai.wiibsim.config.TradeFilterRegistry;
 import com.mawai.wiibsim.service.CryptoOrderService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
+import com.mawai.wiibsim.service.FundingRateService;
 import com.mawai.wiibsim.service.FuturesLiquidationService;
 import com.mawai.wiibsim.service.FuturesSettlementService;
+import com.mawai.wiibsim.service.TraderSymbolService;
 import com.mawai.wiibsim.service.RankingService;
 import com.mawai.wiibsim.service.BankruptcyService;
 import com.mawai.wiibsim.service.MarginAccountService;
@@ -33,8 +36,35 @@ public class ScheduledTasks {
     private final CrossLiquidationService crossLiquidationService;
     private final FuturesLiquidationService futuresLiquidationService;
     private final PredictionService predictionService;
+    private final TraderSymbolService traderSymbolService;
+    private final FundingRateService fundingRateService;
+    private final TradeFilterRegistry tradeFilterRegistry;
 
-    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗 */
+    /** 交易员集合：每分钟按库里的仓位和登记重算，变了才写 Redis，feed 按它订行情 */
+    @Scheduled(fixedRate = 60 * 1000)
+    public void refreshTraderSymbols() {
+        Thread.startVirtualThread(() -> {
+            try {
+                traderSymbolService.refresh();
+            } catch (Exception e) {
+                log.error("交易员集合刷新失败", e);
+            }
+        });
+    }
+
+    /** 交易过滤器：每天 UTC 00:30 按官方 exchangeInfo 刷一次 */
+    @Scheduled(cron = "0 30 0 * * *", zone = "UTC")
+    public void refreshTradeFilters() {
+        Thread.startVirtualThread(() -> {
+            try {
+                tradeFilterRegistry.refreshFromBinance();
+            } catch (Exception e) {
+                log.error("交易过滤器刷新失败", e);
+            }
+        });
+    }
+
+    /** 全仓健康兜底轮询：价格tick是主触发，这里兜住行情静默/进程重启的空窗（交易员的币不发价格频道、没有 tick，全靠这里） */
     @Scheduled(fixedRate = 30 * 1000)
     public void sweepCrossAccounts() {
         Thread.startVirtualThread(crossLiquidationService::sweepAll);
@@ -100,14 +130,14 @@ public class ScheduledTasks {
         });
     }
 
-    /** futures资金费率（每8小时：00:00、08:00、16:00）：拉官方费率刷缓存 + 扣费。全站只有这里调官方接口 */
-    @Scheduled(cron = "0 0 0,8,16 * * *")
-    public void chargeFuturesFundingFee() {
+    /** 资金费：每分钟看一遍有仓位的币，到了各自的结算时刻按 Binance 这一期的实际结算费率收 */
+    @Scheduled(fixedRate = 60 * 1000)
+    public void settleFundingFees() {
         Thread.startVirtualThread(() -> {
             try {
-                futuresSettlementService.chargeFundingFeeAll();
+                fundingRateService.settleDue();
             } catch (Exception e) {
-                log.error("futures资金费率扣除失败", e);
+                log.error("资金费结算失败", e);
             }
         });
     }

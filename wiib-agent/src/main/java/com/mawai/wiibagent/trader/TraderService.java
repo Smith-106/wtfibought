@@ -53,6 +53,8 @@ public class TraderService {
     public static final int MAX_ROUNDS_KEPT = 10;
     /** 币种上限：单轮 12 次模型调用按币摊，一个币扎实求证约 3 次，3 币正好（前端 MyTrader.MAX_SYMBOLS 同一个数） */
     public static final int MAX_SYMBOLS = 3;
+    /** 主人交易指令字数上限，按 String.length() 算（前端指令框同一个数） */
+    public static final int MAX_CUSTOM_PROMPT = 4000;
     /** 唤醒档位四档（1d 已下线：一天一醒的观赏性与反馈密度都撑不起一个档位） */
     private static final Set<String> INTERVALS = Set.of("5m", "15m", "1h", "4h");
 
@@ -496,7 +498,7 @@ public class TraderService {
         if (whitelist == null || !new HashSet<>(whitelist).containsAll(symbols)) {
             return messages.get("trader.config.symbolNotAllowed", Map.of("whitelist", whitelist));
         }
-        if (req.customPrompt() != null && req.customPrompt().length() > 4000) {
+        if (req.customPrompt() != null && req.customPrompt().length() > MAX_CUSTOM_PROMPT) {
             return messages.get("trader.config.promptTooLong");
         }
         return null;

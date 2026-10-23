@@ -5,6 +5,7 @@ import type { BacktestTaskStatus, BacktestEventsPage, BacktestKlinesPage, Backte
 import type { LedgerEntry, LedgerBizTypeOption, PublicTrade, UserProfile, PositionHistoryItem, RankingSort } from '../types';
 import type { LlmEndpointView, LlmEndpointSaveRequest, LlmBindings, LlmPurpose } from '../types';
 import type { JevPredictionOverview, JevPredictionDecisionView, JevBet, JevSwitchState } from '../types';
+import type { PromptGenEvent, PromptGenView } from '../types';
 import type { User, PageResult, RankingItem, CommentItem, NotificationItem, CryptoPrice, CryptoOrderRequest, CryptoOrder, CryptoPosition, BStock, FuturesOpenRequest, FuturesCloseRequest, FuturesAddMarginRequest, FuturesReduceMarginRequest, FuturesStopLossRequest, FuturesTakeProfitRequest, FuturesAdjustLeverageRequest, FuturesCrossAccount, WalletTransferPreview, FuturesPosition, FuturesOrder, FuturesReverseResult, FuturesBracket, FundingRateView, TradeFilterMap, PredictionRound, PredictionBet, PredictionBuyRequest, PredictionBetLive, PredictionPnl, AssetSnapshot, CategoryAverages, ForceOrder, AiKeyConfig, AiModelAssignment, NewsBackfillResult, InviteCode, ChatIntent, WorkbenchEvent, StrategyAccountView, TraderPublicView, TraderOwnerView, TraderDetailView, AiTraderDecisionView, TraderEquityPoint, TraderUpsertRequest, TraderExperience, TraderSpec, StrategySignalState, FeedStreamHealth, WorkbenchSessionSummary, WorkbenchSessionStatus, WorkbenchChatMessage, WorkbenchPrefs, TraderActionPanel, TraderActionResult, TradeRecordView, TraderLiveEvent, WakeTrace } from '../types';
 
 const api = axios.create({
@@ -768,5 +769,21 @@ export const backtestApi = {
   /** 复盘 AI 教练（SSE：token/done/error）：HINT 局中盘面提示 / REVIEW 结算后评估看法。走用户 BYOK 对话配置 */
   replayCoach: (req: ReplayCoachRequest, onEvent: (e: ReplayCoachEvent) => void, signal?: AbortSignal) =>
     postSse<ReplayCoachEvent>('/api/ai/backtest/replay/coach', req, onEvent, signal),
+};
+
+// ========== 交易指令生成器（agent，前缀 /api/ai/prompt-gen） ==========
+export const promptGenApi = {
+  /** 当前对话 + 最近 3 版；进页面和每轮结束都拉它 */
+  session: () => api.get<unknown, PromptGenView>('/ai/prompt-gen/session'),
+  /** 开新对话（覆盖旧对话，版本保留）并跑第一轮。outputLang 是指令正文语言，对话跟 agent 语言 */
+  start: (body: { endpointId: number; outputLang: Lang },
+          onEvent: (e: PromptGenEvent) => void, signal?: AbortSignal) =>
+    postSse<PromptGenEvent>('/api/ai/prompt-gen/start', body, onEvent, signal),
+  /** 回答题卡、跳过当前题（还没答的必问项不能跳）、或直接说要改哪里 */
+  reply: (body: { text?: string; skip?: boolean },
+          onEvent: (e: PromptGenEvent) => void, signal?: AbortSignal) =>
+    postSse<PromptGenEvent>('/api/ai/prompt-gen/reply', body, onEvent, signal),
+  /** 用第 no 版当时的对话替换当前对话；版本列表不动 */
+  rollback: (no: number) => api.post<unknown, PromptGenView>('/ai/prompt-gen/rollback', { no }),
 };
 

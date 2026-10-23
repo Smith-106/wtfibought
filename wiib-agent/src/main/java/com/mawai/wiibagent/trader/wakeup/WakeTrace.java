@@ -15,7 +15,7 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
  * 一次唤醒的过程轨迹：纯数据。运行线程写、订阅者连上时读，方法全同步。
  * 每个变更方法返回要外发的帧（事件名 + data），hub 原样扇出；
  * {@link #replay} 按当前状态合成回放帧；{@link #toJson} 是落库形状。
- * 不认识 SSE、langgraph、Spring 容器。
+ * 不认识 SSE、Spring 容器。
  */
 public final class WakeTrace {
 

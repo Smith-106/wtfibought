@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================
-   agent-flow 面板：两块 harness 的信号路径动画
+   agent-flow 面板：三块 harness 的信号路径动画
    宽屏 = 泳道图（绝对坐标）；窄屏 = 单轨 stepper（一条总线，卡片按信号顺序竖排）
    ============================================================ */
 
@@ -32,7 +32,7 @@ const UI = {
     title: { zh: '图例', en: 'LEGEND' },
     pulse: { zh: '脉冲 = 数据在走', en: 'pulse = data moving' },
     led: { zh: 'LED = 闸门在过', en: 'LED = a gate passing' },
-    back: { zh: '虚线 = 回边 / 下一次唤醒', en: 'dashed = feedback edge' },
+    back: { zh: '虚线 = 回边', en: 'dashed = feedback edge' },
     bad: { zh: '红脉冲 = 被拒', en: 'red pulse = rejected' },
     click: { zh: '点节点看说明', en: 'click a node to read' }
   }
@@ -46,6 +46,7 @@ const PANELS = [
     title: { zh: 'trader agent', en: 'trader agent' },
     sub: { zh: '唯一会动真账本的 · 配套每日复盘', en: 'touches the real ledger · with daily review' },
     w: 1180, h: 648,
+    legend: { x: 16, y: 460, w: 170, h: 124 },
     lanes: [
       { x: 216, y: 34, t: { zh: '一次唤醒 · ONE WAKEUP', en: 'ONE WAKEUP' } },
       { x: 216, y: 436, t: { zh: '日终交接 · END OF DAY', en: 'END OF DAY' } }
@@ -270,6 +271,136 @@ const PANELS = [
       { zh: '长活不在轮里等：深研判 / 调研 / 行情分析派成后台子运行 · 报告回灌上下文 · 本地空闲时唤醒轮补答', en: 'Slow work never blocks a turn: deep analysis / research / market analysis run as child runs · reports flow back into the context · a follow-up turn answers once the client is idle' },
       { zh: '主 agent 与每个 worker 各自 ≤8 次调用 · 同批工具并发 · 未吐帧才重订阅 · 不挂兜底模型', en: 'the main agent and each worker count their own ≤8 calls · same-batch tools in parallel · re-subscribe only before the first frame · no fallback model' }
     ]
+  },
+  {
+    id: 'alpha',
+    num: 'HARNESS 03',
+    title: { zh: '因子挖掘 agent', en: 'factor-mining agent' },
+    sub: { zh: '生成角色 ↔ 评审角色 · 代码硬门判真假', en: 'generator ↔ reviewer · code gates decide' },
+    w: 1180, h: 620,
+    legend: { x: 946, y: 60, w: 218, h: 124 },
+    lanes: [
+      { x: 216, y: 22, t: { zh: '每条候选并行 · PER CANDIDATE', en: 'PER CANDIDATE · IN PARALLEL' } },
+      { x: 466, y: 420, t: { zh: '一轮收尾 · END OF ROUND', en: 'END OF ROUND' } }
+    ],
+    nodes: [
+      { id: 'camp', x: 16, y: 50, w: 170, h: 112, tag: 'CAMPAIGN', icon: 'route',
+        title: { zh: '跑一个 campaign', en: 'A campaign' },
+        rows: [
+          { id: 'r1', t: { zh: 'R 轮 × 每轮 K 条', en: 'R rounds × K each' } },
+          { id: 'r2', t: { zh: '可带本轮方向要求', en: 'optional note' } },
+          { id: 'r3', t: { zh: '跑完一轮查停止条件', en: 'checks stop rules' } }
+        ],
+        detail: { zh: '管理员在挖掘页建 campaign：轮数（默认 10，最多 50）、每轮候选数 K（默认 5，最多 10）、可选的方向要求，还能设幸存者上限和时长。图跑在服务端后台，关页面不停。一轮跑完查停止条件——跑满轮数、幸存者够数、到时间、手动停、连续两轮出错——没到就用同样的设置起下一轮。同一时间只跑一个 campaign，跑着的时候不能刷新数据、跑参照集或复评：各轮共用同一份数据和同一个 holdout 切点。', en: 'An admin starts a campaign on the mining page: rounds (10 by default, up to 50), K candidates per round (5 by default, up to 10), an optional direction note, plus an optional survivor cap and time limit. The graph runs server-side in the background; closing the page does not stop it. After each round the stop rules are checked — rounds done, enough survivors, time up, stopped by hand, two failed rounds in a row — and otherwise the next round starts with the same settings. Only one campaign runs at a time, and while it runs, data refreshes, reference runs and re-evaluations are refused: every round shares one dataset and one holdout cut.' } },
+      { id: 'mem', x: 16, y: 184, w: 170, h: 148, tag: 'MEMORY', icon: 'database',
+        title: { zh: '出题素材', en: 'What it reads' },
+        sub: { zh: '都只来自搜索段', en: 'search span only' },
+        rows: [
+          { id: 'lib', t: { zh: '库里的因子', en: 'library factors' } },
+          { id: 'les', t: { zh: '经验 · 最近 20 条', en: 'lessons · latest 20' } },
+          { id: 'tri', t: { zh: '试过的 · 最近 200 条', en: 'tried · latest 200' } },
+          { id: 'fam', t: { zh: '方向提示 · 7 类', en: 'families · 7 hints' } }
+        ],
+        detail: { zh: '每轮出题前现读：库里已有的因子（别重复、别换个窗口翻版）、之前几轮复盘写下的经验（最新 20 条）、已经试过的假设和结局（最新 200 条，带没过的门），再加本轮的方向要求和 7 类可选方向（量能、流动性、资金费 carry、溢价/基差、持仓变化、多空比、taker 失衡）。这里的数字全部来自 holdout 之前的搜索段。', en: 'Read fresh before every proposal: the factors already in the library (no repeats, no re-windowed copies), lessons from earlier rounds (latest 20), hypotheses already tried and how they ended (latest 200, with the gates they failed), plus the round’s direction note and 7 suggested families (volume, liquidity, funding carry, premium/basis, open-interest change, long/short ratios, taker imbalance). Every number here comes from the search span before the holdout.' } },
+      { id: 'gen', x: 216, y: 50, w: 210, h: 282, tag: 'GEN AGENT', icon: 'bot',
+        title: { zh: '生成角色 · 挖掘 agent', en: 'Generator · mining agent' },
+        sub: { zh: '重写时方向锁定 · 每评估一版算一次试验', en: 'direction locked on rewrites · every evaluated version is a trial' },
+        rows: [
+          { id: 'p', t: { zh: '① 提 K 条假设', en: '① propose K hypotheses' } },
+          { id: 'i', t: { zh: '② 写表达式 · 声明方向', en: '② expression + direction' } },
+          { id: 'w', t: { zh: '③ 门没过 → 看数字重写 ≤2', en: '③ gates fail → redo ≤2' } },
+          { id: 'v', t: { zh: '④ 评审打回 → 照意见改 ≤2', en: '④ sent back → redo ≤2' } },
+          { id: 'r', t: { zh: '⑤ 轮后复盘 → 写经验', en: '⑤ reflect → lessons' } }
+        ],
+        stream: 2,
+        detail: { zh: '一个 LLM 角色干五件事，模型在挖掘页单独配，和评审分开。先读出题素材提 K 条彼此不同的假设；每条假设各走一路、并行跑，写成一条 DSL 表达式，并按假设声明方向（因子越大越强填 1）。硬门没过，带着没过的门和搜索段的关键数字重写，同一假设最多再写两版，方向沿用上一版——它已经看过 IC 了，不能跟着数字翻方向。评审打回，带着评审的理由和改法重写，最多两次。一轮结束再看全部候选写 1~5 条经验。每评估一版都记一次试验。', en: 'One LLM role doing five jobs, on its own model configured apart from the reviewer. It reads the proposal material and proposes K distinct hypotheses; each then runs on its own, in parallel, as one DSL expression with a direction declared from the hypothesis (1 = higher value, stronger coin). When the hard gates fail, it rewrites with the failed gates and the key search-span numbers, at most two more versions, and keeps the direction it declared — it has seen the IC and may not flip to follow it. When the reviewer sends it back, it rewrites with the reviewer’s reason and fix, at most twice. After the round it reads every candidate and writes 1–5 lessons. Every evaluated version counts as a trial.' } },
+      { id: 'dsl', x: 466, y: 50, w: 190, h: 112, tag: 'PARSE · CODE', icon: 'file-text',
+        title: { zh: 'DSL 解析', en: 'DSL parser' },
+        rows: [
+          { id: 'syn', t: { zh: 'Python 写法 · 35 个算子', en: 'Python syntax · 35 ops' } },
+          { id: 'cx', t: { zh: '复杂度按不同的数', en: 'distinct-count limits' } },
+          { id: 're', t: { zh: '不合法 → 带毛病再要', en: 'invalid → ask again' } }
+        ],
+        detail: { zh: '表达式就是 Python 表达式：$列引用面板的列（K 线、成交、资金费、溢价、持仓、多空比……），只放行 + − × ÷ 和 35 个算子（Qlib 风格的时序算子加 3 个截面算子），窗口必须是 1~2016 根的整数字面量。复杂度上限解析时就卡：不同的子式 ≤40、不同的窗口值 ≤6、不同的常量值 ≤6、截面算子 ≤2。按不同的数，同一个东西重复写不多算，拦的是堆参数而不是长公式。不是 JSON、不合法、和这条假设评估过的某版一模一样，都带着毛病再要，三次不行就停。', en: 'An expression is a Python expression: $column reads a panel column (candles, volume, funding, premium, open interest, long/short ratios…), and only + − × ÷ and 35 operators are allowed (Qlib-style time-series operators plus 3 cross-sectional ones); windows must be integer literals from 1 to 2016 bars. Complexity is capped at parse time: ≤40 distinct sub-expressions, ≤6 distinct window values, ≤6 distinct constants, ≤2 cross-sectional operators. Counting distinct values means repeating the same thing costs nothing — the cap stops parameter stuffing, not long formulas. Not JSON, invalid, or identical to a version already evaluated for this hypothesis: it is asked again with the problem attached, three strikes and it stops.' } },
+      { id: 'eval', x: 466, y: 180, w: 190, h: 214, tag: 'GATES · CODE', icon: 'shield-check',
+        title: { zh: '硬门 G0–G10', en: 'Hard gates G0–G10' },
+        sub: { zh: '只看搜索段 · 代码判，不是模型', en: 'search span only · code, not a model' },
+        rows: [
+          { id: 'g0', led: true, t: { zh: 'G0 前视 · G1 样本', en: 'G0 lookahead · G1 n' } },
+          { id: 'g2', led: true, t: { zh: 'G2 IC · 顶组减底组', en: 'G2 IC · top − bottom' } },
+          { id: 'g3', led: true, t: { zh: 'G3 四段 · G4 三档', en: 'G3 4 segs · G4 3 horizons' } },
+          { id: 'g5', led: true, t: { zh: 'G5 多空腿排列检验', en: 'G5 long-short permutation' } },
+          { id: 'g6', led: true, t: { zh: 'G6 冗余 · G7 复杂度', en: 'G6 redundancy · G7 size' } },
+          { id: 'g8', led: true, t: { zh: 'G8 结构原创', en: 'G8 new structure' } },
+          { id: 'g9', led: true, t: { zh: 'G9 交易方案增量', en: 'G9 scheme Sharpe gain' } },
+          { id: 'g10', led: true, t: { zh: 'G10 方向对上声明', en: 'G10 sign = declared' } }
+        ],
+        detail: { zh: '全池几百个币逐币求值，campaign 和手填评估合起来同时最多两条在算。门全部只看搜索段：G0 截断重算查前视；G1 样本量；G2 主档 24h 月度截面 IC ≥0.01、t ≥3，且截尾后顶组减底组 t ≥2；G3 四段至少三段同号、最近一段必须同号；G4 6/12/24h 三档同号；G5 多空腿（头尾 1/5 进场、2/5 才出、按波动分仓）的截面排列检验；G6 和参照集（老效应 + Alpha158）、库、观察区的截面 |ρ| < 0.7；G7 复杂度；G8 抹掉窗口和常量后的结构不和已知重合；G9 加进实盘交易方案后净 Sharpe 至少升 0.1；G10 IC 符号和声明的方向一致。另报一份回归掉老效应和 24h 反转之后还剩多少 IC，当标签不当门。', en: 'Every coin in a pool of hundreds is evaluated; campaign candidates and manual evaluations together run at most two at a time. Every gate reads only the search span: G0 truncate-and-recompute lookahead check; G1 sample size; G2 24h monthly cross-sectional IC ≥ 0.01 with t ≥ 3, plus a trimmed top-minus-bottom spread with t ≥ 2; G3 at least three of four segments agree, the latest one included; G4 the 6/12/24h horizons agree; G5 a cross-sectional permutation test of the long-short leg (enter at the outer fifths, exit past two fifths, vol-sized); G6 cross-sectional |ρ| < 0.7 against the reference set (known effects + Alpha158), the library and the watch list; G7 complexity; G8 the structure with windows and constants masked must be new; G9 adding it to the live trading scheme lifts net Sharpe by at least 0.1; G10 the IC sign matches the declared direction. The IC left after regressing out known effects and 24h reversal is reported as a label, not a gate.' } },
+      { id: 'rev', x: 706, y: 92, w: 200, h: 196, tag: 'REVIEW AGENT', icon: 'scale',
+        title: { zh: '评审角色', en: 'Reviewer' },
+        sub: { zh: '过了硬门才出场 · 不对数字投票', en: 'only after the gates · never votes on numbers' },
+        rows: [
+          { id: 'c1', t: { zh: '对得上假设吗', en: 'matches the hypothesis?' } },
+          { id: 'c2', t: { zh: '机制讲得通吗', en: 'mechanism makes sense?' } },
+          { id: 'c3', t: { zh: '有没有换皮 · 凑常量', en: 'reskin · padded constants?' } },
+          { id: 'pass', t: { zh: 'pass → 同批收尾', en: 'pass → batch wrap-up' } },
+          { id: 'rv', t: { zh: 'revise → 带理由和改法', en: 'revise → reason + fix' } },
+          { id: 'rj', t: { zh: 'reject → 停在这一版', en: 'reject → ends here' } }
+        ],
+        detail: { zh: '另一个 LLM 角色，单独配模型，只在硬门全过之后出场。看的是假设、表达式、公式说明、声明的方向和搜索段的数字，看不到 holdout。它不对数字投票，只判三件事：公式算的是不是假设说的东西、声明的方向对不对；这个机制在 15 分钟 K 线、6~24 小时持有期上讲不讲得通；硬门看不见的毛病——常量凑数、老因子换皮、依赖历史很短的列、结果被某个退化项主导。revise 要给理由和具体改法，改法也得写得进复杂度上限；打回两次还不过就按评审拒结案。', en: 'A second LLM role on its own model, called only once every hard gate has passed. It sees the hypothesis, the expression, the formula note, the declared direction and the search-span numbers — never the holdout. It does not vote on the numbers; it judges three things: does the formula compute what the hypothesis says, and is the declared direction right; does the mechanism hold up on 15-minute candles and 6–24h holds; and what the gates cannot see — padded constants, an old factor reskinned, columns with a short history, a result driven by one degenerate term. A revise must give a reason and a concrete fix that fits the complexity limits; sent back twice and still not right, it ends as rejected by review.' } },
+      { id: 'batch', x: 216, y: 448, w: 210, h: 124, tag: 'BATCH · CODE', icon: 'layers',
+        title: { zh: '同批收尾', en: 'Batch wrap-up' },
+        rows: [
+          { id: 'bh', t: { zh: 'BH-FDR · 旧版也占名额', en: 'BH-FDR · old versions count' } },
+          { id: 'dd', t: { zh: '同批查重 · 留增量大的', en: 'dedupe · keep the best G9' } },
+          { id: 'tr', t: { zh: '累计试验数', en: 'running trial count' } }
+        ],
+        detail: { zh: '一轮里评估过的候选一起做 BH 多重检验：用 G5 的排列 p，门没过重写掉的、被评审改掉的旧版本各按 p=1 占一个名额，没扛住的打回。过了的按 G9 增量排队，结构重合或截面 |ρ| ≥0.7 的只留排在前面那条，留下的再算一次排在别人后面还剩多少增量写给人看。这一轮评估了几版，试验数就加几，只增不减。', en: 'Every candidate evaluated in the round goes through one Benjamini–Hochberg pass on its G5 permutation p; versions replaced by a rewrite or a review fix each hold a slot at p = 1, and whatever fails is rejected. Survivors queue by G9 gain; a shared structure or cross-sectional |ρ| ≥ 0.7 keeps only the one ahead, and each kept one gets its gain recomputed behind the others, written down for the human. The trial count grows by every version evaluated and never goes down.' } },
+      { id: 'hold', x: 466, y: 448, w: 190, h: 124, tag: 'HOLDOUT', icon: 'key',
+        title: { zh: 'holdout 只算一次', en: 'Holdout, once' },
+        rows: [
+          { id: 'h1', t: { zh: '最近 180 天锁住', en: 'last 180 days locked' } },
+          { id: 'h2', t: { zh: '只给留下的算', en: 'survivors only' } },
+          { id: 'h3', t: { zh: '不回喂任何模型', en: 'never fed back to a model' } }
+        ],
+        detail: { zh: '数据最近 180 天锁成 holdout：硬门、评审、重写的反馈、复盘看到的数字全部来自它之前。同批收尾后只给留下的候选在 holdout 上算一次截面 IC，结果只写进观察区卡片给人看，不进评审、重写和复盘，也不写进 tried。手填评估同样只在全部门都过了才算。', en: 'The latest 180 days are locked away as the holdout: the gates, the reviewer, rewrite feedback and the reflection all see numbers from before it. After the batch wrap-up, survivors alone get one cross-sectional IC on the holdout; it goes onto the watch-list card for a human and never into review, rewrites, reflection or the tried list. Manual evaluations also compute it only when every gate passes.' } },
+      { id: 'obs', x: 706, y: 448, w: 200, h: 124, tag: 'WATCH LIST', icon: 'user',
+        title: { zh: '观察区 · 人决定入库', en: 'Watch list · a human decides' },
+        rows: [
+          { id: 'o1', t: { zh: '搜索段数字 + holdout', en: 'search numbers + holdout' } },
+          { id: 'o2', t: { zh: '已进 G6 对比集', en: 'already in the G6 set' } },
+          { id: 'o3', t: { zh: '入库 / 丢弃 · 可复评', en: 'approve / drop / re-run' } }
+        ],
+        detail: { zh: '过了硬门、评审、同批 BH 和查重的进观察区，这一轮所有候选连同结局记进 tried。观察区里的已经算进 G6 对比集和已知结构，后面几轮换个窗口再交一遍会被 G8 拒、高度相关的被 G6 拒。入不入库由管理员看了搜索段和 holdout 的数字决定，也可以按当前的门把整个观察区复评一遍。', en: 'Whatever clears the gates, the reviewer, the batch BH and the dedupe lands on the watch list, and every candidate of the round goes into the tried list with its outcome. Watch-list entries already count for G6 and as known structures, so a re-windowed copy in a later round fails G8 and a near-duplicate fails G6. A human decides what enters the library after reading the search and holdout numbers, and can re-run the whole watch list under today’s gates.' } },
+      { id: 'lib', x: 946, y: 448, w: 218, h: 124, tag: 'LIBRARY → TRADER', icon: 'trending-up',
+        title: { zh: '因子库 → 因子交易员', en: 'Library → factor trader' },
+        rows: [
+          { id: 'l1', t: { zh: '成为 G6 · G8 · G9 的尺子', en: 'the yardstick for G6/G8/G9' } },
+          { id: 'l2', t: { zh: '一半因子组合 · 一半 carry', en: 'half factors · half carry' } },
+          { id: 'l3', t: { zh: '每天 UTC 00:15 调仓', en: 'rebalance daily 00:15 UTC' } }
+        ],
+        detail: { zh: '入库的因子成了之后所有候选的尺子：G6 冗余对比、G8 已知结构、G9 交易方案的基线，下一轮出题也带着它们。因子交易员用勾选的库因子下单：一半资金做组合腿（各因子先转截面秩再加权，权重的符号跟 24h 截面 IC、大小是它单独做多空腿扣完成本和资金费的净收益，不赚钱的不进组合；多空两头缓冲带选币、按波动分仓），一半做基差 carry，每天 UTC 00:15 整篮子调仓，跑在模拟盘子账户上。', en: 'Library factors become the yardstick for every later candidate — G6 redundancy, G8 known structures, the G9 baseline — and they show up in the next proposals. The factor trader trades the ticked library factors: half the capital on the combo leg (each factor ranked cross-sectionally and weighted with the sign of its 24h cross-sectional IC and the size of its own long-short leg’s net return after costs and funding, zero if it does not make money; buffered long/short picks, vol-sized), half on basis carry, the whole basket rebalanced daily at 00:15 UTC on a paper sub-account.' } }
+    ],
+    edges: [
+      { id: 'cp-gen', from: 'camp', to: 'gen', pts: [[186, 106], [216, 106]] },
+      { id: 'mem-gen', from: 'mem', to: 'gen', pts: [[186, 232], [216, 232]] },
+      { id: 'gen-mem', from: 'gen', to: 'mem', cls: 'back', pts: [[216, 300], [186, 300]] },
+      { id: 'gen-dsl', from: 'gen', to: 'dsl', pts: [[426, 106], [466, 106]] },
+      { id: 'dsl-eval', from: 'dsl', to: 'eval', pts: [[561, 162], [561, 180]] },
+      { id: 'eval-gen', from: 'eval', to: 'gen', cls: 'back', pts: [[466, 350], [446, 350], [446, 310], [426, 310]] },
+      { id: 'eval-rev', from: 'eval', to: 'rev', pts: [[656, 240], [681, 240], [681, 190], [706, 190]] },
+      { id: 'rev-gen', from: 'rev', to: 'gen', cls: 'back', pts: [[806, 92], [806, 42], [380, 42], [380, 50]] },
+      { id: 'rev-batch', from: 'rev', to: 'batch', pts: [[806, 288], [806, 404], [380, 404], [380, 448]] },
+      { id: 'bt-gen', from: 'batch', to: 'gen', pts: [[260, 448], [260, 332]] },
+      { id: 'bt-ho', from: 'batch', to: 'hold', pts: [[426, 510], [466, 510]] },
+      { id: 'ho-obs', from: 'hold', to: 'obs', pts: [[656, 510], [706, 510]] },
+      { id: 'obs-lib', from: 'obs', to: 'lib', pts: [[906, 510], [946, 510]] },
+      { id: 'lib-mem', from: 'lib', to: 'mem', cls: 'back', pts: [[1055, 572], [1055, 600], [101, 600], [101, 332]] }
+    ],
+    foot: [
+      { zh: '最近 180 天锁成 holdout：门、评审、重写、复盘都看不到 · 只给过门的算一次给人看', en: 'The latest 180 days are a locked holdout: gates, reviewer, rewrites and reflection never see it · scored once, for survivors, for a human' },
+      { zh: '每评估一版算一次试验 · 同批 BH-FDR · 入不入库只由人点', en: 'every evaluated version is a trial · batch BH-FDR · only a human approves' }
+    ]
   }
 ];
 
@@ -290,6 +421,14 @@ const STEP = {
     float: { hitl: { over: 'main', dy: 0, inset: 0 } },   // 窄屏卡片只剩标题，HITL 卡直接盖在主 agent 上
     groups: [
       { from: 'cr', to: 'da', t: { zh: '后台子运行 · 并行', en: 'child runs · in parallel' } }
+    ]
+  },
+  alpha: {
+    order: ['camp', 'mem', 'gen', 'dsl', 'eval', 'rev', 'batch', 'hold', 'obs', 'lib'],
+    indent: { dsl: 1, eval: 1, rev: 1 },
+    groups: [
+      { from: 'gen', to: 'rev', t: { zh: '每条候选并行', en: 'per candidate · in parallel' } },
+      { from: 'batch', to: 'lib', t: { zh: '一轮收尾', en: 'end of round' } }
     ]
   }
 };
@@ -358,8 +497,8 @@ function renderPanel(cfg, mount) {
     view.nodes[n.id] = d;
   }
 
-  // 图例：trader 图左下角那块空地，只在宽屏出现
-  if (cfg.id === 'trader') {
+  // 图例：放在 cfg.legend 给的那块空地，只在宽屏出现
+  if (cfg.legend) {
     const lg = UI.legend;
     const legend = el('div', 'legend');
     legend.innerHTML = `<div class="lg-t">${esc(T(lg.title))}</div>
@@ -460,7 +599,10 @@ function applyLayout(view) {
       ln.el.style.display = '';
       ln.el.style.left = ln.cfg.x + 'px'; ln.el.style.top = ln.cfg.y + 'px';
     }
-    if (view.legend) { view.legend.style.display = ''; view.legend.style.cssText = 'left:16px;top:460px;width:170px;height:124px'; }
+    if (view.legend) {
+      const lg = cfg.legend;
+      view.legend.style.cssText = `left:${lg.x}px;top:${lg.y}px;width:${lg.w}px;height:${lg.h}px`;
+    }
     for (const g of view.groups) g.el.style.display = 'none';
   } else {
     const sp = STEP[cfg.id];
@@ -618,6 +760,7 @@ class Runner {
     if (!keep) setTimeout(() => r.classList.remove(cls), 1100 / this.speed);
   }
   ledOk(nid, rid) { const r = this.node(nid).querySelector(`[data-row="${rid}"]`); if (r) r.classList.add('ok'); }
+  clearRows(nid) { this.node(nid).querySelectorAll('.nrow').forEach(r => r.classList.remove('hit', 'ok', 'bad')); }
   chip(nid, cid) { const c = this.node(nid).querySelector(`[data-chip="${cid}"]`); if (c) c.classList.add('hit'); }
   count(nid, val) { const b = this.node(nid).querySelector('[data-c]'); if (b) b.textContent = val; }
   hold(nid) { this.node(nid).classList.remove('on'); this.node(nid).classList.add('hold'); }
@@ -1078,8 +1221,185 @@ async function chatScript(c, scene) {
   }
 }
 
+/* ---------- 剧本：因子挖掘三个场景轮播 ---------- */
+const AL_SCENES = [
+  { zh: 'A · 门没过带数字重写 → 过门 → 评审通过', en: 'A · gates fail → rewrite with the numbers → pass → reviewer passes' },
+  { zh: 'B · 评审打回：带理由和改法重写', en: 'B · reviewer sends it back with a reason and a fix' },
+  { zh: 'C · 一轮收尾：同批 BH → holdout → 复盘 → 入库', en: 'C · end of round: batch BH → holdout → reflect → library' }
+];
+
+/* 共用开场：campaign 起一轮 → 读出题素材 → 生成角色提假设，跟其中一条往下走 */
+async function alPropose(c, hyp) {
+  c.on('camp');
+  c.log('CAMP', { zh: '第 3 / 10 轮 · K = 5 · 方向要求：换手低一点', en: 'round 3 / 10 · K = 5 · note: keep turnover low' });
+  await c.sleep(600);
+  c.on('mem');
+  for (const r of ['lib', 'les', 'tri', 'fam']) { c.row('mem', r, 'hit', true); await c.sleep(160); }
+  c.log('MEM', { zh: '库里 2 条因子 · 经验 20 条 · 试过的 200 条 · 数字都来自搜索段', en: '2 library factors · 20 lessons · 200 tried · every number from the search span' });
+  await c.sleep(500);
+  await Promise.all([c.pulse('cp-gen'), c.pulse('mem-gen')]);
+  c.done('camp'); c.done('mem'); c.on('gen');
+  c.row('gen', 'p', 'hit');
+  c.log('GEN', { zh: '提出 5 条假设 · 每条各走一路并行，下面跟其中一条', en: '5 hypotheses · each runs on its own in parallel; following one of them' });
+  await c.type('gen', 0, hyp);
+}
+
+/* 写一版表达式 → 解析过了 → 进硬门 */
+async function alWrite(c, expr, parsed) {
+  c.row('gen', 'i', 'hit');
+  await c.type('gen', 1, expr);
+  await c.pulse('gen-dsl');
+  c.on('dsl'); c.clearRows('dsl');
+  c.row('dsl', 'syn', 'hit'); c.row('dsl', 'cx', 'hit');
+  c.log('DSL', parsed);
+  await c.sleep(500);
+  await c.pulse('dsl-eval');
+  c.done('dsl'); c.on('eval'); c.clearRows('eval');
+}
+
+/* 硬门逐道亮；fail 是没过的那道，返回过没过 */
+async function alGates(c, fail, msg) {
+  c.log('GATE', { zh: '全池逐币求值 · 门只看搜索段，holdout 锁着', en: 'evaluated over the whole pool · gates read the search span, holdout locked' });
+  for (const g of ['g0', 'g2', 'g3', 'g5', 'g6', 'g8', 'g9', 'g10']) {
+    if (g === fail) {
+      c.row('eval', g, 'bad', true); c.err('eval');
+      c.log('GATE', msg, 'bad');
+      return false;
+    }
+    c.ledOk('eval', g); await c.sleep(220);
+  }
+  c.log('GATE', msg, 'good');
+  return true;
+}
+
+/* 评审过三问，给出裁决 */
+async function alReview(c, verdictRow, msgs) {
+  await c.pulse('eval-rev');
+  c.done('eval'); c.on('rev'); c.clearRows('rev');
+  for (const r of ['c1', 'c2', 'c3']) { c.row('rev', r, 'hit'); await c.sleep(300); }
+  for (const [msg, cls] of msgs) { c.log('REVIEW', msg, cls); await c.sleep(800); }
+  c.row('rev', verdictRow, 'hit', true);
+}
+
+async function alphaScript(c, scene) {
+  c.scene(AL_SCENES[scene]);
+
+  if (scene === 0) {
+    await alPropose(c, { zh: '假设：7 天主动买入占比一直偏高的币，之后 24h 相对更强', en: 'Hypothesis: coins with a persistently high 7-day taker-buy share outperform over the next 24h' });
+    await alWrite(c, 'Mean($taker_buy_quote / $quote_volume, 96) · +1', { zh: '解析通过 · 节点 4 · 窗口 1 · 常量 0', en: 'parsed · 4 nodes · 1 window · 0 constants' });
+    await alGates(c, 'g5', { zh: 'G5 排列分位 0.71 没过 · 换手 0.31 · 盈亏平衡 3.2 bps', en: 'G5 permutation 0.71, failed · turnover 0.31 · break-even 3.2 bps' });
+    await c.pulse('eval-gen', { cls: 'bad' });
+    c.clearErr('eval');
+    c.row('gen', 'w', 'hit', true);
+    c.log('GEN', { zh: '带着没过的门和搜索段数字重写 · 方向沿用 +1，看过 IC 也不许翻', en: 'rewrites with the failed gate and search-span numbers · direction stays +1, seeing the IC changes nothing' }, 'warn');
+    await c.sleep(700);
+    await alWrite(c, 'Mean($taker_buy_quote / $quote_volume, 672) · +1', { zh: '解析通过 · 窗口拉到 7 天', en: 'parsed · window stretched to 7 days' });
+    await alGates(c, null, { zh: 'G0–G10 全过 · G9 净 Sharpe +0.14 · IC +0.011 和声明的 +1 一致', en: 'G0–G10 pass · G9 net Sharpe +0.14 · IC +0.011 matches the declared +1' });
+    c.done('gen');
+    await alReview(c, 'pass', [
+      [{ zh: '公式量的就是假设说的东西 · 资金流持续讲得通 · 没有凑常量', en: 'the formula measures what the hypothesis says · persistent flow is plausible · no padded constants' }],
+      [{ zh: 'pass', en: 'pass' }, 'good']
+    ]);
+    await c.pulse('rev-batch');
+    c.done('rev'); c.on('batch');
+    c.log('BATCH', { zh: '等同批另外 4 条走完，一起收尾', en: 'waits for the other 4 in the batch, then wraps up together' }, 'dim');
+    await c.sleep(1000);
+    c.done('batch');
+
+  } else if (scene === 1) {
+    await alPropose(c, { zh: '假设：成交额全天均匀到场的币盘口更稳，之后 24h 相对更强', en: 'Hypothesis: coins whose volume arrives evenly through the day have steadier books and outperform' });
+    // 负号后面接个 U+2060，别让浏览器在 "-" 后面折行
+    await alWrite(c, '-⁠(Abs(Corr($quote_volume, $hour, 672)) + …) · +1', { zh: '解析通过 · 节点 12 · 窗口 1 · 常量 1', en: 'parsed · 12 nodes · 1 window · 1 constant' });
+    await alGates(c, null, { zh: 'G0–G10 全过 · G9 净 Sharpe +0.10', en: 'G0–G10 pass · G9 net Sharpe +0.10' });
+    c.done('gen');
+    await alReview(c, 'rv', [
+      [{ zh: '对不上假设：$hour 被当成线性变量，量的不是日内分布有多均匀', en: 'does not match: $hour is treated as linear, so this is not how evenly volume is spread' }, 'warn'],
+      [{ zh: 'revise · 改法：4 个 6 小时时段的成交额占比算负赫芬达尔，要写得进复杂度上限', en: 'revise · fix: negative Herfindahl of volume share over four 6-hour buckets, within the complexity limits' }, 'warn']
+    ]);
+    c.row('rev', 'c1', 'bad', true);
+    await c.pulse('rev-gen', { dur: 900 });
+    c.done('rev'); c.on('gen');
+    c.row('gen', 'v', 'hit', true);
+    c.log('GEN', { zh: '拿到评审的理由和改法照着重写 · 这条路方向可以重新声明', en: 'gets the reviewer’s reason and fix and rewrites · on this path the direction may be re-declared' });
+    await c.sleep(600);
+    // 第一次照抄改法超了上限：解析当场拒，带着毛病再要
+    c.row('gen', 'i', 'hit');
+    await c.type('gen', 1, '-⁠(Pow(Sum(If(Lt($hour,6),$quote_volume,0),672)/…,2) + …)');
+    await c.pulse('gen-dsl');
+    c.on('dsl'); c.clearRows('dsl');
+    c.row('dsl', 'cx', 'bad', true); c.err('dsl');
+    c.log('DSL', { zh: '太复杂：不同的常量值 8 个，上限 6 → 带着毛病再要', en: 'too complex: 8 distinct constants, limit 6 → asked again with the problem' }, 'bad');
+    await c.pulse('gen-dsl', { reverse: true, cls: 'bad' });
+    c.clearErr('dsl');
+    await alWrite(c, '-⁠(Pow(Sum(Lt($hour,6)*$quote_volume,672),2) + …)/Pow(Sum($quote_volume,672),2)', { zh: '解析通过 · 节点 32 · 窗口 1 · 常量 5，重复写的只算一个', en: 'parsed · 32 nodes · 1 window · 5 constants, repeats count once' });
+    await alGates(c, null, { zh: 'G0–G10 全过 · G9 净 Sharpe +0.12', en: 'G0–G10 pass · G9 net Sharpe +0.12' });
+    c.done('gen');
+    await alReview(c, 'pass', [
+      [{ zh: 'pass · 度量对上了假设', en: 'pass · the measure now matches the hypothesis' }, 'good']
+    ]);
+    await c.pulse('rev-batch');
+    c.done('rev'); c.on('batch');
+    c.log('BATCH', { zh: '进同批收尾', en: 'on to the batch wrap-up' }, 'dim');
+    await c.sleep(1000);
+    c.done('batch');
+
+  } else {
+    c.on('batch');
+    c.row('batch', 'bh', 'hit', true);
+    c.log('BATCH', { zh: '5 条候选、评估了 9 版一起做 BH · 重写掉的旧版按 p=1 占名额', en: '5 candidates, 9 evaluated versions, one BH pass · replaced versions hold a slot at p = 1' });
+    await c.sleep(1000);
+    c.log('BATCH', { zh: '1 条没扛住 BH → 拒', en: '1 fails BH → rejected' }, 'bad');
+    await c.sleep(700);
+    c.row('batch', 'dd', 'hit', true);
+    c.log('BATCH', { zh: '过门的 2 条截面 |ρ| 0.78 → 只留 G9 增量大的那条', en: '2 survivors at |ρ| 0.78 → only the larger G9 gain stays' }, 'warn');
+    await c.sleep(1000);
+    c.row('batch', 'tr', 'hit', true);
+    c.log('BATCH', { zh: '本轮 9 次试验 · 累计 293 次', en: '9 trials this round · 293 so far' });
+    await c.sleep(700);
+    await c.pulse('bt-ho');
+    c.on('hold');
+    for (const r of ['h1', 'h2', 'h3']) { c.row('hold', r, 'hit', true); await c.sleep(200); }
+    c.log('HOLDOUT', { zh: '只给留下的 1 条在最近 180 天上算一次 IC：+0.019', en: 'one IC on the last 180 days, for the single survivor: +0.019' }, 'good');
+    await c.sleep(900);
+    c.log('HOLDOUT', { zh: '这个数只给人看，不进评审、重写、复盘', en: 'for humans only — never in review, rewrites or reflection' }, 'dim');
+    await c.sleep(600);
+    // 复盘也是生成角色：看全部候选的结局和搜索段数字写经验
+    await c.pulse('bt-gen');
+    c.on('gen'); c.row('gen', 'r', 'hit', true);
+    c.log('GEN', { zh: '复盘：看这一轮全部候选的结局和搜索段数字，写 3 条经验', en: 'reflects on every candidate’s outcome and search-span numbers, writes 3 lessons' });
+    await c.type('gen', 0, { zh: '[try] 资金流信号拉到 7 天，换手降一半，IC 还在', en: '[try] stretch flow signals to 7 days: half the turnover, the IC holds' });
+    await c.type('gen', 1, { zh: '[avoid] 拿 $hour 做线性相关量不出日内分布', en: '[avoid] a linear Corr with $hour cannot measure the intraday profile' });
+    await c.pulse('gen-mem');
+    c.done('gen'); c.on('mem'); c.row('mem', 'les', 'hit', true);
+    c.log('MEM', { zh: '经验存表 · 之后几轮出题都带着', en: 'lessons stored · every later proposal carries them' }, 'good');
+    await c.sleep(700);
+    await c.pulse('ho-obs');
+    c.done('hold'); c.on('obs');
+    c.row('obs', 'o1', 'hit', true); c.row('obs', 'o2', 'hit', true); c.row('mem', 'tri', 'hit', true);
+    c.log('OBS', { zh: '留下的进观察区 · 5 条连同结局记进 tried', en: 'the survivor joins the watch list · all 5 go into tried with their outcomes' });
+    await c.sleep(1000);
+    c.row('obs', 'o3', 'hit', true);
+    c.log('OBS', { zh: '管理员看完搜索段和 holdout 的数字 → 入库', en: 'an admin reads the search and holdout numbers → approves' }, 'good');
+    await c.pulse('obs-lib');
+    c.done('obs'); c.on('lib');
+    for (const r of ['l1', 'l2', 'l3']) { c.row('lib', r, 'hit', true); await c.sleep(200); }
+    c.log('LIB', { zh: '成为 G6 / G8 / G9 的尺子 · 交易员勾上后下一次 00:15 调仓起生效', en: 'a yardstick for G6 / G8 / G9 · once ticked, the trader uses it from the next 00:15 rebalance' }, 'good');
+    await c.sleep(900);
+    await c.pulse('lib-mem', { dur: 1100 });
+    c.done('lib'); c.row('mem', 'lib', 'hit', true);
+    c.log('MEM', { zh: '下一轮出题看得到它', en: 'the next proposal sees it' });
+    await c.sleep(600);
+    c.done('mem'); c.on('camp');
+    c.log('CAMP', { zh: '第 3 轮完 · 没到停止条件 → 起第 4 轮', en: 'round 3 done · no stop rule hit → round 4 starts' }, 'good');
+    await c.pulse('cp-gen');
+    c.done('camp');
+  }
+}
+
 /* ---------- 装配 ---------- */
 const SPEEDS = [1, 1.5, 2];
+// 面板 id → [剧本, 场景]
+const SCRIPTS = { trader: [traderScript, TR_SCENES], chat: [chatScript, CH_SCENES], alpha: [alphaScript, AL_SCENES] };
 let runners = [], views = [];
 
 function mountPanel(cfg) {
@@ -1087,8 +1407,7 @@ function mountPanel(cfg) {
   if (!mount) return null;
   mount.innerHTML = '';
   const view = renderPanel(cfg, mount);
-  const isTrader = cfg.id === 'trader';
-  const runner = new Runner(view, isTrader ? traderScript : chatScript, isTrader ? TR_SCENES : CH_SCENES);
+  const runner = new Runner(view, ...SCRIPTS[cfg.id]);
   view.runner = runner;
   runners.push(runner);
   views.push(view);

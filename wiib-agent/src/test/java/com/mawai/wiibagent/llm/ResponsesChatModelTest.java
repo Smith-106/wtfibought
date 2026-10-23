@@ -38,7 +38,7 @@ import static org.mockito.Mockito.when;
 /**
  * 钉死与框架的契约边界（这些曾被别处单测 mock 掉，真跑才暴露）：
  * Spring AI 2.0 的契约方法是 getOptions()，覆写成旧名 getDefaultOptions() 会命中接口默认实现
- * 返回普通 ChatOptions → ResilientChatService 挂工具的 instanceof 恒假 → 专家请求 tools=[]。
+ * 返回普通 ChatOptions → LlmClient 挂工具的 instanceof 恒假 → 请求 tools=[]。
  * <p>
  * 阻塞路径用例走真 HTTP + SSE（JDK HttpServer 假服务器，零新依赖）：
  * call() 与 stream() 共用 streamOnce 一条协议解析路，这些用例钉住的是各类 BYOK 渠道的
@@ -99,11 +99,15 @@ class ResponsesChatModelTest {
 
     /** webSearch=端点配置层的开关（建模时烤死）；调用层的许可另经 toolContext 捎带 */
     private ResponsesChatModel model(boolean webSearch) {
-        return new ResponsesChatModel("key", "http://127.0.0.1:" + server.getAddress().getPort(),
-                "grok-test", null, null, mock(ToolCallingManager.class), webSearch);
+        return model(webSearch, ByokModelBuilder.CALL_TIMEOUT);
     }
 
-    /** 汇总者那样的调用方：本次调用允许服务端搜索（经 toolContext 捎给模型） */
+    private ResponsesChatModel model(boolean webSearch, Duration callTimeout) {
+        return new ResponsesChatModel("key", "http://127.0.0.1:" + server.getAddress().getPort(),
+                "grok-test", null, null, mock(ToolCallingManager.class), webSearch, callTimeout);
+    }
+
+    /** 主 agent 那样的调用方：本次调用允许服务端搜索（经 toolContext 捎给模型） */
     private ChatOptions allowWebSearch(ResponsesChatModel model) {
         return ((ToolCallingChatOptions) model.getOptions()).mutate()
                 .toolContext(Map.of(ResponsesChatModel.WEB_SEARCH_KEY, true)).build();
@@ -132,7 +136,7 @@ class ResponsesChatModelTest {
 
     @Test
     void 请求侧_调用未捎许可_端点开了也不注入() {
-        // 专家/trader 链路不捎许可键：同一个端点开了搜索，它们的请求里也不许出现服务端工具
+        // analyst worker / trader 链路不捎许可键：同一个端点开了搜索，它们的请求里也不许出现服务端工具
         events = PLAIN_COMPLETED;
         ResponsesChatModel m = model(true);
         m.call(new Prompt("查行情", m.getOptions()));
@@ -231,7 +235,7 @@ class ResponsesChatModelTest {
 
     @Test
     void getOptions必须给ToolCallingChatOptions() {
-        // 真实实例、不 mock：ResilientChatService 靠 instanceof 这个类型决定挂不挂工具
+        // 真实实例、不 mock：LlmClient 靠 instanceof 这个类型决定挂不挂工具
         assertThat(model().getOptions()).isInstanceOf(ToolCallingChatOptions.class);
         assertThat(model().getOptions().getModel()).isEqualTo("grok-test");
     }
@@ -249,7 +253,7 @@ class ResponsesChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         ResponsesChatModel m = new ResponsesChatModel("key", "http://127.0.0.1:" + server.getAddress().getPort(),
-                "grok-test", 0.30, "medium", tcm, true);
+                "grok-test", 0.30, "medium", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String items = """
                 [{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAA/+=="},
                  {"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_price","arguments":"{\\"qty\\":0.010}","status":"completed","extra":null,"score":0.50}]""";
@@ -441,12 +445,12 @@ class ResponsesChatModelTest {
         events = new String[]{"""
                 {"type":"response.in_progress"}"""};
         holdMs = 10_000;
-        ChatOptions options = ResponsesChatModel.withCallTimeout(model().getOptions(), Duration.ofSeconds(2));
+        ResponsesChatModel m = model(false, Duration.ofSeconds(2));
         long startedAt = System.nanoTime();
-        assertThatThrownBy(() -> model().call(new Prompt("问题", options)))
+        assertThatThrownBy(() -> m.call(new Prompt("问题")))
                 .isInstanceOf(TransientAiException.class)
                 .hasMessageContaining("挂死");
-        // 3 次重试＋退避应在 10s 内收场；上限断言同时钉住"捎带的超时真被读到了"（否则等满默认 10 分钟）
+        // 3 次重试＋退避应在 10s 内收场；上限断言同时钉住"建模给的超时真被用上了"（否则等满 10 分钟）
         assertThat(Duration.ofNanos(System.nanoTime() - startedAt)).isLessThan(Duration.ofSeconds(15));
     }
 

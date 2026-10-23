@@ -105,7 +105,7 @@ class AnthropicChatModelTest {
     private static AnthropicChatModel model(String effort, boolean webSearch, ToolCallingManager tcm) {
         httpStatus = 0;
         return new AnthropicChatModel("sk-ant", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
-                "claude-test", null, effort, tcm, webSearch);
+                "claude-test", null, effort, tcm, webSearch, ByokModelBuilder.CALL_TIMEOUT);
     }
 
     private static AnthropicChatModel model() {
@@ -236,7 +236,7 @@ class AnthropicChatModelTest {
         ToolResponseMessage toolResult = ToolResponseMessage.builder().responses(List.of(
                 new ToolResponseMessage.ToolResponse("toolu_1", "get_price", "60000"))).build();
         model().call(new Prompt(List.of(new UserMessage("问题"), new UserMessage("补充"),
-                assistant, toolResult, new UserMessage("专家结论"))));
+                assistant, toolResult, new UserMessage("子运行报告"))));
 
         JsonNode messages = body().get("messages");
         assertThat(messages).hasSize(3);
@@ -273,7 +273,7 @@ class AnthropicChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         AnthropicChatModel m = new AnthropicChatModel("sk-ant", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
-                "claude-test", 0.30, "high", tcm, true);
+                "claude-test", 0.30, "high", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String blocks = """
                 [{"type":"thinking","thinking":"先查\\n再说","signature":"sig/+="},
                  {"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"btc"}},

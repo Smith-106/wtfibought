@@ -443,7 +443,7 @@
     "proc": {
       "sim": "模拟盘",
       "feed": "行情上游",
-      "quant": "量化引擎"
+      "agent": "AI 与策略"
     }
   },
   "feed": {
@@ -459,7 +459,8 @@
       "connected": "已连接",
       "connecting": "连接中",
       "reconnecting": "重连中",
-      "disconnected": "已断开"
+      "disconnected": "已断开",
+      "idle": "闲置"
     },
     "toast": {
       "loadFailed": "feed 流状态获取失败",

@@ -15,14 +15,15 @@ import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
  * 交易过滤器注册表（数量步长 / 最小数量 / 最小名义额），对齐 Binance exchangeInfo。
  * <p>
- * 启动时异步拉官方 exchangeInfo 覆盖 {@link TradeFilterDefaults} 快照（拉不到用快照，不挡启动、不依赖外网）；
- * 只认快照里已配置的 symbol，官方新上的标的不会被动混入。
+ * 启动时异步拉、之后每天拉一次官方 exchangeInfo 覆盖 {@link TradeFilterDefaults} 快照（拉不到沿用现有的，不挡启动、不依赖外网）；
+ * 合约收全部 USDT 永续，现货只认快照里已配置的 symbol。
  * <p>
  * 校验语义对齐 Binance：开仓单（含同向并入）步长必须对齐、名义额 ≥ minNotional 否则拒单；
  * 平仓/止盈损是 reduce-only，豁免 minNotional；平仓数量=持仓全量时豁免步长（存量尘埃仓要能平干净）。
@@ -42,28 +43,28 @@ public class TradeFilterRegistry {
         Thread.startVirtualThread(this::refreshFromBinance);
     }
 
-    void refreshFromBinance() {
+    public void refreshFromBinance() {
         Map<String, Filter> fut = parseFilters(restClient.getFuturesExchangeInfo(),
-                TradeFilterDefaults.FUTURES, "MIN_NOTIONAL", "notional");
+                TradeFilterDefaults.FUTURES, FuturesLeverageBracketRegistry::isUsdtPerpetual, "MIN_NOTIONAL", "notional");
         if (fut != null) {
             futuresFilters = fut;
-            log.info("合约交易过滤器已按官方exchangeInfo刷新: {}", fut);
+            log.info("合约交易过滤器已按官方exchangeInfo刷新 {}个", fut.size());
         } else {
-            log.warn("合约exchangeInfo拉取/解析失败，沿用默认快照");
+            log.warn("合约exchangeInfo拉取/解析失败，沿用现有过滤器");
         }
 
         Map<String, Filter> spot = parseFilters(restClient.getSpotExchangeInfo(List.copyOf(TradeFilterDefaults.SPOT.keySet())),
-                TradeFilterDefaults.SPOT, "NOTIONAL", "minNotional");
+                TradeFilterDefaults.SPOT, TradeFilterDefaults.SPOT::containsKey, "NOTIONAL", "minNotional");
         if (spot != null) {
             spotFilters = spot;
             log.info("现货交易过滤器已按官方exchangeInfo刷新: {}", spot);
         } else {
-            log.warn("现货exchangeInfo拉取/解析失败，沿用默认快照");
+            log.warn("现货exchangeInfo拉取/解析失败，沿用现有过滤器");
         }
     }
 
-    /** 解析 exchangeInfo：只覆盖 defaults 已配置的 symbol，缺失/解析异常的单币回退默认；整体失败返回 null */
-    private Map<String, Filter> parseFilters(String json, Map<String, Filter> defaults,
+    /** 解析 exchangeInfo：只收 wanted 认的 symbol，缺失/解析异常的单币回退默认；整体失败返回 null */
+    private Map<String, Filter> parseFilters(String json, Map<String, Filter> defaults, Predicate<String> wanted,
                                              String notionalFilterType, String notionalField) {
         if (json == null) return null;
         try {
@@ -72,7 +73,7 @@ public class TradeFilterRegistry {
             Map<String, Filter> result = new HashMap<>(defaults);
             for (JsonNode s : symbols) {
                 String symbol = s.path("symbol").asString(null);
-                if (!defaults.containsKey(symbol)) continue;
+                if (!wanted.test(symbol)) continue;
                 BigDecimal step = null;
                 BigDecimal minQty = null;
                 BigDecimal minNotional = null;

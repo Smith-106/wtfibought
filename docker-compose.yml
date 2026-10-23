@@ -1,9 +1,13 @@
 # ============================================================
-# WhatIfIBought 三进程部署 (feed / sim / agent)
+# WhatIfIBought 三个 Java 服务 (feed / sim / agent)
 #   1. 建 .env（cp .env.example 填值，HOST 填法见 .env.example 注释）
 #   2. mvn clean package -pl wiib-feed,wiib-agent,wiib-sim -am -DskipTests
 #      wiib-quant 是 agent 依赖的库，-am 会带上，不用单列
 #   3. docker compose up -d --build
+#
+# Python 服务 wiib-alpha 单独一个文件，不跟着这里的 up -d --build 一起重建：
+#   wiib-alpha → alpha-compose.yml  docker compose -f alpha-compose.yml up -d --build
+# 两个文件共用外部网络 wiib-network，容器名就是网络里的主机名，跨文件照样 wiib-sim:8080 寻址。
 #
 # 配置只改 .env，本文件不含任何环境私有值，直接入库。
 # env_file 把 .env 全量注入容器，application.yml 占位符自行解析，

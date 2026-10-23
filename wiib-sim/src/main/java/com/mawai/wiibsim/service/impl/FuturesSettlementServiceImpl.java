@@ -19,7 +19,6 @@ import com.mawai.wiibsim.mapper.UserMapper;
 import com.mawai.wiibcommon.cache.CacheService;
 import com.mawai.wiibsim.service.CrossLiquidationService;
 import com.mawai.wiibsim.service.CrossMarginService;
-import com.mawai.wiibsim.service.FundingRateService;
 import com.mawai.wiibsim.service.FuturesPositionIndexService;
 import com.mawai.wiibsim.service.FuturesRiskService;
 import com.mawai.wiibsim.service.FuturesSettlementService;
@@ -58,7 +57,6 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
     private final CrossMarginService crossMarginService;
     private final CrossLiquidationService crossLiquidationService;
     private final FairLockRegistry lockRegistry;
-    private final FundingRateService fundingRateService;
     private final LedgerTx ledgerTx;
 
     record FundingFeeChargeResult(boolean success, boolean checkLiquidation) {}
@@ -542,35 +540,20 @@ public class FuturesSettlementServiceImpl implements FuturesSettlementService {
 
     // ==================== 资金费率扣除 ====================
 
+    /** 逐个仓位收，单仓失败不影响别的 */
     @Override
-    public void chargeFundingFeeAll() {
-        // 全站唯一一次调官方资金费率接口：先刷缓存，扣费和前端查询都从缓存取
-        fundingRateService.refresh();
-
-        List<FuturesPosition> positions = positionMapper.selectList(new LambdaQueryWrapper<FuturesPosition>()
-                .eq(FuturesPosition::getStatus, "OPEN"));
-        if (positions.isEmpty()) return;
-
-        Map<String, BigDecimal> rateBySymbol = new HashMap<>();
-        int successCount = 0;
+    public void chargeFundingFee(String symbol, long fundingTime, BigDecimal rate, List<FuturesPosition> positions) {
         int failCount = 0;
-
         for (FuturesPosition pos : positions) {
             try {
-                BigDecimal rate = rateBySymbol.computeIfAbsent(pos.getSymbol(), fundingRateService::rateForSettlement);
-                boolean success = chargeFundingFeeOne(pos, rate);
-                if (success) {
-                    successCount++;
-                } else {
-                    failCount++;
-                }
+                if (!chargeFundingFeeOne(pos, rate)) failCount++;
             } catch (Exception e) {
                 log.error("futures扣除资金费率失败 posId={}", pos.getId(), e);
                 failCount++;
             }
         }
-
-        log.info("futures资金费率结算完成 成功{} 失败{} 费率={}", successCount, failCount, rateBySymbol);
+        log.info("资金费结算完成 symbol={} 结算时刻={} 费率={} 成功{} 失败{}",
+                symbol, fundingTime, rate, positions.size() - failCount, failCount);
     }
 
     boolean chargeFundingFeeOne(FuturesPosition pos, BigDecimal rate) {

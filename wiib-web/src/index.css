@@ -501,24 +501,24 @@ html.dark .machined { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
   .tools .ic{width:15px;height:15px;color:var(--color-muted-foreground)}
   .tools button{background:none;border:0;padding:0;cursor:pointer;display:inline-flex}
 
-  /* 顶栏一行摆 11 项 + 展开态的整词 logo，英文文案更长，1500px 往下就开始挤：分四档收间距和字号，
+  /* 顶栏一行摆 12 项 + 展开态的整词 logo，英文文案更长，1565px 往下就开始挤：分四档收间距和字号，
      全部限定在 .top 里，手机顶栏那套 .tools/.logo 不跟着动。
      每档按"英文 0.55×字号/字符 + 整词 logo 0.62×字号×14 + tools + 两侧 52px"估算，最紧一档保 1024px 不溢出 */
-  @media (max-width:1500px){
+  @media (max-width:1565px){
     .top{gap:16px}.top .logo{font-size:19px}
     .top .nav{gap:18px;font-size:13.5px}.top .tools{gap:14px;font-size:12px}
   }
-  @media (max-width:1330px){
+  @media (max-width:1385px){
     .top{gap:12px}.top .logo{font-size:18px}
     .top .nav{gap:14px;font-size:13px}.top .tools{gap:12px;font-size:11.5px}
   }
-  @media (max-width:1190px){
+  @media (max-width:1240px){
     .top{gap:10px}.top .logo{font-size:16px}
     .top .nav{gap:10px;font-size:12px}.top .tools{gap:10px;font-size:11px}
   }
-  @media (max-width:1080px){
-    .top{gap:8px}.top .logo{font-size:15px}
-    .top .nav{gap:8px;font-size:12px}.top .tools{gap:8px;font-size:10.5px}
+  @media (max-width:1125px){
+    .top{gap:6px}.top .logo{font-size:14.5px}
+    .top .nav{gap:8px;font-size:11.5px}.top .tools{gap:6px;font-size:10.5px}
     .top .nav .ic{width:12px;height:12px}
   }
   .rule{height:2px;background:var(--color-foreground)}

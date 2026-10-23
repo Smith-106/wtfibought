@@ -1,0 +1,49 @@
+# alpha 因子挖掘：Python FastAPI + LangGraph，LLM 提假设写 DSL、代码硬门判真假，只有管理员能用
+# 单独一个 compose 项目，主文件的 up -d --build 不会碰它：docker compose -f alpha-compose.yml up -d --build
+#   首次刷新 80 币池 + 2021 起的 metrics 日度文件要几个小时，重建容器会打断，刷新按币断点续传，再 POST 一次接着补
+# 两个角色的模型由管理员在挖掘页配置、存 /data 的 sqlite；行情从 data.binance.vision 归档下 zip，费率尾巴走 fapi（服务器所在地区得能访问）
+# data 卷约 27 GB（482 个币 2021 起的原始数据 11 GB + 两版面板各约 7 GB：刷新写新一版，上一版留到下次刷新），留够
+# nginx 那边加两段（配置在服务器上，不在仓里）：
+#   location /api/alpha/ { proxy_pass http://127.0.0.1:8084; proxy_buffering off; }
+#   location /alpha/     { proxy_pass http://127.0.0.1:8084; }
+
+name: wiib-alpha
+
+x-svc-base: &svc-base
+  restart: unless-stopped
+  env_file:
+    - .env
+  ulimits:
+    nproc: 16384
+    nofile: 65536
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "3"
+
+services:
+  wiib-alpha:
+    <<: *svc-base
+    build: { context: ./wiib-alpha, dockerfile: Dockerfile }
+    container_name: wiib-alpha
+    ports:
+      - "127.0.0.1:8084:8084"
+    volumes:
+      - ./wiib-alpha/data:/data    # 行情 parquet + 轮次、因子库的 sqlite
+    environment:
+      TZ: ${TZ:-Asia/Singapore}
+      ALPHA_DATA_DIR: /data
+      ALPHA_DB_PATH: /data/alpha.sqlite
+      SIM_BASE_URL: http://wiib-sim:8080
+      # glibc 内存池限 2 块：评估在线程池里跑，不限的话每个线程一块、用完不还系统
+      MALLOC_ARENA_MAX: "2"
+    # 常驻：7 个产品币搜索段面板 + 币池骨架 + 参照网格（约 210 MB）；截面评估逐币按列读，带截面算子的一次 groupby 约 1 GB 临时内存，最多两条并发
+    mem_limit: 6144m
+    mem_reservation: 512m
+    cpus: "2"
+
+networks:
+  default:
+    name: wiib-network
+    external: true

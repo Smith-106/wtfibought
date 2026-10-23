@@ -19,9 +19,9 @@ import com.mawai.wiibagent.llm.ChatEndpoints;
 import com.mawai.wiibagent.analysis.DeepAnalysisService;
 import com.mawai.wiibagent.behavior.BehaviorAnalysisService;
 import com.mawai.wiibagent.llm.ConversationSummarizer;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.ModelCallLimiter;
 import com.mawai.wiibagent.llm.ReactLoop;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import com.mawai.wiibagent.llm.UsageTrackingChatModel;
 import com.mawai.wiibagent.toolkit.IndicatorToolkit;
 import com.mawai.wiibagent.toolkit.MarketToolkit;
@@ -173,7 +173,7 @@ public class ChatAgentFactory {
     /**
      * 取这份配置的叶子，按指纹缓存：配置一变指纹就变、自然拿到新叶子，不需要任何显式失效。
      * <p>
-     * <b>为什么要缓存</b>：建一套叶子要反射扫工具类、装配 ChatService，
+     * <b>为什么要缓存</b>：建一套叶子要反射扫工具类、装配 LlmClient，
      * 几十到几百毫秒；这条路在请求线程上，每请求重建等于每句话先卡半秒。
      * <p>
      * <b>先查后建，不用 computeIfAbsent</b>：它会在整个 mapping 函数执行期间攥着互斥锁，
@@ -255,7 +255,7 @@ public class ChatAgentFactory {
     private ReactLoop mainLeaf(ChatModel deep, ChatModel deepBase, ChatModel light, long userId, AgentLang lang,
                                boolean webSearch, java.util.function.Function<WorkerKind, Worker> workers) {
         // 工具的模型在这一层绑死："当前用的是谁的 key"只有这里知道
-        ResilientChatService chat = ResilientChatService.builder()
+        LlmClient client = LlmClient.builder()
                 .model(deep)
                 .systemPrompt(mainInstruction(lang, webSearch))
                 .tools(localizedTools.of(lang,
@@ -270,7 +270,7 @@ public class ChatAgentFactory {
                 .webSearch(webSearch)
                 .maxAttempts(3).initialDelay(500).maxDelay(4000)
                 .build();
-        return ReactLoop.builder().chat(chat)
+        return ReactLoop.builder().client(client)
                 .streaming(true)    // 答案要逐字推给前端
                 .limiter(new ModelCallLimiter(runModelCallLimit,
                         prompts.get(lang, "llm.callLimit.notExecuted"),
@@ -290,15 +290,15 @@ public class ChatAgentFactory {
     // 包私有非 private：ChatAgentFactoryTest 要直接验两个预设的工具表与许可
     Worker newWorker(WorkerKind kind, AgentLang lang, boolean lightSearch, ChatModel lightBase) {
         UsageTrackingChatModel model = new UsageTrackingChatModel(lightBase);
-        ResilientChatService.Builder chat = ResilientChatService.builder()
+        LlmClient.Builder client = LlmClient.builder()
                 .model(model)
                 .systemPrompt(prompts.get(lang, kind.promptKey()))
                 .maxAttempts(3).initialDelay(500).maxDelay(4000);
         switch (kind) {
-            case RESEARCHER -> chat.tools(localizedTools.of(lang, newsToolkit.boundTo(lang))).webSearch(lightSearch);
-            case ANALYST -> chat.tools(localizedTools.of(lang, marketToolkit, indicatorToolkit));
+            case RESEARCHER -> client.tools(localizedTools.of(lang, newsToolkit.boundTo(lang))).webSearch(lightSearch);
+            case ANALYST -> client.tools(localizedTools.of(lang, marketToolkit, indicatorToolkit));
         }
-        ReactLoop loop = ReactLoop.builder().chat(chat.build())
+        ReactLoop loop = ReactLoop.builder().client(client.build())
                 .limiter(new ModelCallLimiter(runModelCallLimit,
                         prompts.get(lang, "llm.callLimit.notExecuted"),
                         prompts.get(lang, "llm.callLimit.lastCall")))

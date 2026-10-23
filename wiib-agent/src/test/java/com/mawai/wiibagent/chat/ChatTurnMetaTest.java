@@ -133,11 +133,11 @@ class ChatTurnMetaTest {
     void 一轮的读数是深浅两条端点合起来的账() {
         UsageTrackingChatModel deep = new UsageTrackingChatModel(modelReporting(100, 20, 120));
         UsageTrackingChatModel light = new UsageTrackingChatModel(modelReporting(30, 5, 35));
-        // 浅模型两次（路由+专家）、深模型一次（汇总）
+        // 浅模型两次（历史压缩）、深模型一次（主 agent 作答）
         Harness h = harness(() -> {
-            light.call(new Prompt("route"));
-            light.call(new Prompt("expert"));
-            deep.call(new Prompt("summarize"));
+            light.call(new Prompt("compress-1"));
+            light.call(new Prompt("compress-2"));
+            deep.call(new Prompt("answer"));
         });
 
         RecordingEmitter emitter = new RecordingEmitter();

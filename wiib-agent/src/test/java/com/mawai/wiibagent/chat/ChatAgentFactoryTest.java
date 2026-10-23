@@ -42,10 +42,7 @@ class ChatAgentFactoryTest {
     private final ChatModelFactory chatModelFactory = mock(ChatModelFactory.class);
 
     private ChatAgentFactory factory() {
-        ChatModel model = mock(ChatModel.class);
-        // 建叶子时 ChatService 会读 getOptions() 挂工具，null 会 NPE
-        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        return factory(model);
+        return factory(mock(ChatModel.class));
     }
 
     private ChatAgentFactory factory(ChatModel model) {

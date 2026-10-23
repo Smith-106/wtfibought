@@ -451,7 +451,7 @@
     "proc": {
       "sim": "Paper trading",
       "feed": "Market data feed",
-      "quant": "Quant engine"
+      "agent": "AI & strategies"
     }
   },
   "feed": {
@@ -467,7 +467,8 @@
       "connected": "Connected",
       "connecting": "Connecting",
       "reconnecting": "Reconnecting",
-      "disconnected": "Disconnected"
+      "disconnected": "Disconnected",
+      "idle": "Idle"
     },
     "toast": {
       "loadFailed": "Failed to fetch feed stream status",

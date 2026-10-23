@@ -59,8 +59,8 @@ export function Coin({ symbol = DEFAULT_SYMBOL }: { symbol?: string }) {
       .catch(() => toast(t('coin.bracketsFailed'), 'error'));
   }, [toast, t]);
 
-  // 资金费率：后端只在 0/8/16 点拉一次写缓存，这里读的就是那份缓存。
-  // 一天才变三次，10 分钟重拉一次足够；无合约的标的后端返 null，整段不渲染
+  // 资金费率：feed 从 markPrice 推送里写的当期预估费率（结算前随溢价慢慢变），10 分钟重拉一次足够；
+  // 没有合约行情的标的后端返 null，整段不渲染
   const [fundingRate, setFundingRate] = useState<number | null>(null);
   useEffect(() => {
     if (!isFuturesMode) return;

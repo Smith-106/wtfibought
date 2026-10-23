@@ -87,7 +87,7 @@ class LlmErrorMessagesTest {
     /**
      * 任何分支都不许把 key 透出去。正则永远追不全 key 的形态（URL 里的 ?api_key=、
      * 自定义 header、非 sk- 前缀的自建 key……），所以兜底根本不回显原文——
-     * 这段文本不只给用户看，专家失败时还会拼进 AssistantMessage 喂回模型并随会话上下文持久化
+     * 这段文本不只给用户看，后台子运行失败时还会拼进报告消息喂回模型并随会话上下文持久化
      */
     @Test
     void 任何情况下不回显key() {

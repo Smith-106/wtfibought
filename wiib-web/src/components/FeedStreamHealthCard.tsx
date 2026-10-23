@@ -9,12 +9,13 @@ import { useToast } from './ui/use-toast';
 import { cn } from '../lib/utils';
 import { Radio, RefreshCw } from 'lucide-react';
 
-// 状态 → 颜色点/文案：绿=已连；琥珀=建连/重连中；红=断开。表里存词表 key，渲染时现查
+// 状态 → 颜色点/文案：绿=已连；琥珀=建连/重连中；红=断开；灰=闲置（按集合订的流没有要订的币）。表里存词表 key，渲染时现查
 const STATUS_META: Record<FeedStreamHealth['status'], { dot: string; text: string; labelKey: string }> = {
   CONNECTED:    { dot: 'bg-gain',     text: 'text-gain',       labelKey: 'feed.status.connected' },
   CONNECTING:   { dot: 'bg-amber-500', text: 'text-amber-500', labelKey: 'feed.status.connecting' },
   RECONNECTING: { dot: 'bg-amber-500', text: 'text-amber-500', labelKey: 'feed.status.reconnecting' },
   DISCONNECTED: { dot: 'bg-loss',     text: 'text-loss',       labelKey: 'feed.status.disconnected' },
+  IDLE:         { dot: 'bg-muted-foreground', text: 'text-muted-foreground', labelKey: 'feed.status.idle' },
 };
 
 // 距上次数据 age：纯本地计算，不请求服务端
@@ -109,9 +110,9 @@ export function FeedStreamHealthCard() {
               <span className={cn('w-2 h-2 rounded-full shrink-0', meta.dot, s.status === 'CONNECTED' && 'animate-pulse')} />
               <span className="text-sm font-bold min-w-[7rem]">{s.name}</span>
               <span className={cn('text-xs font-medium', meta.text)}>{t(meta.labelKey)}</span>
-              {/* age 只对非连接态显示：连着的流数据在流但事件不刷 lastMessageAt，显示会假性增长；断了才关心"多久没数据" */}
+              {/* age 只对非连接态显示：连着的流数据在流但事件不刷 lastMessageAt，显示会假性增长；断了才关心"多久没数据"；闲置的没断 */}
               <span className="text-[11px] text-muted-foreground ml-auto tabular-nums">
-                {s.status !== 'CONNECTED' && t('feed.downFor', { age: fmtAge(s.lastMessageAt, now) })}
+                {s.status !== 'CONNECTED' && s.status !== 'IDLE' && t('feed.downFor', { age: fmtAge(s.lastMessageAt, now) })}
                 {s.reconnectAttempt > 0 && <span className="text-loss ml-2">{t('feed.reconnects', { n: s.reconnectAttempt })}</span>}
               </span>
               <Button

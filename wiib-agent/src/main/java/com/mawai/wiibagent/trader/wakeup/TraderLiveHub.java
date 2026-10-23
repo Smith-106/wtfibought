@@ -21,7 +21,7 @@ import java.util.function.Supplier;
 /**
  * trader 唤醒现场的发布订阅：订阅者管理、扇出、心跳。
  * 按 traderId 订阅，只有主人连得进来（准入在 controller 判）；一次唤醒一个 {@link Run} 句柄，runner 只碰它。
- * 单实例部署，进程内 Map 即可。不认识 langgraph。
+ * 单实例部署，进程内 Map 即可。
  */
 @Component
 public class TraderLiveHub {

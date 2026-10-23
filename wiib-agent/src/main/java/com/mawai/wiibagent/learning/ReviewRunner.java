@@ -262,7 +262,7 @@ public class ReviewRunner {
             try {
                 resp = model.call(prompt);
             } catch (OpenAIInvalidDataException e) {
-                // SDK 重试盲区（读响应中断）单次补救，与 ResilientChatService.callPrimary 同款
+                // SDK 重试盲区（读响应中断）单次补救，与 LlmClient.callModel 同款
                 log.warn("[Review] 响应读取中断（SDK不重试此类失败），单次重试: {}", e.toString());
                 resp = model.call(prompt);
             }

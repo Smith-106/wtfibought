@@ -87,6 +87,8 @@ error:
   chatRegenerateUnavailable: This answer cannot be regenerated
   chatMessageTooLong: Message too long (limit 10000 characters) - trim it and resend
   chatNothingPending: This session has nothing pending to answer
+  promptGenNoSession: No conversation yet - press Start first
+  promptGenVersionNotFound: That version is gone (only the latest 3 are kept)
 
   # Login-state failures: the various sa-token NotLoginException types, all returned as 401
   token:

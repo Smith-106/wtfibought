@@ -238,28 +238,38 @@ public class CacheService {
         cryptoPriceCache.put("spot:" + symbol, price);
     }
 
-    public void putFuturesPrice(String symbol, BigDecimal price) {
-        cryptoPriceCache.put("futures:" + symbol, price);
+    /** feed 每帧写：标记价和写入时刻一次 MSET 落 Redis（feed 自己不读合约价，不进 L1）。写入时刻是 sim 市价开仓判行情活没活着的心跳 */
+    public void setMarkPrice(String symbol, String price, long nowMs) {
+        stringRedisTemplate.opsForValue().multiSet(Map.of("market:markprice:" + symbol, price,
+                "market:markprice-at:" + symbol, Long.toString(nowMs)));
     }
 
-    public void putMarkPrice(String symbol, BigDecimal price) {
-        cryptoPriceCache.put("mark:" + symbol, price);
+    /** feed 每帧写：最新价落 Redis */
+    public void setFuturesPrice(String symbol, String price) {
+        stringRedisTemplate.opsForValue().set("market:futures-price:" + symbol, price);
     }
 
-    // ==================== 资金费率（结算点写，扣费与前端查询读） ====================
+    /** 标记价上次写入的时刻（毫秒）；没写过回 null */
+    public Long getMarkPriceAt(String symbol) {
+        String v = stringRedisTemplate.opsForValue().get("market:markprice-at:" + symbol);
+        return v == null ? null : Long.parseLong(v);
+    }
 
-    public record FundingRate(BigDecimal rate, long fetchedAt) {}
+    // ==================== 资金费率（feed 从 markPrice 推送里写，sim 结算与前端查询读） ====================
 
-    // 9 小时盖到下一个结算点，多出 1 小时留给结算延迟；连着两个结算点都没拉到就自然过期，前端不显示旧数
-    private static final Duration FUNDING_RATE_TTL = Duration.ofHours(9);
+    /** 当期费率、下次结算时刻（毫秒）、feed 写入时刻 */
+    public record FundingRate(BigDecimal rate, long nextTime, long updatedAt) {}
 
-    public void putFundingRate(String symbol, BigDecimal rate, long fetchedAtMs) {
-        stringRedisTemplate.opsForValue().set("market:funding-rate:" + symbol,
-                MAPPER.writeValueAsString(new FundingRate(rate, fetchedAtMs)), FUNDING_RATE_TTL);
+    // feed 几秒写一次；feed 停了就过期，sim 不按旧的结算时刻收、前端不显示旧数
+    private static final Duration FUNDING_RATE_TTL = Duration.ofMinutes(10);
+
+    public void putFundingRate(String symbol, BigDecimal rate, long nextTimeMs, long nowMs) {
+        stringRedisTemplate.opsForValue().set("market:funding:" + symbol,
+                MAPPER.writeValueAsString(new FundingRate(rate, nextTimeMs, nowMs)), FUNDING_RATE_TTL);
     }
 
     public FundingRate getFundingRate(String symbol) {
-        String v = stringRedisTemplate.opsForValue().get("market:funding-rate:" + symbol);
+        String v = stringRedisTemplate.opsForValue().get("market:funding:" + symbol);
         return v != null ? MAPPER.readValue(v, FundingRate.class) : null;
     }
 

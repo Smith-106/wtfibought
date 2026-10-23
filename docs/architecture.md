@@ -45,9 +45,11 @@ flowchart TD
 ```text
 wiib-feed（上游进程）  交易所 WS → Redis
   -> spot miniTicker        -> Redis 价格 KV(market:price:) + Pub/Sub(feed:price)
-  -> futures markPrice@1s   -> Redis mark KV(market:markprice:) + Pub/Sub(feed:price)
+  -> futures markPrice@1s   -> Redis mark KV(market:markprice: + 写入时刻 market:markprice-at:) + Pub/Sub(feed:price)
   -> futures miniTicker     -> Redis 合约最新价 KV(market:futures-price:) + Pub/Sub(feed:price)
                                ↑ 独立物理连接：Binance 端点拆分后 markPrice 与 miniTicker 不能同连
+  -> 交易员的币 markPrice@1s / miniTicker（另两条连接，订阅集合 = Redis set futures:trader:symbols，sim 按仓位和交易员登记维护，feed 每 10 秒看一次、变了重连）
+                            -> 只写 market:markprice:（带写入时刻，sim 市价开仓看它超 30 秒没更新就拒）/ market:futures-price:，不发 feed:price、不推前端
   -> forceOrder(全市场流)    -> 白名单过滤 -> force_order 表(DB, 天然跨进程)
   -> aggTrade               -> Redis Stream(market:orderflow:<sym>, 读侧聚合)
   -> depth20@100ms          -> Redis KV(market:depth:, DepthStreamCache)
@@ -83,13 +85,16 @@ Jev 预测员（agent `jev/predictor/` 包，Jev 客户端与配置在 `jev/`，
 ### 资金费率
 
 ```text
-sim ScheduledTasks  cron 0 0 0,8,16
-  -> FundingRateService.refresh()   一次 premiumIndexAll 全量，只留本平台合约标的
-  -> Redis KV(market:funding-rate:<SYM>, TTL 9h)
-  -> 扣费 rateForSettlement() / 前端查询 query()  都只读缓存
+feed FuturesStreamHandler / TraderFuturesStreamHandler  markPrice@1s 推送自带当期费率 r 和下次结算时刻 T
+  -> FundingRateWriter  T 变了马上写、没变每 5 秒写一次 -> Redis KV(market:funding:<SYM>, TTL 10min)
+sim ScheduledTasks  每分钟
+  -> FundingRateService.settleDue()  有仓位的币：Redis 记"上次看到的 T"，feed 把它挪到后面了就是这一期结算了
+     -> /fapi/v1/fundingRate 取这一期的实际结算费率（记录没出来下一分钟再试）
+     -> 给结算时刻之前开的仓收，先记已结算再收，不重收
+  -> 前端查询 query()  只读 feed 写的
 ```
 
-**sim 侧只有结算点这一次调官方资金费率接口**，扣费与前端查询一律读缓存，查询链路绝不打 Binance。拉不到就不动缓存，上一轮的值还能用满 TTL；缓存真空了扣费回退配置里的固定费率（0.01%/8h）。这是个硬约束——在查询链路里"顺手"直连一次 Binance，就等于把限频风险接回了用户请求路径上。
+各币结算间隔不同（多数 8 小时，也有 4 小时、1 小时的），全按 Binance 的实际结算时刻和费率收。**sim 侧只在某个币结算了那一分钟调一次官方结算记录接口**，前端查询一律读 feed 写的缓存，查询链路绝不打 Binance；feed 停了缓存过期，sim 不按旧时刻收，起来后 T 已经挪了照样补上这一期。这是个硬约束——在查询链路里"顺手"直连一次 Binance，就等于把限频风险接回了用户请求路径上。
 
 （agent 侧的 `funding_history` / `premiumIndex` 取数工具另有一条只读链路会打 Binance，带熔断与 serve-stale，喂模型用，与 sim 的扣费链路无关。）
 
@@ -134,7 +139,7 @@ whatifibought/                        # Maven 多 module 聚合 reactor
 │   ├── toolkit/                      # LLM 工具类（trader / chat 两处共用，取数底座在 quant 的 market/）
 │   ├── llm/                          # BYOK 端点库（LlmEndpointService / ByokModelBuilder）
 │   │                                 # + 四协议适配（openai 走 Spring AI，responses/anthropic/gemini 自研 ChatModel）
-│   │                                 # + ResilientChatService / ToolOptions / CancelSignal
+│   │                                 # + ReactLoop 手写 ReAct 循环 / LlmClient / ToolOptions
 │   │                                 # + 摘要 / 调用限额 / 上游异常归类（给用户看的一句话）
 │   ├── runtime/                      # 平台功能位模型分配（只剩快讯翻译主备两位，Admin 热更）
 │   └── controller/ task/ mapper/ monitor/ config/

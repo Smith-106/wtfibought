@@ -9,7 +9,6 @@ import lombok.Setter;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.net.http.WebSocket;
 
 /**
@@ -21,14 +20,12 @@ import java.net.http.WebSocket;
 @RequiredArgsConstructor
 public class FuturesStreamHandler implements StreamHandler {
 
-    private static final String REDIS_MARK_PRICE_KEY_PREFIX = "market:markprice:";
-    private static final String REDIS_FUTURES_PRICE_KEY_PREFIX = "market:futures-price:";
-
     private final BinanceProperties props;
     private final StringRedisTemplate redisTemplate;
     private final CacheService cacheService;
     private final MarketBroadcaster broadcastService;
     private final MatchPricePublisher matchPricePublisher;
+    private final FundingRateWriter fundingRateWriter;
 
     private WsConnection conn;
     /** 副连接（miniTicker），bind 时由副 handler 交进来，只用于判 fws */
@@ -79,38 +76,51 @@ public class FuturesStreamHandler implements StreamHandler {
         handle(raw);
     }
 
-    /** 两条合约连接共用的解析体 */
-    void handle(String raw) {
-        // 组合流: {"stream":"btcusdt@markPrice@1s","data":{...,"s":"BTCUSDT","p":"..."}} / {"stream":"btcusdt@miniTicker","data":{...,"s":"BTCUSDT","c":"..."}}
+    /** 一帧里的币、价，和这是不是标记价流（不是就是 miniTicker 的最新价）；标记价帧还带当期费率和下次结算时刻 */
+    record Tick(String symbol, String price, boolean markPrice, String rate, long nextTime) {}
+
+    /**
+     * 组合流一帧：{"stream":"btcusdt@markPrice@1s","data":{...,"s":"BTCUSDT","p":"...","r":"...","T":...}} /
+     * {"stream":"btcusdt@miniTicker","data":{...,"s":"BTCUSDT","c":"..."}}。缺字段回 null。交易员那两条连接也用它。
+     */
+    static Tick parse(String raw) {
         int streamIdx = raw.indexOf("\"stream\":\"");
-        if (streamIdx < 0) return;
+        if (streamIdx < 0) return null;
         int streamStart = streamIdx + 10;
         int streamEnd = raw.indexOf('"', streamStart);
-        if (streamEnd < 0) return;
+        if (streamEnd < 0) return null;
         boolean isMarkPrice = raw.regionMatches(streamEnd - 12, "markPrice@1s", 0, 12);
 
         int sIdx = raw.indexOf("\"s\":\"");
-        if (sIdx < 0) return;
+        if (sIdx < 0) return null;
         String symbol = StreamParse.extractQuoted(raw, sIdx + 5);
+        // markPrice 的 "p" 是标记价，miniTicker 的 "c" 是最新价
+        int pIdx = raw.indexOf(isMarkPrice ? "\"p\":\"" : "\"c\":\"", sIdx);
+        if (pIdx < 0) return null;
+        String price = StreamParse.extractQuoted(raw, pIdx + 5);
+        if (!isMarkPrice) return new Tick(symbol, price, false, null, 0L);
+        // markPrice 帧：r 当期费率，T 下次结算时刻
+        return new Tick(symbol, price, true, StreamParse.extractField(raw, "\"r\":\"", sIdx),
+                StreamParse.getEventTime(raw, raw.indexOf("\"T\":", sIdx), 0L));
+    }
 
-        if (isMarkPrice) {
-            int pIdx = raw.indexOf("\"p\":\"", sIdx);
-            if (pIdx < 0) return;
-            String markPrice = StreamParse.extractQuoted(raw, pIdx + 5);
-            redisTemplate.opsForValue().set(REDIS_MARK_PRICE_KEY_PREFIX + symbol, markPrice);
-            cacheService.putMarkPrice(symbol, new BigDecimal(markPrice));
+    /** 两条合约连接共用的解析体 */
+    void handle(String raw) {
+        Tick tick = parse(raw);
+        if (tick == null) return;
+        String symbol = tick.symbol();
+        String price = tick.price();
+        if (tick.markPrice()) {
+            // 标记价连写入时刻一起落：markPrice@1s 每秒必推，sim 市价开仓按它判这个币的行情停没停
+            cacheService.setMarkPrice(symbol, price, System.currentTimeMillis());
 
-            broadcastService.broadcastFuturesQuote(symbol, "{\"mp\":\"" + markPrice + "\",\"fws\":" + isFuturesConnected() + "}");
+            broadcastService.broadcastFuturesQuote(symbol, "{\"mp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 
             // markPrice 事件发 Redis：sim 侧消费做强平、quant 侧消费喂哨兵（解耦：currentPrice 由 sim 自己读 KV）
-            matchPricePublisher.publish("{\"symbol\":\"" + symbol + "\",\"type\":\"markprice\",\"price\":\"" + markPrice + "\"}");
+            matchPricePublisher.publish("{\"symbol\":\"" + symbol + "\",\"type\":\"markprice\",\"price\":\"" + price + "\"}");
+            fundingRateWriter.write(symbol, tick.rate(), tick.nextTime());
         } else {
-            // miniTicker: "c" 是最新价
-            int cIdx = raw.indexOf("\"c\":\"", sIdx);
-            if (cIdx < 0) return;
-            String price = StreamParse.extractQuoted(raw, cIdx + 5);
-            redisTemplate.opsForValue().set(REDIS_FUTURES_PRICE_KEY_PREFIX + symbol, price);
-            cacheService.putFuturesPrice(symbol, new BigDecimal(price));
+            cacheService.setFuturesPrice(symbol, price);
 
             broadcastService.broadcastFuturesQuote(symbol, "{\"fp\":\"" + price + "\",\"fws\":" + isFuturesConnected() + "}");
 

@@ -50,7 +50,7 @@ public class MarketBroadcaster {
         publish(STREAM_HEALTH_CHANNEL, "streams", snapshotJson);
     }
 
-    /** 进程 JVM 快照：code 是频道名（feed / quant，后者是 agent 拆分前的旧称），sim 中继到 /topic/monitor/{code}。 */
+    /** 进程 JVM 快照：code 是进程名（feed / agent），sim 中继到 /topic/monitor/{code}。 */
     public void broadcastMonitor(String process, String snapshotJson) {
         publish(MONITOR_CHANNEL, process, snapshotJson);
     }

@@ -25,7 +25,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import reactor.core.publisher.Flux;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -51,7 +50,7 @@ import static org.mockito.Mockito.when;
 class ChatTurnRunnerTest {
 
     private static final String SESSION = "wb-1-runner";
-    /** 阈值给足 = 这几跑都不碰历史压缩，那件事归 {@link SummarizerLeafTest} */
+    /** 阈值给足 = 这几跑都不碰历史压缩，那件事归 {@link MainLeafTest} */
     private static final int NO_COMPRESSION = 999_999;
     /** 生产口径的调用上限 */
     private static final int LIMIT = 8;
@@ -108,9 +107,6 @@ class ChatTurnRunnerTest {
     }
 
     private ChatAgentFactory.Leaves leaves() {
-        // ChatService 建请求时无条件读 getOptions() 挂工具，null 会 NPE
-        when(deep.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        when(light.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         ChatModelFactory chatModelFactory = mock(ChatModelFactory.class);
         when(chatModelFactory.modelsFor(any())).thenReturn(new ChatModelFactory.Models(deep, light));
         ChatEndpoints llmConfig = ChatTestEndpoints.eps(1L, "gpt-5");   // 叶子指纹含 userId（trader 工具按它认人）

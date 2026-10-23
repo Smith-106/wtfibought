@@ -30,6 +30,7 @@
       "arena": "AI Arena",
       "strategies": "Strategies",
       "backtest": "Backtest",
+      "alpha": "Factor mining",
       "testnet": "Testnet",
       "ranking": "Leaderboard",
       "comments": "Comments",
@@ -117,6 +118,7 @@
     "page": "Page {{page}} of {{pages}}"
   },
   "admin": {
+    "alphaLink": "Factor mining",
     "title": "Task management",
     "actionFailed": "Action failed",
     "fn": {

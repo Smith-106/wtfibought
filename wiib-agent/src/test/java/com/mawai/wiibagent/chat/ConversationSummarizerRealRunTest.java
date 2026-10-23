@@ -6,10 +6,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.mawai.wiibagent.chat.gate.ApprovalGate;
 import com.mawai.wiibagent.chat.store.ChatContextStore;
+import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.llm.ChatEndpoints;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.ConversationSummarizer;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -25,6 +26,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -63,19 +65,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * "理想切点本来就安全"两种情况下它都是空的。它判的是"有没有违规"，不是"有没有被考到"。
  * <p>
  * <b>为什么不拿"上游报 400"当信号</b>：把 findSafeCutoff 改成直接返回理想切点（跳过配对检查）
- * 真跑过一遍，切点确实切断了配对、落单回执确实被 {@code ResponsesChatModel.buildInput}
+ * 真跑过一遍，切点确实切断了配对、落单回执确实被 {@code ResponsesChatModel.requestBody}
  * 转成 function_call_output 送进请求，而<b>上游照收不误</b>，一次 4xx 都没有。
  * 有效边界要记牢：2026-08-09 实测，深模型位全程 {@code grok-4.5}（走 Responses 协议）；
  * OpenAI 自家 Responses 对孤儿 function_call_output 是会 400 的，换模型位这条结论未必成立。
  * <p>
- * BYOK 之后 summarizer 的 fallback 传 null（只有一个端点，切到同端点没意义），所以真报 400
- * 这一跑会当场红，不再像从前那样被兜底无声接盘。但"重试之后勉强成功"仍然只在日志里留一行，
- * 见 {@link #resilienceLogs}。
+ * 链上没有兜底模型（BYOK 只有一个端点），真报 400 这一跑会当场红。但"重试之后勉强成功"
+ * 只在日志里留一行，见 {@link #resilienceLogs}。
  * <p>
- * 会话历史里的工具配对只可能来自 summarizer 的 {@code run_deep_analysis}：专家叶子独立跑，
- * 只把 lastMessage 交回主流程，它们自己的配对不进会话历史。所以剧本靠"深度研判"制造配对，
- * 且<b>不授权</b>——{@link ApprovalGate} 未授权时直接短路回 PENDING_APPROVAL，配对照样完整，
- * 却不烧那 3 次深模型。
+ * 会话历史里的工具配对来自主 agent 自己调的工具（行情、新闻、trader 只读、深研判……）；后台子运行
+ * （delegate worker、授权后的深研判）只把报告当一条消息交回，它们自己的配对不进会话历史。
+ * 剧本里的"深度研判"<b>不授权</b>——{@link ApprovalGate} 未授权时直接短路回 PENDING_APPROVAL，
+ * 闸门给这一批调用配齐回执，配对照样完整，却不烧那 3 次深模型。
  * <p>
  * 会真烧 LLM token（5 轮，约十分钟），默认跳过，显式开启才跑。跑法（项目根）：
  * <pre>
@@ -133,16 +134,11 @@ class ConversationSummarizerRealRunTest {
     /** 跳过日志：{@code [Summarize] 找不到安全切点，跳过压缩 tokens=3352 messages=5}，取 messages 数 */
     private static final Pattern SKIP_LOG = Pattern.compile("找不到安全切点.*messages=(\\d+)");
 
-    /** 摘要消息的固定前缀，与 ConversationSummarizer.SUMMARY_PREFIX 一致（那边是 private） */
-    private static final String SUMMARY_PREFIX = "## 早前对话摘要：";
-    /** 第二段摘要的分段标记：出现它=老摘要没被重压，是原样留着接新段 */
-    private static final String SECOND_SEGMENT = "── 第2段 ──";
-
     /**
-     * 剧本。前三轮负责把上下文撑起来并往会话历史里塞两组工具配对，后两轮是"压缩之后还能不能说话"的正主。
-     * 第 2、3 轮必须出现"深度研判"字样——summarizer 的 instruction 明令只有这类字眼才准调
-     * run_deep_analysis；带上"先看行情"是为了让路由顺手派一个 market 专家，
-     * 专家消息会把工具配对顶到理想切点附近，切点安全性才验得到。
+     * 剧本。前三轮负责把上下文撑起来、往会话历史里塞工具配对，后两轮是"压缩之后还能不能说话"的正主。
+     * 第 2、3 轮必须出现"深度研判"字样——主 agent 的提示词只在这类字眼下才准调 run_deep_analysis
+     * （不授权，见类头）；带上"先看行情"是让主 agent 同一轮先调行情工具，一轮里多出几组配对，
+     * 理想切点附近才有配对可切，切点安全性才验得到。
      */
     private static final List<String> SCRIPT = List.of(
             "最近有什么重要的加密货币新闻？",
@@ -168,9 +164,13 @@ class ConversationSummarizerRealRunTest {
     @Autowired
     private LlmEndpointService endpointService;
 
+    /** 摘要前缀与分段标记从词表取（chat.compress.*），认摘要走生产同一个 isSummary */
+    @Autowired
+    private PromptCatalog prompts;
+
     private final ListAppender<ILoggingEvent> summarizeLogs = new ListAppender<>();
     /**
-     * {@link ResilientChatService} 的日志。硬失败现在会直接把这一跑弄红（这条链上已经没有兜底模型），
+     * {@link LlmClient} 的日志。硬失败会直接把这一跑弄红（链上没有兜底模型），
      * 但<b>重试之后成功</b>那类只在日志里留一行、答案照出、测试照绿——这一层是那类问题唯一的观测点。
      */
     private final ListAppender<ILoggingEvent> resilienceLogs = new ListAppender<>();
@@ -180,7 +180,7 @@ class ConversationSummarizerRealRunTest {
     @AfterEach
     void detachAppenders() {
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).detachAppender(summarizeLogs);
-        ((Logger) LoggerFactory.getLogger(ResilientChatService.class)).detachAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(LlmClient.class)).detachAppender(resilienceLogs);
     }
 
     @Test
@@ -188,7 +188,7 @@ class ConversationSummarizerRealRunTest {
         summarizeLogs.start();
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).addAppender(summarizeLogs);
         resilienceLogs.start();
-        ((Logger) LoggerFactory.getLogger(ResilientChatService.class)).addAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(LlmClient.class)).addAppender(resilienceLogs);
 
         ChatEndpoints llmConfig = endpointService.chatEndpoints(ADMIN_USER_ID);
         assertThat(llmConfig).as("先用管理员账号在 AI 页「模型配置」加一条 BYOK 端点再跑").isNotNull();
@@ -237,17 +237,17 @@ class ConversationSummarizerRealRunTest {
                 .as("没有任何一轮是带着已压缩历史起跑的，验收点 2 无从谈起")
                 .isGreaterThanOrEqualTo(0);
         assertThat(answers).allSatisfy(answer -> assertThat(answer).isNotBlank());
-        // 答案非空远远不够：400 发生在首帧之前，兜底模型会无缝接盘，答案照出、测试照绿（见类头）。
-        // 上游到底有没有拒过这份压缩历史，只有 ResilientChatService 的日志说得清
+        // 答案非空不够：首帧前的瞬时失败、读响应中断都会被重试接住，重试成功就答案照出、测试照绿（见类头）。
+        // 这一跑上游有没有拒过、断过，只有 LlmClient 的日志说得清
         assertThat(upstreamTroubles())
-                .as("压缩后的历史让上游出错了——兜底接了盘所以答案还在，但这条链已经废了")
+                .as("上游拒过或断过这一跑的请求——重试接住了所以答案还在，但不算干净通过")
                 .isEmpty();
         // 压缩自身的静默降级：两条都是 WARN 之后带着未压缩历史继续，测试绿着而压缩等于没做
         assertThat(silentDegradations())
                 .as("压缩发生了静默降级，绿是假绿")
                 .isEmpty();
 
-        // 同一件事的结构断言，也是本类真正的守门员（理由见类头"上游宽容"那段）：
+        // 同一件事的结构断言（上游宽容，报不报 400 判不了，见类头）：
         // 每轮落库的历史里，工具回执都必须能找到配对的调用——落单的那条会被原样送进下一轮请求
         assertThat(pairingViolations)
                 .as("压缩切点把工具调用与回执切成了两半，落单的回执会被原样送进上游请求")
@@ -255,14 +255,15 @@ class ConversationSummarizerRealRunTest {
 
         // 验收点 3：摘要以固定前缀存在于最终历史；压缩发生两次以上则老摘要原样留着接新段
         List<String> summaries = finalMessages.stream()
-                .filter(SystemMessage.class::isInstance)
+                .filter(message -> ConversationSummarizer.isSummary(message, prompts))
                 .map(Message::getText)
-                .filter(text -> text != null && text.startsWith(SUMMARY_PREFIX))
                 .toList();
         assertThat(summaries).hasSize(1);
         log.info("[SummarizeRealRun] 最终摘要：{}", summaries.getFirst());
         if (compressions.size() >= 2) {
-            assertThat(summaries.getFirst()).contains(SECOND_SEGMENT);
+            // 出现第 2 段标记 = 老摘要没被重压，是原样留着接新段
+            assertThat(summaries.getFirst())
+                    .contains(prompts.get(AgentLang.ZH, "chat.compress.segmentMark", Map.of("n", 2)));
         }
     }
 
@@ -275,7 +276,7 @@ class ConversationSummarizerRealRunTest {
 
     /**
      * 扫每轮落库历史里的"落单工具回执"。这是唯一抓得住现行的地方：这份历史就是下一轮
-     * 上游请求的 input（{@code ResponsesChatModel.buildInput} 把 ToolResponseMessage 无条件转成
+     * 上游请求的 input（{@code ResponsesChatModel.requestBody} 把 ToolResponseMessage 无条件转成
      * function_call_output），而它在库里只活到下一次压缩——下次压缩把它卷进摘要就"自愈"了。
      * <p>
      * <b>只查"回执找不到调用"这一个方向，不是图省事，是反方向不可达</b>：{@code compress} 做的是
@@ -296,18 +297,17 @@ class ConversationSummarizerRealRunTest {
     }
 
     /**
-     * 上游出错的痕迹。三串关键词覆盖 {@link ResilientChatService} 的<b>全部四个</b>出错日志点：
-     * 流式退避重试、流式重试耗尽切兜底、阻塞路径切兜底（后两个共用"切换兜底"这句）、
-     * 阻塞路径读响应中断。任何一条出现都说明这轮请求被上游拒过或断过。
-     *（"切换兜底"这两句今天已经打不出来了——BYOK 后全链路都不带兜底模型；
-     * 关键词留着不碍事，将来真加回兜底也不用改这里。）
+     * 上游出错的痕迹。两串关键词对应 {@link LlmClient} 的两句重试日志：流式退避重试、阻塞路径读响应中断。
+     * 任何一条出现都说明这轮请求被上游拒过或断过。
+     * {@code 上游拒收服务端搜索工具} 那句（流式、阻塞各一处）不算：那是端点认不认搜索工具的配置事实，
+     * 端点不认就每轮都打，跟压缩无关；压缩历史真被拒的话，去掉许可重发的还是同一份历史，照样被拒，这一跑当场红。
      * <p>
-     * <b>这个探针至今没通过电，用它的时候心里要有数</b>：那四个日志点全是 {@code log.warn}、
+     * <b>这个探针至今没通过电，用它的时候心里要有数</b>：这两句全是 {@code log.warn}、
      * 只在出错时打，所以历次真跑它一条都没捕到过。后果是——appender 接错 logger、或者哪天日志
      * 文案被改，与"一切正常"在观测上完全不可区分，它会静默地永远为空。对比之下
      * {@link #summarizeLogs} 是被证明活着的（每跑都捕到 {@code 无新原文可压} 与压缩 INFO）。
      * <p>
-     * 即便如此仍然值得留：硬失败现在会自己红，但"退避重试之后成功"这类照样答案非空、测试全绿，
+     * 即便如此仍然值得留：硬失败会自己红，但"退避重试之后成功"这类照样答案非空、测试全绿，
      * 没有它就完全看不见。
      * <p>
      * 已知代价：{@code 退避重试} 会被无关的瞬时网络抖动触发成假红（历次真跑 0 次出现）。留着——
@@ -316,8 +316,7 @@ class ConversationSummarizerRealRunTest {
     private List<String> upstreamTroubles() {
         return resilienceLogs.list.stream()
                 .map(ILoggingEvent::getFormattedMessage)
-                .filter(message -> message.contains("切换兜底")
-                        || message.contains("退避重试")
+                .filter(message -> message.contains("退避重试")
                         || message.contains("响应读取中断"))
                 .toList();
     }
@@ -387,14 +386,13 @@ class ConversationSummarizerRealRunTest {
     }
 
     /** 历史形状速览：切点落在哪、配对被不被拆，靠这行日志才看得出来 */
-    private static String shapeOf(List<Message> messages) {
+    private String shapeOf(List<Message> messages) {
         return messages.stream().map(message -> switch (message) {
             case AssistantMessage assistant when !assistant.getToolCalls().isEmpty() -> "调用";
             case AssistantMessage ignored -> "助手";
             case ToolResponseMessage ignored -> "回执";
             case UserMessage ignored -> "用户";
-            case SystemMessage system when system.getText() != null && system.getText().startsWith(SUMMARY_PREFIX)
-                    -> "摘要";
+            case SystemMessage system when ConversationSummarizer.isSummary(system, prompts) -> "摘要";
             default -> "其他";
         }).collect(Collectors.joining("·"));
     }

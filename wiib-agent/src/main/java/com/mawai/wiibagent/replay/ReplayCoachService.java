@@ -8,9 +8,9 @@ import com.mawai.wiibagent.chat.ChatModelFactory;
 import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.i18n.UserLangResolver;
 import com.mawai.wiibagent.llm.ChatEndpoints;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.LlmErrorMessages;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import com.mawai.wiibagent.llm.SseChannel;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -37,8 +37,8 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
  * 手动复盘 AI 教练的一次请求：准入 → 交出 emitter → 虚拟线程里跑流式调用。
  * 一次请求 = 一次 BYOK 模型流式调用，SSE 事件协议与研判工作台同款（token/done/error），前端复用同一套解析。
  * <p>
- * 与工作台对话的区别：不进会话历史、不记忆、不排队——纯一次性问答，所以没有 ChatConcurrencyGate
- * 那套名额与让位；只挡"同一用户上一次还没跑完又点"（{@link ErrorCode#REPLAY_AI_BUSY}）。
+ * 与工作台对话的区别：不进会话历史、不记忆——纯一次性问答，所以不占 ChatConcurrencyGate
+ * 的名额；只挡"同一用户上一次还没跑完又点"（{@link ErrorCode#REPLAY_AI_BUSY}）。
  * 断连即停：没有落库诉求，用户切走了就别再烧他的 token。
  */
 @Slf4j
@@ -140,11 +140,11 @@ public class ReplayCoachService {
                 channel::heartbeat, HEARTBEAT_SECONDS, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
         StringBuilder answer = new StringBuilder();
         try {
-            // ResilientChatService 捎系统提示 + 流式重试；不挂工具不进 ReactLoop，落到底就是一次 model.stream
-            ResilientChatService service = ResilientChatService.builder().model(model)
+            // LlmClient 捎系统提示 + 流式重试；不挂工具不进 ReactLoop，落到底就是一次 model.stream
+            LlmClient client = LlmClient.builder().model(model)
                     .systemPrompt(coachPrompts.system(request, lang)).build();
             // toStream + try-with-resources：用户切走（通道关闭）后 takeWhile 停止迭代、close 取消订阅，不再烧 token
-            try (Stream<ChatResponse> frames = service.streamingExecute(
+            try (Stream<ChatResponse> frames = client.streamingExecute(
                     List.of(new UserMessage(coachPrompts.user(request, lang))), null).toStream()) {
                 frames.takeWhile(f -> !channel.isClosed()).forEach(f -> {
                     String chunk = textOf(f);

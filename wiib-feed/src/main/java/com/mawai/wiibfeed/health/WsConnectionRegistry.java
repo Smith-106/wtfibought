@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * WS 连接注册表：BinanceWsClient 装配期把 8 条行情连接登记进来，作为流健康快照 + 手动重试的单一入口。
+ * WS 连接注册表：BinanceWsClient 装配期把各条行情连接登记进来（含交易员那两条按集合订的，集合空时是 IDLE），作为流健康快照 + 手动重试的单一入口。
  * <p>照 {@code StrategyAccountRegistry} 惯例（@Component + 并发容器 + 单一来源）。用 CopyOnWriteArrayList
  * 保留登记顺序，让前端列表顺序稳定不跳；仅登记 Binance 常连流，Polymarket（CLOB 轮次主动断连）不入册。
  */

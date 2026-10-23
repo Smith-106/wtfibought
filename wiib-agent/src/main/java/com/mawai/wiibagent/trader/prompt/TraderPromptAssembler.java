@@ -166,6 +166,13 @@ public class TraderPromptAssembler {
         trader.setOwnerNoteRounds(left);
     }
 
+    /** 给主人看的平台提示词：模板 + 收尾格式块。MyTrader 预览与指令生成器共用 */
+    public String templatePreview(AgentLang lang, String intervalCode, String symbols,
+                                  TraderRiskConfig risk, String wakeWindowText) {
+        return platformTemplate(lang, intervalCode, symbols, risk, wakeWindowText)
+                + "\n\n" + closingFormat(lang, symbols);
+    }
+
     /**
      * 平台系统提示词模板（环境/开场白/工具/规格/护栏/计划/成本/收尾）——前端预览与唤醒组装共用同一份文本。
      * 只讲事实，两个方向都不带偏置：不写"该 HOLD"也不写"该动"，方法归主人的交易指令。
