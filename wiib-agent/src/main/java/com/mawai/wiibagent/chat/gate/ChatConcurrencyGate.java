@@ -1,5 +1,7 @@
 package com.mawai.wiibagent.chat.gate;
 
+import com.mawai.wiibcommon.enums.ErrorCode;
+import com.mawai.wiibcommon.exception.BizException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -41,6 +43,15 @@ public class ChatConcurrencyGate {
             return Acquire.GLOBAL_FULL;
         }
         return Acquire.OK;
+    }
+
+    /** 占名额，占不到按拒因抛对应错误码；占到了调用方负责配对 release */
+    public void acquireOrThrow(long userId) {
+        Acquire acquired = tryAcquire(userId);
+        if (acquired != Acquire.OK) {
+            throw new BizException(acquired == Acquire.USER_BUSY
+                    ? ErrorCode.CHAT_ALREADY_RUNNING : ErrorCode.CHAT_CAPACITY_FULL);
+        }
     }
 
     /** 这个用户此刻有没有一轮在跑（不分会话） */

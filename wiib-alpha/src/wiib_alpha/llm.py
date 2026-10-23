@@ -1,6 +1,6 @@
 """按角色的模型配置建 chat model。
 
-baseUrl 约定与 wiib-gen / Java 侧一致：用户填的不带版本后缀，交给 SDK 的补 /v1，自己拼路径的把后缀剥掉。
+baseUrl 约定与 Java 侧一致：用户填的不带版本后缀，交给 SDK 的补 /v1，自己拼路径的把后缀剥掉。
 """
 
 from __future__ import annotations

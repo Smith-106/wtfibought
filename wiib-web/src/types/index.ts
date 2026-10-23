@@ -1539,47 +1539,56 @@ export interface BacktestResultPayload {
   equity: [number, number][];
 }
 
-// ========== 交易指令生成器（wiib-gen，字段名跟 py 侧一致用下划线） ==========
+// ========== 交易指令生成器（agent，/api/ai/prompt-gen） ==========
 
-/** 一道题；options 空=只能自由输入，allow_free=chips 之外还能自己写 */
-export interface GenQuestionItem {
+/** 一张题卡：一个推荐项 + 几个其他选项，用户也能自己填；required=必问题，没有跳过 */
+export interface PromptGenQuestion {
   key: string;
-  text: string;
+  question: string;
+  recommended: string;
+  reason: string;
   options: string[];
-  allow_free: boolean;
+  required: boolean;
 }
 
-/** 一屏题：mode/play/detail 一题，base 三题一起答 */
-export interface GenQuestion {
-  kind: 'mode' | 'base' | 'play' | 'detail';
-  items: GenQuestionItem[];
-  allow_skip: boolean;
-  allow_finish: boolean;
+/** 对话里的一条：agent / user 只有 text，question 带题和回答（还没答是 null），version 只有版本号 */
+export interface PromptGenItem {
+  type: 'agent' | 'user' | 'question' | 'version';
+  text: string | null;
+  question: PromptGenQuestion | null;
+  answer: string | null;
+  no: number | null;
 }
 
-/** 一版指令：text 是正文，notes 是这版改了什么 + 做不到的写法 */
-export interface GenVersion {
+/** 一版指令：body 是正文，notes 是这版改了什么 + 做不到的写法；finalVersion=agent 认为写完了 */
+export interface PromptGenVersion {
   no: number;
-  text: string;
+  body: string;
   notes: string;
+  finalVersion: boolean;
 }
 
-/** GET /threads/{id} 与回退后的线程快照 */
-export interface GenThreadState {
-  versions: GenVersion[];
-  question: GenQuestion | null;
+/** 当前对话（从历史推出来）+ 最近 3 版；没开过对话时 active=false，只有 versions */
+export interface PromptGenView {
+  active: boolean;
+  endpointId: number | null;
+  outputLang: string | null;
+  items: PromptGenItem[];
+  /** 还在等回答的那道题 */
+  question: PromptGenQuestion | null;
+  /** 当前对话里最后写出的那版 */
+  currentNo: number | null;
   done: boolean;
-  /** 图还停在半路（生成中途断了也算）：没题可答时给「继续生成」 */
-  pending: boolean;
+  /** 新的在前 */
+  versions: PromptGenVersion[];
 }
 
-/** 生成器 SSE 事件 */
-export type GenEvent =
-  | { type: 'thread'; id: string }
-  | { type: 'status'; stage: 'generating' | 'proposing' | 'asking' }
-  | { type: 'token'; text: string }
-  | ({ type: 'version' } & GenVersion)
-  | ({ type: 'question' } & GenQuestion)
+/** 生成器 SSE 事件；题卡不走事件，一轮结束页面重新拉 session 拿到 */
+export type PromptGenEvent =
+  | { type: 'status'; stage: 'thinking' | 'reading' | 'writing' }
+  | { type: 'text'; text: string }
+  | { type: 'draft'; text: string }
+  | ({ type: 'version' } & PromptGenVersion)
   | { type: 'done' }
-  | { type: 'error'; message: string; state: GenThreadState };
+  | { type: 'error'; message: string };
 

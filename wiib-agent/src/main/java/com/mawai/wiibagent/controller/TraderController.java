@@ -152,8 +152,7 @@ public class TraderController {
         // 预览也按当前用户语言出：MyTrader 页展示的就是这份文本，英文用户不该看到中文模板。
         // 收尾格式块一并带上：它是系统强制的，预览里不露面用户就不知道自己被强制了什么
         AgentLang lang = userLangResolver.of(userId);
-        return Result.ok(promptAssembler.platformTemplate(lang, interval, symbols, cfg, windowText)
-                + "\n\n" + promptAssembler.closingFormat(lang, symbols));
+        return Result.ok(promptAssembler.templatePreview(lang, interval, symbols, cfg, windowText));
     }
 
     /** 按用户的 agent 语言取，与模板预览同一门，不跟界面语言 */

@@ -20,6 +20,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 /**
@@ -30,7 +31,8 @@ import java.util.stream.Stream;
  * 建造参数：{@code chat} 模型调用层（必填）、{@code limiter} 调用保险丝（必填）、
  * {@code streaming} 走流式还是阻塞（缺省阻塞）、{@code gate} 工具执行前的闸门（可空，如审批卡）、
  * {@code summarizer} 长对话压缩（可空）、{@code trace} 工具调用轨迹（可空）、
- * {@code serialTools} 不许与同批别的调用并发的工具名（缺省空）。
+ * {@code serialTools} 不许与同批别的调用并发的工具名（缺省空）、
+ * {@code stopWhen} 每批回执入历史后问一次、true 就结束本次运行（缺省从不，如已经向用户提了问）。
  * <p>
  * 同一条回复里的多个 tool_call 并发执行（虚拟线程），回执仍按 tool_call 顺序配对合成一条；
  * 批内出现 serialTools 里的任一工具，整批退回按原顺序串行。
@@ -103,6 +105,7 @@ public final class ReactLoop {
     private final ConversationSummarizer summarizer;
     private final ToolCallTraceHook trace;
     private final Set<String> serialTools;
+    private final BooleanSupplier stopWhen;
 
     private ReactLoop(Builder builder) {
         this.chat = builder.chat;
@@ -113,6 +116,7 @@ public final class ReactLoop {
         this.summarizer = builder.summarizer;
         this.trace = builder.trace;
         this.serialTools = builder.serialTools;
+        this.stopWhen = builder.stopWhen;
     }
 
     public static Builder builder() {
@@ -128,6 +132,7 @@ public final class ReactLoop {
         private ConversationSummarizer summarizer;
         private ToolCallTraceHook trace;
         private Set<String> serialTools = Set.of();
+        private BooleanSupplier stopWhen = () -> false;
 
         /** 模型调用层，必填 */
         public Builder chat(AgentChat chat) {
@@ -168,6 +173,12 @@ public final class ReactLoop {
         /** 不许与同批别的调用并发的工具名（改账户状态那类）；批内出现任一个，整批按原顺序串行 */
         public Builder serialTools(Set<String> serialTools) {
             this.serialTools = Set.copyOf(serialTools);
+            return this;
+        }
+
+        /** 每批工具回执入历史后问一次，true 就结束本次运行、不再调模型（如已经向用户提了问） */
+        public Builder stopWhen(BooleanSupplier stopWhen) {
+            this.stopWhen = stopWhen;
             return this;
         }
 
@@ -230,6 +241,9 @@ public final class ReactLoop {
             sink.message(responses);
             if (cancelled(cancel)) {
                 break;      // 检查点②：工具回执已入历史，但不再拿它去调模型
+            }
+            if (stopWhen.getAsBoolean()) {
+                break;      // 调用方说收工：回执已入历史，本次运行到此为止
             }
         }
         return new Result(messages, calls);

@@ -22,7 +22,7 @@ DEFAULT_EXCLUDE = (
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """一个角色的模型：管理员在页面上配，存 SQLite 的 model 表；协议分叉与 wiib-gen 同，baseUrl 不带版本后缀"""
+    """一个角色的模型：管理员在页面上配，存 SQLite 的 model 表；协议分叉与 Java 侧 ByokModelBuilder 同，baseUrl 不带版本后缀"""
     protocol: str
     base_url: str
     model: str

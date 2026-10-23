@@ -1095,3 +1095,35 @@ CREATE TABLE IF NOT EXISTS user_workbench_pref (
 COMMENT ON TABLE  user_workbench_pref IS '研判工作台用户偏好：后台子 agent（delegate）开关与同一用户同时在跑的子运行上限';
 COMMENT ON COLUMN user_workbench_pref.sub_agents_enabled IS '允许主 agent 派后台子 agent；深研判不受它管（用户点头过的）';
 COMMENT ON COLUMN user_workbench_pref.sub_agent_limit IS '同时在跑的子运行数上限，1..agent.workbench.sub-agent-hard-limit';
+
+-- ============================================
+-- 39. 交易指令生成器（一人一个对话 + 最近 3 版）
+-- ============================================
+CREATE TABLE IF NOT EXISTS prompt_gen_session (
+    user_id     BIGINT      PRIMARY KEY,
+    endpoint_id BIGINT      NOT NULL,
+    output_lang VARCHAR(8)  NOT NULL,
+    state       BYTEA       NOT NULL,
+    updated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+COMMENT ON TABLE  prompt_gen_session IS '交易指令生成器的当前对话：一人一行，开新对话整行覆盖';
+COMMENT ON COLUMN prompt_gen_session.output_lang IS '指令正文语言 zh/en；对话本身跟 agent 语言';
+COMMENT ON COLUMN prompt_gen_session.state IS '序列化后的完整消息历史（ChatContextCodec），续聊与页面恢复都从它推';
+
+CREATE TABLE IF NOT EXISTS prompt_gen_version (
+    id          BIGSERIAL   PRIMARY KEY,
+    user_id     BIGINT      NOT NULL,
+    version_no  INT         NOT NULL,
+    body        TEXT        NOT NULL,
+    notes       TEXT        NOT NULL,
+    is_final    BOOLEAN     NOT NULL,
+    output_lang VARCHAR(8)  NOT NULL,
+    state       BYTEA       NOT NULL,
+    created_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, version_no)
+);
+COMMENT ON TABLE  prompt_gen_version IS '交易指令生成器写出的版本：每个用户只留最近 3 版，跨对话也算';
+COMMENT ON COLUMN prompt_gen_version.version_no IS '每个用户自己往上数，开新对话不从 1 重来';
+COMMENT ON COLUMN prompt_gen_version.is_final IS 'agent 认为没什么可问了，这是最终版';
+COMMENT ON COLUMN prompt_gen_version.output_lang IS '写这版时的正文语言，回退时连同对话一起恢复';
+COMMENT ON COLUMN prompt_gen_version.state IS '交稿那一刻的对话快照，回退到这版就用它替换当前对话';

@@ -1,0 +1,90 @@
+package com.mawai.wiibagent.promptgen;
+
+import com.mawai.wiibagent.i18n.PromptCatalog;
+import com.mawai.wiibagent.i18n.PromptI18nAssertions;
+import com.mawai.wiibagent.learning.ExperienceLedger;
+import com.mawai.wiibagent.mapper.AiTraderMapper;
+import com.mawai.wiibagent.trader.prompt.TraderPromptAssembler;
+import com.mawai.wiibagent.trader.trade.TraderRiskConfig;
+import com.mawai.wiibcommon.entity.AiTrader;
+import com.mawai.wiibcommon.enums.AgentLang;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+
+/** 风险表与噪音线的取值；必问项随现成指令和是否写出过版本变；英文提示词全文无中文 */
+class PromptGenFactsTest {
+
+    private final PromptCatalog prompts = new PromptCatalog();
+    private final PromptGenFacts facts = new PromptGenFacts(
+            new TraderPromptAssembler(mock(AiTraderMapper.class), prompts, mock(ExperienceLedger.class)), prompts);
+
+    /** 默认规格：杠杆 3~20、保证金 5%~20% */
+    @Test
+    void riskTableSpansLeverageAndMarginRange() {
+        List<PromptGenFacts.RiskRow> rows = PromptGenFacts.riskTable(TraderRiskConfig.of(new AiTrader()));
+
+        assertThat(rows).extracting(PromptGenFacts.RiskRow::style)
+                .containsExactly("conservative", "balanced", "aggressive");
+        assertThat(rows.get(1).stopMin()).isEqualByComparingTo("0.25");
+        assertThat(rows.get(1).stopMax()).isEqualByComparingTo("6.67");
+        // 0.125 四舍五入是 0.13，不是银行家舍入的 0.12
+        assertThat(rows.get(0).stopMin()).isEqualByComparingTo("0.13");
+    }
+
+    @Test
+    void noiseLineScalesWithSquareRootOfInterval() {
+        assertThat(Stream.of("5m", "15m", "1h", "4h").map(PromptGenFacts::noiseStopPct)
+                .map(v -> v.stripTrailingZeros().toPlainString()))
+                .containsExactly("0.17", "0.3", "0.6", "1.2");
+    }
+
+    @Test
+    void modeIsRequiredOnlyWithAnInstructionAndBeforeTheFirstVersion() {
+        AiTrader trader = new AiTrader();
+        assertThat(PromptGenFacts.required(null, false)).containsExactly("direction", "holding", "style");
+        assertThat(PromptGenFacts.required(trader, false)).containsExactly("direction", "holding", "style");
+
+        trader.setCustomPrompt("[Method]\n- trade breakouts");
+        assertThat(PromptGenFacts.required(trader, false)).containsExactly("mode", "direction", "holding", "style");
+        // 写出过版本后用户把它存进了 My Trader：不因此回头问 mode
+        assertThat(PromptGenFacts.required(trader, true)).containsExactly("direction", "holding", "style");
+    }
+
+    @Test
+    void englishPromptsHaveNoCjk() {
+        AiTrader trader = new AiTrader();
+        trader.setSymbols("BTCUSDT,ETHUSDT");
+        trader.setIntervalCode("1h");
+        trader.setCustomPrompt("[Method]\n- trade breakouts");
+        PromptGenFacts.Prompts withTrader = facts.prompts(trader, false, AgentLang.EN, AgentLang.EN);
+        PromptGenFacts.Prompts noTrader = facts.prompts(null, false, AgentLang.EN, AgentLang.ZH);
+
+        PromptI18nAssertions.assertNoCjk("英文采访者", withTrader.agent());
+        PromptI18nAssertions.assertNoCjk("英文写稿人", withTrader.writer());
+        PromptI18nAssertions.assertNoCjk("英文采访者（没 trader）", noTrader.agent());
+        PromptI18nAssertions.assertNoCjk("英文写稿人（正文中文）", noTrader.writer());
+        for (String key : List.of("kickoff", "skipped", "askShown", "askOnePerTurn", "draftOnce", "draftAfterAsk",
+                "writeCancelled", "emptyDraft", "noPlayStats", "noQa", "noPrevious", "userNote")) {
+            PromptI18nAssertions.assertNoCjk("英文 " + key, prompts.get(AgentLang.EN, "promptgen." + key));
+        }
+        Map<String, Object> vars = Map.of("max", 10, "keys", "style", "mark", PromptGenFacts.NOTES_MARK,
+                "qa", "-", "brief", "-", "previous", "-");
+        for (String key : List.of("askLimit", "requiredMissing", "shrink", "truncatedNote", "writerInput")) {
+            PromptI18nAssertions.assertNoCjk("英文 " + key, prompts.get(AgentLang.EN, "promptgen." + key, vars));
+        }
+    }
+
+    @Test
+    void writerPromptCarriesComputedNumbers() {
+        String writer = facts.prompts(null, false, AgentLang.ZH, AgentLang.EN).writer();
+
+        assertThat(writer).contains(PromptGenFacts.NOTES_MARK).contains("英文").contains("4000")
+                .contains("0.25% ~ 6.67%").contains("0.3%");
+    }
+}

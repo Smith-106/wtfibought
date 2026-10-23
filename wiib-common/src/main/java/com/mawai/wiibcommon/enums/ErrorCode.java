@@ -112,7 +112,9 @@ public enum ErrorCode {
     REPLAY_AI_BUSY(2205, "error.replayAiBusy"),
     CHAT_REGENERATE_UNAVAILABLE(2206, "error.chatRegenerateUnavailable"),
     CHAT_MESSAGE_TOO_LONG(2207, "error.chatMessageTooLong"),
-    CHAT_NOTHING_PENDING(2208, "error.chatNothingPending");
+    CHAT_NOTHING_PENDING(2208, "error.chatNothingPending"),
+    PROMPT_GEN_NO_SESSION(2209, "error.promptGenNoSession"),
+    PROMPT_GEN_VERSION_NOT_FOUND(2210, "error.promptGenVersionNotFound");
 
     private final int code;
     /** 界面文案词表的 key，不是文案本身。渲染见 {@code GlobalExceptionHandler} */

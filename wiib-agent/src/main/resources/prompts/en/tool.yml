@@ -261,3 +261,19 @@ tool:
     The full report is rendered as a card in the chat UI. Your job afterwards is to talk about
     it, not to recite every number - unless cardShown is false, in which case the user cannot
     see the card and you must state the key findings yourself.
+
+  # Instruction generator: the thesis record is paired and computed by code; tags with few trades show counts only
+  trader_play_stats: |-
+    Get the owner's trader closed-trade record in the current round grouped by thesis tag (playType):
+    trade count, wins/losses and PnL per tag, paired and computed by code.
+
+  # Instruction generator: showing a card ends the turn; the answer comes back as the next user message
+  ask_user: |-
+    Show the user one question card and end this turn; their answer arrives as the next message.
+    A card has the question, your recommended option with the reason, and 2-4 other options;
+    the user can also skip the options and type their own answer.
+
+  # Instruction generator: the writer streams the body, then it comes back to the agent
+  write_draft: |-
+    Have the writer produce the next version of the instruction from the Q&A so far. The body is streamed
+    to the user; when done you get the body and notes back.

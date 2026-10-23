@@ -209,3 +209,16 @@ tool:
     The full report is rendered as a card in the chat UI. Your job afterwards is to talk about
     it, not to recite every number - unless cardShown is false, in which case the user cannot
     see the card and you must state the key findings yourself.
+
+  # 指令生成器：论点战绩是代码配对算好的，样本少的标签只给笔数
+  trader_play_stats: |-
+    取主人 trader 本局按论点标签（playType）聚合的已平仓战绩：每个标签的笔数、胜负与盈亏，由代码配对统计。
+
+  # 指令生成器：推题卡即收工，回答作为下一条用户消息进来
+  ask_user: |-
+    给用户展示一张题卡并结束这一轮，用户的回答会作为下一条消息到来。
+    题卡上是：题目、你推荐的选项和理由、2~4 个其他选项；用户也可以不选、自己填写。
+
+  # 指令生成器：正文由写稿人流式写，写完回给 agent
+  write_draft: |-
+    让写稿人按目前的问答写出指令的新一版，正文流式展示给用户，写完把正文和 notes 回给你。

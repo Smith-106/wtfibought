@@ -80,8 +80,8 @@ public class ChatWorkbenchController {
     /** 一轮对话跑在它上面（虚拟线程，见 {@code AgentExecutorConfig}）；名额泄漏那条钉子传一个已关的进来制造提交失败 */
     private final ExecutorService streamExecutor;
 
-    /** 单条用户消息字符上限；文案见 error.chatMessageTooLong，改这里要一起改 */
-    static final int MAX_MESSAGE_CHARS = 10_000;
+    /** 单条用户消息字符上限（指令生成器的回复也用它）；文案见 error.chatMessageTooLong，改这里要一起改 */
+    public static final int MAX_MESSAGE_CHARS = 10_000;
 
     @Data
     public static class WorkbenchChatRequest {
@@ -164,7 +164,8 @@ public class ChatWorkbenchController {
             throw new BizException(ErrorCode.CHAT_MESSAGE_TOO_LONG);
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
-        acquireSlot(userId);
+        // 占线直接拒，前端把消息排队、这轮结束自动续发
+        concurrencyGate.acquireOrThrow(userId);
 
         // sessionId 绑定 userId 前缀，防跨用户续聊他人会话
         String sessionId = request.getSessionId() != null && request.getSessionId().startsWith("wb-" + userId + "-")
@@ -188,17 +189,8 @@ public class ChatWorkbenchController {
             throw new BizException(ErrorCode.CHAT_NOTHING_PENDING);
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
-        acquireSlot(userId);
+        concurrencyGate.acquireOrThrow(userId);
         return streamTurn(userId, sessionId, null, leaves, null, null, true);
-    }
-
-    /** 名额：每用户同时一轮。占线直接拒，前端把消息排队、这轮结束自动续发 */
-    private void acquireSlot(long userId) {
-        ChatConcurrencyGate.Acquire acquired = concurrencyGate.tryAcquire(userId);
-        if (acquired != ChatConcurrencyGate.Acquire.OK) {
-            throw new BizException(acquired == ChatConcurrencyGate.Acquire.USER_BUSY
-                    ? ErrorCode.CHAT_ALREADY_RUNNING : ErrorCode.CHAT_CAPACITY_FULL);
-        }
     }
 
     /**
@@ -227,7 +219,7 @@ public class ChatWorkbenchController {
             throw new BizException(ErrorCode.CHAT_REGENERATE_UNAVAILABLE);
         }
         ChatAgentFactory.Leaves leaves = leavesFor(userId);
-        acquireSlot(userId);
+        concurrencyGate.acquireOrThrow(userId);
         ChatTurnRewinder.Rollback rollback;
         try {
             // 名额到手后才回退，理由见 rewind 的 javadoc；回不去的几种原因在 HTTP 上是同一个码
