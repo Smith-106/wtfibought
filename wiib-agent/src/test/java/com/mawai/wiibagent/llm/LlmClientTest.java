@@ -36,13 +36,13 @@ import static org.mockito.Mockito.when;
  * 另钉一条 options 契约：options 类型跟着模型走（openai 协议硬转 OpenAiChatOptions）；
  * 以及中断两条：信号完成时掐断在途流并把取消传到上游、流正常结束不能反过来把信号 future 取消掉。
  */
-class AgentChatTest {
+class LlmClientTest {
 
     private final ChatModel model = mock(ChatModel.class);
 
-    private AgentChat chat() {
+    private LlmClient client() {
         when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        return AgentChat.builder()
+        return LlmClient.builder()
                 .model(model)
                 .systemPrompt("你是助手")
                 .build();
@@ -59,7 +59,7 @@ class AgentChatTest {
     void 阻塞路径失败只调一次且原样抛出() {
         when(model.call(any(Prompt.class))).thenThrow(new TransientAiException("502"));
 
-        assertThatThrownBy(() -> chat().execute(ASK))
+        assertThatThrownBy(() -> client().execute(ASK))
                 .isInstanceOf(TransientAiException.class);
         verify(model, times(1)).call(any(Prompt.class));
     }
@@ -67,7 +67,7 @@ class AgentChatTest {
     /** 系统提示是每个 agent 的纪律与格式约定，缺了不许静默放行 */
     @Test
     void systemPrompt缺省直接拦下() {
-        assertThatThrownBy(() -> AgentChat.builder().model(model).build())
+        assertThatThrownBy(() -> LlmClient.builder().model(model).build())
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -87,10 +87,10 @@ class AgentChatTest {
     void openai协议下options保持OpenAiChatOptions且不强制() {
         when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("deepseek-chat").build());
         when(model.call(any(Prompt.class))).thenReturn(responseOf("ok"));
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
 
-        chat.execute(ASK);
+        client.execute(ASK);
 
         ChatOptions sent = optionsSentTo(model);
         assertThat(sent).isInstanceOf(OpenAiChatOptions.class);
@@ -101,18 +101,18 @@ class AgentChatTest {
     }
 
     /**
-     * 服务端搜索许可（只有 chat 的主 agent 与 researcher worker 开）：对本 agent 的<b>每次</b>调用都生效。
+     * 服务端搜索许可（只有 chat 的主 agent 与 researcher worker 开）：对这个 client 的<b>每次</b>调用都生效。
      * 经 toolContext 捎带，ResponsesChatModel 建请求体时读回。
      */
     @Test
     void webSearch开关_许可落进chatOptions的toolContext() {
         when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
 
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        ToolCallingChatOptions options = (ToolCallingChatOptions) chat.chatOptions().orElseThrow();
+        ToolCallingChatOptions options = (ToolCallingChatOptions) client.chatOptions().orElseThrow();
         assertThat(options.getToolContext().get(SseChatModel.WEB_SEARCH_KEY)).isEqualTo(Boolean.TRUE);
     }
 
@@ -121,10 +121,10 @@ class AgentChatTest {
         // 没挂工具时 chatOptions 本是 null；搜索许可不许因此静默丢
         when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
 
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").webSearch(true).build();
 
-        ToolCallingChatOptions options = (ToolCallingChatOptions) chat.chatOptions().orElseThrow();
+        ToolCallingChatOptions options = (ToolCallingChatOptions) client.chatOptions().orElseThrow();
         assertThat(options.getToolContext().get(SseChatModel.WEB_SEARCH_KEY)).isEqualTo(Boolean.TRUE);
     }
 
@@ -139,7 +139,7 @@ class AgentChatTest {
                         new java.io.IOException("stream was reset: CANCEL")))
                 .thenReturn(responseOf("重试成功"));
 
-        ChatResponse result = chat().execute(ASK);
+        ChatResponse result = client().execute(ASK);
 
         verify(model, times(2)).call(any(Prompt.class));
         assertThat(result.getResult().getOutput().getText()).isEqualTo("重试成功");
@@ -160,11 +160,11 @@ class AgentChatTest {
                             "Gemini API HTTP 400: Multiple tools are supported only when they are all search tools."))
                     : Flux.just(responseOf("不搜也答"));
         });
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        List<ChatResponse> out = chat.streamingExecute(ASK, null).collectList().block();
+        List<ChatResponse> out = client.streamingExecute(ASK, null).collectList().block();
 
         assertThat(out).hasSize(1);
         assertThat(prompts).hasSize(2);
@@ -180,10 +180,10 @@ class AgentChatTest {
     void 没捎许可时搜索类报错不降级() {
         when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         when(model.stream(any(Prompt.class))).thenReturn(Flux.error(new NonTransientAiException("400 search")));
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
 
-        assertThatThrownBy(() -> chat.streamingExecute(ASK, null).collectList().block())
+        assertThatThrownBy(() -> client.streamingExecute(ASK, null).collectList().block())
                 .isInstanceOf(NonTransientAiException.class);
         verify(model, times(1)).stream(any(Prompt.class));
     }
@@ -200,11 +200,11 @@ class AgentChatTest {
             }
             return responseOf("不搜也答");
         });
-        AgentChat chat = AgentChat.builder()
+        LlmClient client =LlmClient.builder()
                 .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        assertThat(chat.execute(ASK).getResult().getOutput().getText()).isEqualTo("不搜也答");
+        assertThat(client.execute(ASK).getResult().getOutput().getText()).isEqualTo("不搜也答");
         assertThat(prompts).hasSize(2);
         assertThat(((ToolCallingChatOptions) prompts.get(0).getOptions()).getToolContext())
                 .containsEntry(SseChatModel.WEB_SEARCH_KEY, true);
@@ -222,7 +222,7 @@ class AgentChatTest {
         CompletableFuture<Void> signal = new CompletableFuture<>();
         AtomicBoolean completed = new AtomicBoolean();
 
-        chat().streamingExecute(ASK, signal).subscribe(r -> { }, e -> { }, () -> completed.set(true));
+        client().streamingExecute(ASK, signal).subscribe(r -> { }, e -> { }, () -> completed.set(true));
         assertThat(upstreamCancelled).isFalse();
 
         signal.complete(null);
@@ -237,7 +237,7 @@ class AgentChatTest {
         when(model.stream(any(Prompt.class))).thenReturn(Flux.just(responseOf("答完了")));
         CompletableFuture<Void> signal = new CompletableFuture<>();
 
-        List<ChatResponse> out = chat().streamingExecute(ASK, signal).collectList().block();
+        List<ChatResponse> out = client().streamingExecute(ASK, signal).collectList().block();
 
         assertThat(out).hasSize(1);
         assertThat(signal.isDone()).isFalse();

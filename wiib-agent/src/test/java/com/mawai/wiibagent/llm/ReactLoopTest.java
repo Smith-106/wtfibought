@@ -181,7 +181,7 @@ class ReactLoopTest {
     @Test
     void stopWhenEndsRunOnceRepliesAreInHistory() {
         ReactLoop.Result result = ReactLoop.builder()
-                .chat(chat(modelCalling(List.of(call("c1", "echo", "{\"text\":\"问题\"}"))), new EchoTools()))
+                .client(client(modelCalling(List.of(call("c1", "echo", "{\"text\":\"问题\"}"))), new EchoTools()))
                 .limiter(new ModelCallLimiter(5, "未执行", "预算已用完"))
                 .stopWhen(() -> true)
                 .build()
@@ -209,14 +209,14 @@ class ReactLoopTest {
 
     private static ReactLoop loop(ChatModel model, Set<String> serialTools, Object toolkit) {
         return ReactLoop.builder()
-                .chat(chat(model, toolkit))
+                .client(client(model, toolkit))
                 .limiter(new ModelCallLimiter(5, "未执行", "预算已用完"))
                 .serialTools(serialTools)
                 .build();
     }
 
-    private static AgentChat chat(ChatModel model, Object toolkit) {
-        return AgentChat.builder()
+    private static LlmClient client(ChatModel model, Object toolkit) {
+        return LlmClient.builder()
                 .model(model)
                 .systemPrompt("测试")
                 .tools(new LocalizedToolCallbacks(new PromptCatalog()).of(AgentLang.ZH, toolkit))

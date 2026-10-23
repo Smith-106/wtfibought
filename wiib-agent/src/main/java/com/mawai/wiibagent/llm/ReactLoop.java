@@ -28,7 +28,7 @@ import java.util.stream.Stream;
  * 一个 agent 一份实例（工具表与各步骤绑死在建造参数上），每次 {@link #run} 从 0 起算模型调用数，
  * "单次运行"这个作用域天然成立，不需要显式清零。
  * <p>
- * 建造参数：{@code chat} 模型调用层（必填）、{@code limiter} 调用保险丝（必填）、
+ * 建造参数：{@code client} 调模型的客户端（必填）、{@code limiter} 调用保险丝（必填）、
  * {@code streaming} 走流式还是阻塞（缺省阻塞）、{@code gate} 工具执行前的闸门（可空，如审批卡）、
  * {@code summarizer} 长对话压缩（可空）、{@code trace} 工具调用轨迹（可空）、
  * {@code serialTools} 不许与同批别的调用并发的工具名（缺省空）、
@@ -96,8 +96,8 @@ public final class ReactLoop {
     public record Result(List<Message> messages, int modelCalls) {
     }
 
-    private final AgentChat chat;
-    /** 按工具名查 callback，就是 chat 挂给模型的那份表 */
+    private final LlmClient client;
+    /** 按工具名查 callback，就是 client 挂给模型的那份表 */
     private final Map<String, ToolCallback> toolsByName = new LinkedHashMap<>();
     private final boolean streaming;
     private final ModelCallLimiter limiter;
@@ -108,8 +108,8 @@ public final class ReactLoop {
     private final BooleanSupplier stopWhen;
 
     private ReactLoop(Builder builder) {
-        this.chat = builder.chat;
-        chat.tools().forEach(tool -> toolsByName.put(tool.getToolDefinition().name(), tool));
+        this.client = builder.client;
+        client.tools().forEach(tool -> toolsByName.put(tool.getToolDefinition().name(), tool));
         this.streaming = builder.streaming;
         this.limiter = builder.limiter;
         this.gate = builder.gate;
@@ -125,7 +125,7 @@ public final class ReactLoop {
 
     public static final class Builder {
 
-        private AgentChat chat;
+        private LlmClient client;
         private boolean streaming;
         private ModelCallLimiter limiter;
         private ToolGate gate;
@@ -134,9 +134,9 @@ public final class ReactLoop {
         private Set<String> serialTools = Set.of();
         private BooleanSupplier stopWhen = () -> false;
 
-        /** 模型调用层，必填 */
-        public Builder chat(AgentChat chat) {
-            this.chat = chat;
+        /** 调模型的客户端，必填 */
+        public Builder client(LlmClient client) {
+            this.client = client;
             return this;
         }
 
@@ -183,7 +183,7 @@ public final class ReactLoop {
         }
 
         public ReactLoop build() {
-            Objects.requireNonNull(chat, "chat 不能为空：ReactLoop 得有模型调用层才转得起来");
+            Objects.requireNonNull(client, "client 不能为空：ReactLoop 得有调模型的客户端才转得起来");
             Objects.requireNonNull(limiter, "limiter 不能为空：没有保险丝的 ReAct 循环会一路烧 token");
             return new ReactLoop(this);
         }
@@ -212,7 +212,7 @@ public final class ReactLoop {
             calls++;
             AssistantMessage reply = streaming
                     ? streamAndAggregate(messages, cancel, sink)
-                    : Objects.requireNonNull(chat.execute(messages).getResult(), "模型没有返回任何内容").getOutput();
+                    : Objects.requireNonNull(client.execute(messages).getResult(), "模型没有返回任何内容").getOutput();
             messages.add(reply);
             sink.message(reply);
             if (!reply.hasToolCalls()) {
@@ -314,7 +314,7 @@ public final class ReactLoop {
     private AssistantMessage streamAndAggregate(List<Message> messages, CompletableFuture<Void> cancel,
                                                 Listener listener) {
         AssistantMessage aggregated = null;
-        try (Stream<ChatResponse> frames = chat.streamingExecute(messages, cancel).toStream()) {
+        try (Stream<ChatResponse> frames = client.streamingExecute(messages, cancel).toStream()) {
             Iterator<ChatResponse> iterator = frames.iterator();
             while (!cancelled(cancel) && iterator.hasNext()) {
                 ChatResponse frame = iterator.next();

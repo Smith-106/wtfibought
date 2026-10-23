@@ -7,8 +7,8 @@ import ch.qos.logback.core.read.ListAppender;
 import com.mawai.wiibagent.chat.gate.ApprovalGate;
 import com.mawai.wiibagent.chat.store.ChatContextStore;
 import com.mawai.wiibagent.i18n.PromptCatalog;
-import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.ChatEndpoints;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.ConversationSummarizer;
 import org.junit.jupiter.api.AfterEach;
@@ -170,7 +170,7 @@ class ConversationSummarizerRealRunTest {
 
     private final ListAppender<ILoggingEvent> summarizeLogs = new ListAppender<>();
     /**
-     * {@link AgentChat} 的日志。硬失败会直接把这一跑弄红（链上没有兜底模型），
+     * {@link LlmClient} 的日志。硬失败会直接把这一跑弄红（链上没有兜底模型），
      * 但<b>重试之后成功</b>那类只在日志里留一行、答案照出、测试照绿——这一层是那类问题唯一的观测点。
      */
     private final ListAppender<ILoggingEvent> resilienceLogs = new ListAppender<>();
@@ -180,7 +180,7 @@ class ConversationSummarizerRealRunTest {
     @AfterEach
     void detachAppenders() {
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).detachAppender(summarizeLogs);
-        ((Logger) LoggerFactory.getLogger(AgentChat.class)).detachAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(LlmClient.class)).detachAppender(resilienceLogs);
     }
 
     @Test
@@ -188,7 +188,7 @@ class ConversationSummarizerRealRunTest {
         summarizeLogs.start();
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).addAppender(summarizeLogs);
         resilienceLogs.start();
-        ((Logger) LoggerFactory.getLogger(AgentChat.class)).addAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(LlmClient.class)).addAppender(resilienceLogs);
 
         ChatEndpoints llmConfig = endpointService.chatEndpoints(ADMIN_USER_ID);
         assertThat(llmConfig).as("先用管理员账号在 AI 页「模型配置」加一条 BYOK 端点再跑").isNotNull();
@@ -238,7 +238,7 @@ class ConversationSummarizerRealRunTest {
                 .isGreaterThanOrEqualTo(0);
         assertThat(answers).allSatisfy(answer -> assertThat(answer).isNotBlank());
         // 答案非空不够：首帧前的瞬时失败、读响应中断都会被重试接住，重试成功就答案照出、测试照绿（见类头）。
-        // 这一跑上游有没有拒过、断过，只有 AgentChat 的日志说得清
+        // 这一跑上游有没有拒过、断过，只有 LlmClient 的日志说得清
         assertThat(upstreamTroubles())
                 .as("上游拒过或断过这一跑的请求——重试接住了所以答案还在，但不算干净通过")
                 .isEmpty();
@@ -297,7 +297,7 @@ class ConversationSummarizerRealRunTest {
     }
 
     /**
-     * 上游出错的痕迹。两串关键词对应 {@link AgentChat} 的两句重试日志：流式退避重试、阻塞路径读响应中断。
+     * 上游出错的痕迹。两串关键词对应 {@link LlmClient} 的两句重试日志：流式退避重试、阻塞路径读响应中断。
      * 任何一条出现都说明这轮请求被上游拒过或断过。
      * {@code 上游拒收服务端搜索工具} 那句（流式、阻塞各一处）不算：那是端点认不认搜索工具的配置事实，
      * 端点不认就每轮都打，跟压缩无关；压缩历史真被拒的话，去掉许可重发的还是同一份历史，照样被拒，这一跑当场红。

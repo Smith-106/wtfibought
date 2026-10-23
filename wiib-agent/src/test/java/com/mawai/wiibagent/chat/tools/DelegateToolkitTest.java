@@ -8,7 +8,7 @@ import com.mawai.wiibagent.chat.run.ChildRunRegistry;
 import com.mawai.wiibagent.chat.run.WorkbenchPrefService;
 import com.mawai.wiibagent.chat.run.WorkerKind;
 import com.mawai.wiibagent.chat.store.ChatContextStore;
-import com.mawai.wiibagent.llm.AgentChat;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.ModelCallLimiter;
 import com.mawai.wiibagent.llm.ReactLoop;
 import com.mawai.wiibagent.llm.UsageTrackingChatModel;
@@ -65,8 +65,8 @@ class DelegateToolkitTest {
         // worker 不挂工具：这里验的是派发与回灌，不是预设的工具表（那在 ChatAgentFactoryTest）
         Function<WorkerKind, ChatAgentFactory.Worker> workers = kind -> {
             UsageTrackingChatModel usage = new UsageTrackingChatModel(model);
-            AgentChat chat = AgentChat.builder().model(usage).systemPrompt("worker").build();
-            return new ChatAgentFactory.Worker(ReactLoop.builder().chat(chat)
+            LlmClient client = LlmClient.builder().model(usage).systemPrompt("worker").build();
+            return new ChatAgentFactory.Worker(ReactLoop.builder().client(client)
                     .limiter(new ModelCallLimiter(3, "未执行", "收尾")).build(), usage);
         };
         return new DelegateToolkit(childRuns, workers, ChatTestEndpoints.PROMPTS, 1L, AgentLang.ZH);

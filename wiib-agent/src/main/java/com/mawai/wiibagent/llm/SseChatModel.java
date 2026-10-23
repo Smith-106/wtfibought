@@ -68,12 +68,12 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
      * toolContext 键：本次调用允许服务端搜索（Boolean.TRUE 时生效）。
      * 与端点配置构成双闸门——{@code webSearch}（端点声明支持）∧ 本键（这个 agent 被授权搜）
      * 同时成立才往 tools 里加该协议的服务端搜索工具。搜索是 opt-in 语义：不声明上游就不搜，
-     * 只有 chat 的主 agent 与 researcher worker 捎这个键（AgentChat.Builder#webSearch），
+     * 只有 chat 的主 agent 与 researcher worker 捎这个键（LlmClient.Builder#webSearch），
      * analyst worker 与 trader 链路的数据源必须可控，拿不到搜索。
      */
     public static final String WEB_SEARCH_KEY = "wiib_web_search";
 
-    /** 瞬时错误重试参数，与 AgentChat 对齐 */
+    /** 瞬时错误重试参数，与 LlmClient 对齐 */
     private static final int MAX_ATTEMPTS = 3;
     private static final long INITIAL_BACKOFF_MS = 500;
     private static final long MAX_BACKOFF_MS = 4000;
@@ -132,7 +132,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
     /**
      * Spring AI 2.0 的契约方法是 getOptions()，getDefaultOptions() 已退化为它的转发别名。
      * 覆写成旧名会命中接口默认实现（返回普通 ChatOptions 而非 ToolCallingChatOptions），
-     * AgentChat 构造时 instanceof 恒假 → agent 的工具全程挂不上（真跑实证过）。
+     * LlmClient 构造时 instanceof 恒假 → agent 的工具全程挂不上（真跑实证过）。
      */
     @Override
     public @NonNull ChatOptions getOptions() {
@@ -150,7 +150,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
 
     @Override
     public @NonNull Flux<ChatResponse> stream(@NonNull Prompt prompt) {
-        // 纯透传，帧到即发——工具执行归图，本层不攒帧；流式路径的重试在 AgentChat
+        // 纯透传，帧到即发——工具执行归 ReactLoop，本层不攒帧；流式路径的重试在 LlmClient
         return streamOnce(prompt);
     }
 
@@ -233,7 +233,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
 
     /**
      * 单轮 SSE：增量文本逐帧发（供工作台 token 流），工具调用整只发一帧，收尾事件发带 usage 的收尾帧。
-     * state 每次订阅新建：AgentChat 靠重订阅实现重试，共享 state 会污染收尾帧判断。
+     * state 每次订阅新建：LlmClient 靠重订阅实现重试，共享 state 会污染收尾帧判断。
      */
     private Flux<ChatResponse> streamOnce(Prompt prompt) {
         ObjectNode body = requestBody(prompt);

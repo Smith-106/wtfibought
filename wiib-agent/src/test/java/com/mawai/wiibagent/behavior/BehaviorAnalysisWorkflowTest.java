@@ -129,7 +129,7 @@ class BehaviorAnalysisWorkflowTest {
         assertThat(text).isEqualTo(MODEL_REPLY);
     }
 
-    /** 韧性挂在 AgentChat 上，退化成裸 chatModel.call 就没了——这里用它独有的补救行为钉住。 */
+    /** 韧性挂在 LlmClient 上，退化成裸 chatModel.call 就没了——这里用它独有的补救行为钉住。 */
     @Test
     void 走韧性层而不是裸调模型() {
         when(chatModel.call(any(Prompt.class)))

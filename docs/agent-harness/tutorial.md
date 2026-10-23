@@ -266,7 +266,7 @@ pending → done / status 都带着 → 前端本地空闲时 POST /wake → 唤
 
 ### ② 可空参数漏传，编译照过
 
-`gate`（HITL 闸门）、`summarizer`（长对话压缩）、`trace`（工具调用轨迹）三个建造参数都可空：忘了传，循环照转，那一样静默哑掉——不弹卡、不压缩、轨迹空一片。必填的只有 `chat` 与 `limiter`，漏了 `build()` 当场抛。
+`gate`（HITL 闸门）、`summarizer`（长对话压缩）、`trace`（工具调用轨迹）三个建造参数都可空：忘了传，循环照转，那一样静默哑掉——不弹卡、不压缩、轨迹空一片。必填的只有 `client` 与 `limiter`，漏了 `build()` 当场抛。
 
 三根钉子守着，都是**建生产叶子真跑**而不是自己搭一个循环自己塞：
 
@@ -278,14 +278,14 @@ pending → done / status 都带着 → 前端本地空闲时 POST /wake → 唤
 
 `cancel`（一个 `CompletableFuture<Void>`）直接传进 `run`，两头同时管：
 
-- **掐在途流**：`AgentChat.streamingExecute` 用 `takeUntilOther(Mono.fromFuture(cancel, true))` 把整条流水线（含重试与降级）掐断，取消传到 WebClient / SDK 流。`suppressCancel=true` 必须给——缺省会在流正常结束时反向 cancel 这个 future，循环的中断检查点会把一次正常收尾当成用户中断。
+- **掐在途流**：`LlmClient.streamingExecute` 用 `takeUntilOther(Mono.fromFuture(cancel, true))` 把整条流水线（含重试与降级）掐断，取消传到 WebClient / SDK 流。`suppressCancel=true` 必须给——缺省会在流正常结束时反向 cancel 这个 future，循环的中断检查点会把一次正常收尾当成用户中断。
 - **循环退出**：两个检查点，模型答完之后不再执行工具、工具回执入历史后不再调模型。两处都是正常退出、把已有历史交出去，不抛异常。拉流时每帧还先看一眼 cancel：掐上游那一刻队列里排着的帧也不再上屏。
 
-被掐断那次调用的 token 未知，`markAbandoned` 让本轮的账退化成只报耗时；账本按轮换新（`UsageTrackingChatModel.TokenLedger`），晚到的入账只会落进旧账本。测试：`ChatCancelTest`、`AgentChatTest` 的中断两条。
+被掐断那次调用的 token 未知，`markAbandoned` 让本轮的账退化成只报耗时；账本按轮换新（`UsageTrackingChatModel.TokenLedger`），晚到的入账只会落进旧账本。测试：`ChatCancelTest`、`LlmClientTest` 的中断两条。
 
 ### ④ 系统提示必填
 
-`AgentChat.builder().systemPrompt()` 空值 `build()` 当场抛，没有"静默换成框架默认提示"的通道。系统提示是每个 agent 的纪律与格式约定，静默换掉等于整份内容凭空消失，而且不报错。
+`LlmClient.builder().systemPrompt()` 空值 `build()` 当场抛，没有"静默换成框架默认提示"的通道。系统提示是每一处模型调用的纪律与格式约定，静默换掉等于整份内容凭空消失，而且不报错。
 
 ### ⑤ 同批并发与收件箱
 
@@ -295,7 +295,7 @@ pending → done / status 都带着 → 前端本地空闲时 POST /wake → 唤
 
 | 事实 | 为什么要知道 |
 |---|---|
-| `UsageTrackingChatModel.getOptions` 必须原样透传 | 返回自己造的 options 会让 `AgentChat` 挂出去的工具列表变成空数组 |
+| `UsageTrackingChatModel.getOptions` 必须原样透传 | 返回自己造的 options 会让 `LlmClient` 挂出去的工具列表变成空数组 |
 | `options` 必须从 `model.getOptions().mutate()` 派生 | Spring AI 2.0 的 `OpenAiChatModel` 把 `prompt.getOptions()` 直接硬转 `OpenAiChatOptions`，塞个泛型 builder 造的进去当场 ClassCastException。真跑实证过：那一次调用当场抛，整轮一个工具都没跑 |
 
 ---
@@ -391,7 +391,7 @@ UsageTrackingChatModel 每轮新建（工厂里的模型实例是跨唤醒缓存
   → TradeTools 每轮 new（绑 sim 子账户 / 白名单 / 风险规格 / 本轮截止时刻）
   → 计划对账（TraderPlanStore.reconcile：逐份 LIVE 计划对 sim 持仓/挂单，出 Reconcile(live, events)；已平仓位懒取）
   → 组装系统提示词（promptAssembler.assemble）、观察包（observation）与开场白（routine / alert instruction）
-  → AgentChat（系统提示 + 15 工具；不强制 tool_choice，"先读事实、用工具求证"在开场白里）
+  → LlmClient（系统提示 + 15 工具；不强制 tool_choice，"先读事实、用工具求证"在开场白里）
      + ReactLoop（streaming(true)：模型文本逐字推给唤醒现场，见 5.7；ModelCallLimiter 保险丝；ToolCallTraceHook 轨迹）
   → FutureTask 限时执行
   → finally：动作轨迹与用量**无论成败都要落**（超时作废那轮，单和 token 都是真发生的）
@@ -510,7 +510,7 @@ UsageTrackingChatModel 每轮新建（工厂里的模型实例是跨唤醒缓存
 | **replay coach** | `controller/ReplayCoachController` + `analysis/ReplayCoachPrompts` | 一次 BYOK 流式调用，SSE 协议与工作台同款。**不进会话历史、不记忆、不排队**，只挡"上一次还没跑完又点"；断连即停（没有落库诉求，用户切走了就别再烧他的 token）。两个硬约束在 `ReplayCoachPrompts`：只依据给定数据（盲测局禁止猜日期）、中性不下单 |
 | **deep analysis** | `chat/DeepAnalysisToolkit` → `analysis/DeepAnalysisService` | 严格说是**固定编排**不是单次调用：Bull∥Bear 虚拟线程并行 + Judge 裁决 = 3 次深模型调用，所以它是唯一挂 HITL 闸门的工具。产物落库后由 `analysis/NarrativeVerificationService` 到期（H12）拿真实走势对账——叙事轨也要有战绩 |
 
-behavior 和 replay coach 直接建 `AgentChat` 用（不进 `ReactLoop`），系统提示同样是 builder 必填项，漏了 `build()` 当场抛。
+behavior、replay coach 和指令生成器的写稿人直接建 `LlmClient` 用（不进 `ReactLoop`），系统提示同样是 builder 必填项，漏了 `build()` 当场抛。
 
 ---
 
@@ -566,7 +566,7 @@ trader 那条链的前端另在两处：
 | `ChatAgentFactoryTest` | 主 agent 工具表齐全、两个 worker 预设的工具表与搜索许可（直接调 `newWorker` 真跑，验的才是生产建叶子时挂没挂）、缓存键、提示词随端点能力 |
 | `ReactLoopTest` | 同批工具并发且回执保序、串行工具整批串行、收件箱排在下一次调模型前、拼错工具名回错不抛 |
 | `AnthropicChatModelTest` / `GeminiChatModelTest` / `ResponsesChatModelTest` | 三条自研协议各自的请求体、流式解析、工具声明（不传 tool_choice） |
-| `AgentChatTest` | 韧性分层、options 契约、中断掐流与不反向取消信号（用 mock 模型跑，真到 WebClient 那一段只能真跑验，见附录 B） |
+| `LlmClientTest` | 韧性分层、options 契约、中断掐流与不反向取消信号（用 mock 模型跑，真到 WebClient 那一段只能真跑验，见附录 B） |
 | `TraderLiveHubTest` / `WakeTraceTest` | 现场扇出与轨迹帧、落库形状（见 5.7） |
 | `TraderPlanStoreTest` | 计划对账 `reconcile` 的三条规则（了结报结局并归档/续立、限价成交绑仓、无仓无挂单归档）与 `open`/`cover` 写路径 |
 | `ReviewMaterialAssemblerTest` / `CaseFileBuilderTest` | 复盘五块素材的数字与成文（战绩 / 案例事实表与路径指标 / 行情 / 账本）、stale 在配对之后过滤、`TradePairing` 配对算法 |

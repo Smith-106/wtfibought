@@ -1,7 +1,7 @@
 package com.mawai.wiibagent.promptgen;
 
 import com.mawai.wiibagent.i18n.PromptCatalog;
-import com.mawai.wiibagent.llm.AgentChat;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.trader.prompt.PlayStatsAssembler;
 import com.mawai.wiibcommon.enums.AgentLang;
 import org.junit.jupiter.api.Test;
@@ -169,8 +169,8 @@ class PromptGenToolkitTest {
         return new PromptGenToolkit(run(history), writer(), mock(PlayStatsAssembler.class), prompts);
     }
 
-    private AgentChat writer() {
-        return AgentChat.builder().model(model).systemPrompt("写稿").build();
+    private LlmClient writer() {
+        return LlmClient.builder().model(model).systemPrompt("写稿").build();
     }
 
     private static ChatResponse frame(String text) {

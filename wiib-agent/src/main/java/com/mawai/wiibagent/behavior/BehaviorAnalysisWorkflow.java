@@ -3,7 +3,7 @@ package com.mawai.wiibagent.behavior;
 import com.mawai.wiibcommon.enums.AgentLang;
 import com.mawai.wiibagent.behavior.BehaviorDataCollector.Section;
 import com.mawai.wiibagent.i18n.PromptCatalog;
-import com.mawai.wiibagent.llm.AgentChat;
+import com.mawai.wiibagent.llm.LlmClient;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -50,7 +50,7 @@ public class BehaviorAnalysisWorkflow {
         progress(onProgress, prompts.get(lang, "behavior.progress.analyzing"));
 
         String system = prompts.get(lang, "behavior.system", Map.of("schema", OUTPUT_SCHEMA));
-        ChatResponse response = chat(chatModel, system)
+        ChatResponse response = client(chatModel, system)
                 .execute(List.of(new UserMessage(buildPrompt(lang, userId, sections))));
 
         Generation result = response.getResult();
@@ -69,11 +69,11 @@ public class BehaviorAnalysisWorkflow {
     }
 
     /**
-     * 走 {@link AgentChat} 而不是裸 {@code chatModel.call}：读响应被掐的补救挂在这一层。
+     * 走 {@link LlmClient} 而不是裸 {@code chatModel.call}：读响应被掐的补救挂在这一层。
      * 不挂工具、不进 {@code ReactLoop}，落到底就是一次 {@code model.call}。
      */
-    private AgentChat chat(ChatModel chatModel, String system) {
-        return AgentChat.builder().model(chatModel).systemPrompt(system).build();
+    private LlmClient client(ChatModel chatModel, String system) {
+        return LlmClient.builder().model(chatModel).systemPrompt(system).build();
     }
 
     private String buildPrompt(AgentLang lang, long userId, List<Section> sections) {

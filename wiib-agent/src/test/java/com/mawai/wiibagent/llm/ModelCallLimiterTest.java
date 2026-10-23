@@ -90,13 +90,13 @@ class ModelCallLimiterTest {
                     .build())));
         });
 
-        AgentChat chat = AgentChat.builder()
+        LlmClient client = LlmClient.builder()
                 .model(model)
                 .systemPrompt("测试")
                 .tools(new LocalizedToolCallbacks(new PromptCatalog()).of(AgentLang.ZH, new EchoTools()))
                 .build();
         ReactLoop.Result result = ReactLoop.builder()
-                .chat(chat)
+                .client(client)
                 .limiter(new ModelCallLimiter(3, NOT_EXECUTED, LAST_CALL))
                 .build()
                 .run(List.of(new UserMessage("说点什么")), null, null, null);

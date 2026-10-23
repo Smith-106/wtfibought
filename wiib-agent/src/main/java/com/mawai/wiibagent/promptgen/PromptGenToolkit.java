@@ -1,7 +1,7 @@
 package com.mawai.wiibagent.promptgen;
 
 import com.mawai.wiibagent.i18n.PromptCatalog;
-import com.mawai.wiibagent.llm.AgentChat;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.trader.prompt.PlayStatsAssembler;
 import com.mawai.wiibcommon.enums.AgentLang;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -38,7 +38,7 @@ public class PromptGenToolkit {
 
     private final PromptGenRun run;
     /** 写稿人：同一个模型、不挂工具、系统提示词是写稿规则 */
-    private final AgentChat writer;
+    private final LlmClient writer;
     private final PlayStatsAssembler playStats;
     private final PromptCatalog prompts;
 
@@ -46,7 +46,7 @@ public class PromptGenToolkit {
     record Draft(String body, String notes) {
     }
 
-    PromptGenToolkit(PromptGenRun run, AgentChat writer, PlayStatsAssembler playStats,
+    PromptGenToolkit(PromptGenRun run, LlmClient writer, PlayStatsAssembler playStats,
                      PromptCatalog prompts) {
         this.run = run;
         this.writer = writer;

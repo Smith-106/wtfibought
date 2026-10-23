@@ -38,7 +38,7 @@ import static org.mockito.Mockito.when;
 /**
  * 钉死与框架的契约边界（这些曾被别处单测 mock 掉，真跑才暴露）：
  * Spring AI 2.0 的契约方法是 getOptions()，覆写成旧名 getDefaultOptions() 会命中接口默认实现
- * 返回普通 ChatOptions → AgentChat 挂工具的 instanceof 恒假 → 请求 tools=[]。
+ * 返回普通 ChatOptions → LlmClient 挂工具的 instanceof 恒假 → 请求 tools=[]。
  * <p>
  * 阻塞路径用例走真 HTTP + SSE（JDK HttpServer 假服务器，零新依赖）：
  * call() 与 stream() 共用 streamOnce 一条协议解析路，这些用例钉住的是各类 BYOK 渠道的
@@ -235,7 +235,7 @@ class ResponsesChatModelTest {
 
     @Test
     void getOptions必须给ToolCallingChatOptions() {
-        // 真实实例、不 mock：AgentChat 靠 instanceof 这个类型决定挂不挂工具
+        // 真实实例、不 mock：LlmClient 靠 instanceof 这个类型决定挂不挂工具
         assertThat(model().getOptions()).isInstanceOf(ToolCallingChatOptions.class);
         assertThat(model().getOptions().getModel()).isEqualTo("grok-test");
     }

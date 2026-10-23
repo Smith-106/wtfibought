@@ -5,8 +5,8 @@ import com.mawai.wiibagent.chat.tools.TraderQueryToolkit;
 import com.mawai.wiibagent.i18n.LocalizedToolCallbacks;
 import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.i18n.UserLangResolver;
-import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.ChatEndpoints;
+import com.mawai.wiibagent.llm.LlmClient;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.LlmErrorMessages;
 import com.mawai.wiibagent.llm.ModelCallLimiter;
@@ -165,12 +165,12 @@ public class PromptGenService {
             boolean drafted = PromptGenHistory.lastDraft(PromptGenHistory.steps(history)) != null;
             PromptGenFacts.Prompts system = facts.prompts(trader, drafted, lang, outputLang);
             run = new PromptGenRun(userId, lang, outputLang, trader, history, channel::send, cancel, store);
-            AgentChat writer = AgentChat.builder()
+            LlmClient writer = LlmClient.builder()
                     .model(model)
                     .systemPrompt(system.writer())
                     .maxAttempts(3).initialDelay(500).maxDelay(4000)
                     .build();
-            AgentChat agent = AgentChat.builder()
+            LlmClient agent = LlmClient.builder()
                     .model(model)
                     .systemPrompt(system.agent())
                     .tools(localizedTools.of(lang,
@@ -178,7 +178,7 @@ public class PromptGenService {
                             new PromptGenToolkit(run, writer, playStats, prompts)))
                     .maxAttempts(3).initialDelay(500).maxDelay(4000)
                     .build();
-            ReactLoop loop = ReactLoop.builder().chat(agent)
+            ReactLoop loop = ReactLoop.builder().client(agent)
                     .streaming(true)
                     .limiter(new ModelCallLimiter(RUN_CALL_LIMIT,
                             prompts.get(lang, "llm.callLimit.notExecuted"),
