@@ -22,6 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -49,10 +50,10 @@ public class ResponsesChatModel extends SseChatModel<ResponsesChatModel.State> {
 
     public ResponsesChatModel(String apiKey, String baseUrl, String model, Double temperature,
                               String reasoningEffort, ToolCallingManager toolCallingManager,
-                              boolean webSearch) {
+                              boolean webSearch, Duration callTimeout) {
         super("Responses", OpenAiBaseUrl.strip(baseUrl, "/v1"),
                 Map.of(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
-                model, temperature, reasoningEffort, toolCallingManager, webSearch);
+                model, temperature, reasoningEffort, toolCallingManager, webSearch, callTimeout);
     }
 
     @Override

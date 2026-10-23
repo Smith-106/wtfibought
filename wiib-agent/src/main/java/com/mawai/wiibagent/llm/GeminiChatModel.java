@@ -49,9 +49,10 @@ public class GeminiChatModel extends SseChatModel<GeminiChatModel.State> {
     private static final Duration LIST_TIMEOUT = Duration.ofSeconds(30);
 
     public GeminiChatModel(String apiKey, String baseUrl, String model, Double temperature,
-                           String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch) {
+                           String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch,
+                           Duration callTimeout) {
         super("Gemini", OpenAiBaseUrl.strip(baseUrl, "/v1beta"), Map.of("x-goog-api-key", apiKey),
-                model, temperature, reasoningEffort, toolCallingManager, webSearch);
+                model, temperature, reasoningEffort, toolCallingManager, webSearch, callTimeout);
     }
 
     /** 模型清单：GET /v1beta/models → models[].name（形如 models/gemini-xxx，去掉前缀）；pageSize 给上限一页拿完 */

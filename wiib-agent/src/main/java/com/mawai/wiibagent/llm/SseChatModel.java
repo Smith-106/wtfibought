@@ -15,7 +15,6 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
-import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.retry.TransientAiException;
 import org.springframework.core.ParameterizedTypeReference;
@@ -31,7 +30,6 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -53,23 +51,18 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
  *       它把<b>最后一帧</b> AssistantMessage 的 metadata 当作最终消息的 metadata，子类靠这一点把原始内容块挂回去
  *       （阻塞路径的 {@link #mergeFrames} 同样取最后一帧的）；空文本帧也必须带一个 Generation，否则被它过滤</li>
  * </ul>
- * toolContext 两个键：{@link #TIMEOUT_KEY}、{@link #WEB_SEARCH_KEY}。
+ * toolContext 键：{@link #WEB_SEARCH_KEY}。
  *
  * @param <S> 单次订阅的累计状态，子类按需扩展 {@link StreamState}
  */
 public abstract class SseChatModel<S extends SseChatModel.StreamState> implements ChatModel {
 
-    /** 阻塞调用超时；openai 协议路（SDK）引用同一常量对齐——思考模型长回答，官方默认 60s 不够 */
-    public static final Duration CALL_TIMEOUT = Duration.ofMinutes(10);
     /** SSE 相邻事件最大间隔：防半开连接把消费方永久挂死。5 分钟是给高档长思考的静默期留余量——
      *  多数服务端思考期间也会发 reasoning 事件/keepalive 注释行，都算心跳 */
     private static final Duration STREAM_IDLE_TIMEOUT = Duration.ofMinutes(5);
     /** SSE 首事件超时：首帧不涉及思考静默，60s 已是极宽松的界。只防"上游完全无响应"——
      *  带 keepalive 心跳的挂死字节级超时拦不住，那种病由 doCall 的整体超时兜 */
     private static final Duration FIRST_EVENT_TIMEOUT = Duration.ofSeconds(60);
-
-    /** toolContext 键：本次调用整体超时（Duration），缺省 {@link #CALL_TIMEOUT} */
-    public static final String TIMEOUT_KEY = "wiib_call_timeout";
 
     /**
      * toolContext 键：本次调用允许服务端搜索（Boolean.TRUE 时生效）。
@@ -96,6 +89,8 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
     protected final ToolCallingManager toolCallingManager;
     /** 端点声明支持服务端联网搜索（双闸门的端点那半） */
     protected final boolean webSearch;
+    /** 阻塞调用的整体超时，见 {@link #doCall} */
+    private final Duration callTimeout;
     private final WebClient webClient;
 
     /**
@@ -103,13 +98,15 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
      * @param headers 鉴权等固定请求头
      */
     protected SseChatModel(String tag, String baseUrl, Map<String, String> headers, String model, Double temperature,
-                           String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch) {
+                           String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch,
+                           Duration callTimeout) {
         this.tag = tag;
         this.model = model;
         this.temperature = temperature;
         this.reasoningEffort = reasoningEffort;
         this.toolCallingManager = toolCallingManager;
         this.webSearch = webSearch;
+        this.callTimeout = callTimeout;
         // 深研判单次回包可达数百KB，默认256KB codec上限不够
         WebClient.Builder builder = WebClient.builder()
                 .baseUrl(baseUrl)
@@ -157,24 +154,6 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
         return streamOnce(prompt);
     }
 
-    /**
-     * 给单次调用捎整体超时，按协议落点：openai 协议落 {@code OpenAiChatOptions.timeout}
-     * （Spring AI 2.0.1 起逐请求传给 SDK，盖过 client 级超时），自研协议经 toolContext 捎、{@link #doCall} 读回。
-     */
-    public static ChatOptions withCallTimeout(ChatOptions options, Duration timeout) {
-        // OpenAiChatOptions 也实现了 ToolCallingChatOptions，必须先判它
-        if (options instanceof OpenAiChatOptions openAi) {
-            return openAi.mutate().timeout(timeout).build();
-        }
-        if (options instanceof ToolCallingChatOptions tool) {
-            Map<String, Object> context = tool.getToolContext() == null
-                    ? new HashMap<>() : new HashMap<>(tool.getToolContext());
-            context.put(TIMEOUT_KEY, timeout);
-            return tool.mutate().toolContext(context).build();
-        }
-        return options;
-    }
-
     // ========== 阻塞路径 ==========
 
     /** 瞬时错误退避重试：只重试 {@link TransientAiException}(429/5xx/断流/挂死)，配置类错误重试也没用 */
@@ -209,24 +188,15 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
      * ② 与 stream() 共用 streamOnce 一条协议解析路，各类渠道的事件怪癖只在子类 toFrames 一处处理。
      */
     private ChatResponse doCall(Prompt prompt) {
-        Duration timeout = callTimeout(prompt);
         List<ChatResponse> frames;
         try {
-            frames = streamOnce(prompt).collectList().block(timeout);
+            frames = streamOnce(prompt).collectList().block(callTimeout);
         } catch (IllegalStateException e) {
             // block 到点＝上游挂死的最终判据：keepalive 心跳会骗过字节级超时，只有这道闸拦得住。
             // 判瞬时进重试——实测掐线换连接后 3s 内即成功
-            throw new TransientAiException(tag + " 调用 " + timeout.toSeconds() + "s 未完成，判定上游挂死", e);
+            throw new TransientAiException(tag + " 调用 " + callTimeout.toSeconds() + "s 未完成，判定上游挂死", e);
         }
         return mergeFrames(frames);
-    }
-
-    private static Duration callTimeout(Prompt prompt) {
-        if (prompt.getOptions() instanceof ToolCallingChatOptions tool && tool.getToolContext() != null
-                && tool.getToolContext().get(TIMEOUT_KEY) instanceof Duration timeout) {
-            return timeout;
-        }
-        return CALL_TIMEOUT;
     }
 
     /**

@@ -107,7 +107,7 @@ class GeminiChatModelTest {
         httpStatus = 0;
         // 用户手滑带上的 /v1beta 要被剥掉，否则拼成 /v1beta/v1beta/models
         return new GeminiChatModel("AIza-test", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1beta/",
-                "gemini-test", null, effort, tcm, webSearch);
+                "gemini-test", null, effort, tcm, webSearch, ByokModelBuilder.CALL_TIMEOUT);
     }
 
     private static GeminiChatModel model() {
@@ -246,7 +246,7 @@ class GeminiChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         GeminiChatModel m = new GeminiChatModel("AIza-test", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1beta",
-                "gemini-test", 0.30, "low", tcm, true);
+                "gemini-test", 0.30, "low", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String parts = """
                 [{"text":"想一下","thought":true,"thoughtSignature":"c2ln/+="},
                  {"functionCall":{"id":"call_real","name":"get_price","args":{"qty":0.010,"n":3,"note":null}},"thoughtSignature":"c2ln2"}]""";

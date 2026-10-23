@@ -105,7 +105,7 @@ class AnthropicChatModelTest {
     private static AnthropicChatModel model(String effort, boolean webSearch, ToolCallingManager tcm) {
         httpStatus = 0;
         return new AnthropicChatModel("sk-ant", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
-                "claude-test", null, effort, tcm, webSearch);
+                "claude-test", null, effort, tcm, webSearch, ByokModelBuilder.CALL_TIMEOUT);
     }
 
     private static AnthropicChatModel model() {
@@ -273,7 +273,7 @@ class AnthropicChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         AnthropicChatModel m = new AnthropicChatModel("sk-ant", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
-                "claude-test", 0.30, "high", tcm, true);
+                "claude-test", 0.30, "high", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String blocks = """
                 [{"type":"thinking","thinking":"先查\\n再说","signature":"sig/+="},
                  {"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"btc"}},

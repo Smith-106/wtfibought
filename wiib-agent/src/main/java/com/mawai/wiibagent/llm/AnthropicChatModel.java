@@ -56,9 +56,10 @@ public class AnthropicChatModel extends SseChatModel<AnthropicChatModel.State> {
     private static final Duration LIST_TIMEOUT = Duration.ofSeconds(30);
 
     public AnthropicChatModel(String apiKey, String baseUrl, String model, Double temperature,
-                              String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch) {
+                              String reasoningEffort, ToolCallingManager toolCallingManager, boolean webSearch,
+                              Duration callTimeout) {
         super("Anthropic", OpenAiBaseUrl.strip(baseUrl, "/v1"), headers(apiKey),
-                model, temperature, reasoningEffort, toolCallingManager, webSearch);
+                model, temperature, reasoningEffort, toolCallingManager, webSearch, callTimeout);
     }
 
     private static Map<String, String> headers(String apiKey) {

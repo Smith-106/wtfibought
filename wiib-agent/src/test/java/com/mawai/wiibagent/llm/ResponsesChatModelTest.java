@@ -99,8 +99,12 @@ class ResponsesChatModelTest {
 
     /** webSearch=端点配置层的开关（建模时烤死）；调用层的许可另经 toolContext 捎带 */
     private ResponsesChatModel model(boolean webSearch) {
+        return model(webSearch, ByokModelBuilder.CALL_TIMEOUT);
+    }
+
+    private ResponsesChatModel model(boolean webSearch, Duration callTimeout) {
         return new ResponsesChatModel("key", "http://127.0.0.1:" + server.getAddress().getPort(),
-                "grok-test", null, null, mock(ToolCallingManager.class), webSearch);
+                "grok-test", null, null, mock(ToolCallingManager.class), webSearch, callTimeout);
     }
 
     /** 主 agent 那样的调用方：本次调用允许服务端搜索（经 toolContext 捎给模型） */
@@ -249,7 +253,7 @@ class ResponsesChatModelTest {
                 .inputSchema("{\"type\":\"object\",\"properties\":{\"qty\":{\"type\":\"number\",\"minimum\":0.010}},"
                         + "\"required\":[\"qty\"],\"additionalProperties\":false}").build()));
         ResponsesChatModel m = new ResponsesChatModel("key", "http://127.0.0.1:" + server.getAddress().getPort(),
-                "grok-test", 0.30, "medium", tcm, true);
+                "grok-test", 0.30, "medium", tcm, true, ByokModelBuilder.CALL_TIMEOUT);
         String items = """
                 [{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAA/+=="},
                  {"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_price","arguments":"{\\"qty\\":0.010}","status":"completed","extra":null,"score":0.50}]""";
@@ -441,12 +445,12 @@ class ResponsesChatModelTest {
         events = new String[]{"""
                 {"type":"response.in_progress"}"""};
         holdMs = 10_000;
-        ChatOptions options = ResponsesChatModel.withCallTimeout(model().getOptions(), Duration.ofSeconds(2));
+        ResponsesChatModel m = model(false, Duration.ofSeconds(2));
         long startedAt = System.nanoTime();
-        assertThatThrownBy(() -> model().call(new Prompt("问题", options)))
+        assertThatThrownBy(() -> m.call(new Prompt("问题")))
                 .isInstanceOf(TransientAiException.class)
                 .hasMessageContaining("挂死");
-        // 3 次重试＋退避应在 10s 内收场；上限断言同时钉住"捎带的超时真被读到了"（否则等满默认 10 分钟）
+        // 3 次重试＋退避应在 10s 内收场；上限断言同时钉住"建模给的超时真被用上了"（否则等满 10 分钟）
         assertThat(Duration.ofNanos(System.nanoTime() - startedAt)).isLessThan(Duration.ofSeconds(15));
     }
 
