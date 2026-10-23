@@ -566,7 +566,7 @@ export type WorkbenchEvent =
   // 行为分析报告：整份结构化数据只走这条通道给前端渲染成卡片，模型手里是裁剪版
   //（少了 overview.trend 那 30 天逐日快照——对模型是噪音，对卡片是那条资产曲线）
   | { type: 'behavior_report'; report: BehaviorAnalysisReport }
-  // 汇总者的服务端搜索过程：searching=开搜（query 可能还没有）、searched=搜完（sources 是命中站点）、
+  // 主 agent 的服务端搜索过程：searching=开搜（query 可能还没有）、searched=搜完（sources 是命中站点）、
   // cited=正文引用了某来源（只并入后端攒的来源随 done 回来，过程轨不画）
   | { type: 'search'; phase: 'searching' | 'searched' | 'cited'; query?: string | null; sources: SearchSource[] }
   // meta 是本轮读数。
@@ -712,7 +712,7 @@ export interface LlmEndpointView {
   model: string;
   /** 任意上游认的档位值（none/low/medium/high/xhigh…），null=不传给上游走模型默认 */
   reasoningEffort: string | null;
-  /** 服务端联网搜索（responses / anthropic / gemini 协议端点可开；只有对话汇总者用它） */
+  /** 服务端联网搜索（responses / anthropic / gemini 协议端点可开；只有对话的主 agent 与调研子 agent 用它） */
   webSearch: boolean;
   apiKeyTail: string;
   /** 默认端点：没按用途绑定的地方都用它 */

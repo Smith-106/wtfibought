@@ -6,7 +6,7 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 /**
- * 汇总者手里的 trader 只读工具集：纯查库，一个字都不写。动手的三个在 {@link TraderActionToolkit}。
+ * 主 agent 手里的 trader 只读工具集：纯查库，一个字都不写。动手的三个在 {@link TraderActionToolkit}。
  * <p>
  * <b>userId 是建叶子时烤死的</b>，不是工具参数——工具方法体拿不到用户身份，
  * 做成参数则等于让模型自己填要看谁的

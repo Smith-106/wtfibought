@@ -56,7 +56,7 @@ export type ChatItem =
       kind: 'child'; rid: number; at: number; runId: string; runKind: ChildRunKind; label: string; brief?: string | null;
       status: ChildStatus; steps: ChildStep[]; endedAt?: number; error?: string; keyed?: boolean;
     }
-  // 汇总者的一次联网搜索：active=还在搜（亮着转圈），搜完回填 sources 熄灭；query 开搜时可能还没有
+  // 主 agent 的一次联网搜索：active=还在搜（亮着转圈），搜完回填 sources 熄灭；query 开搜时可能还没有
   | { kind: 'search'; rid: number; query: string | null; sources: SearchSource[]; active: boolean }
   // requestId 存在 item 上：hitlDecide 按它取回本条再原样回传，服务端据此确认"点的是哪张卡"
   | { kind: 'hitl'; symbol: string; reason: string; requestId: string; resumeMessage: string; status: 'pending' | 'approved' | 'rejected' }
@@ -565,7 +565,7 @@ function watchChildren(sid: string) {
  * @param opts.noBubble   不上气泡：HITL 批准后自动补发的续跑指令（不是用户打的字），
  *                        以及气泡已在屏上的排队续发
  * @param opts.requeueAs  被拒时塞回队头用的原样条目（排队续发专用），不传就按新消息入队尾
- * @param opts.intent     功能按钮直发的意图：后端据此跳过专家派发，直奔对应工具
+ * @param opts.intent     功能按钮直发的意图：后端据此给本轮钉一句"必须调对应工具"
  * @param opts.noteRid    HITL 续跑指令在过程轨里那行说明的 rid：一帧没收到就被拒（不是占线）时按它撤掉
  */
 async function send(message: string, opts?: { noBubble?: boolean; requeueAs?: QueuedMessage; intent?: ChatIntent; noteRid?: number }) {

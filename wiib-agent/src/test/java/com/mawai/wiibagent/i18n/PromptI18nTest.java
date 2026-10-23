@@ -360,7 +360,7 @@ class PromptI18nTest {
         }
     }
 
-    /** 生产同款两步渲染：先按变体键出新闻条款，再填进 summarizer 的 {{newsRule}} 槽位 */
+    /** 生产同款两步渲染：先按变体键出新闻条款，再填进主 agent 提示词的 {{newsRule}} 槽位 */
     private String main(AgentLang lang, String newsRuleKey) {
         String newsRule = prompts.get(lang, newsRuleKey,
                 Map.of("supplementTag", "[X]", "mergedTag", "[BlockBeats+X]"));

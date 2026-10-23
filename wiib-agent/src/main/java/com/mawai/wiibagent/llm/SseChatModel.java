@@ -68,7 +68,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
      *  带 keepalive 心跳的挂死字节级超时拦不住，那种病由 doCall 的整体超时兜 */
     private static final Duration FIRST_EVENT_TIMEOUT = Duration.ofSeconds(60);
 
-    /** toolContext 键：本次调用整体超时（Duration）。路由这类轻调用传短值快速失败进重试，缺省 {@link #CALL_TIMEOUT} */
+    /** toolContext 键：本次调用整体超时（Duration），缺省 {@link #CALL_TIMEOUT} */
     public static final String TIMEOUT_KEY = "wiib_call_timeout";
 
     /**
@@ -135,7 +135,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
     /**
      * Spring AI 2.0 的契约方法是 getOptions()，getDefaultOptions() 已退化为它的转发别名。
      * 覆写成旧名会命中接口默认实现（返回普通 ChatOptions 而非 ToolCallingChatOptions），
-     * AgentChat 构造时 instanceof 恒假 → 专家/汇总的工具全程挂不上（真跑实证过）。
+     * AgentChat 构造时 instanceof 恒假 → agent 的工具全程挂不上（真跑实证过）。
      */
     @Override
     public @NonNull ChatOptions getOptions() {
@@ -375,7 +375,7 @@ public abstract class SseChatModel<S extends SseChatModel.StreamState> implement
         return i + 1 < history.size() && history.get(i + 1).getMessageType() == MessageType.TOOL;
     }
 
-    /** 请求级 model 覆盖端点配置（路由等单次调用不改模型，一般就是端点的） */
+    /** 请求级 model 覆盖端点配置（一般就是端点的） */
     protected String effectiveModel(Prompt prompt) {
         ChatOptions options = prompt.getOptions();
         return options != null && options.getModel() != null ? options.getModel() : model;

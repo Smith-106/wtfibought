@@ -270,8 +270,8 @@ pending → done / status 都带着 → 前端本地空闲时 POST /wake → 唤
 
 三根钉子守着，都是**建生产叶子真跑**而不是自己搭一个循环自己塞：
 
-- `SummarizerLeafTest.闸门在生产叶子上拦下未授权的深研判`
-- `SummarizerLeafTest.压缩发生且不切断工具调用配对`
+- `MainLeafTest.闸门在生产叶子上拦下未授权的深研判`
+- `MainLeafTest.压缩发生且不切断工具调用配对`
 - `TraderWakeupLoopTest.dataToolCallsTracedIntoActions`
 
 ### ③ 中断
@@ -562,7 +562,7 @@ trader 那条链的前端另在两处：
 | `ChatWorkbenchAdmissionTest` | 四道准入的顺序，以及名额泄漏那条钉子（要关掉 executor 制造提交失败） |
 | `ChatWakeTest` / `ChatCancelTest` / `ChatRegenerateTest` | 唤醒补答（轮内排入 / 轮末 pending / 没轮直接落库）/ 中断 / 重新生成三条链路 |
 | `ChildRunRegistryTest` / `DelegateToolkitTest` / `WorkbenchPrefServiceTest` | 子运行的三道派发检查、回灌两条路、取消不回灌、失败回灌、报告截断；delegate 参数错不派、报告是 worker 产出；用户偏好默认值与钳位 |
-| `SummarizerLeafTest` / `ChatWorkbenchHitlTest` | 闸门、压缩、保险丝在真叶子上真的传上了；后者跑 HITL 端到端 |
+| `MainLeafTest` / `ChatWorkbenchHitlTest` | 闸门、压缩、保险丝在真叶子上真的传上了；后者跑 HITL 端到端 |
 | `ChatAgentFactoryTest` | 主 agent 工具表齐全、两个 worker 预设的工具表与搜索许可（直接调 `newWorker` 真跑，验的才是生产建叶子时挂没挂）、缓存键、提示词随端点能力 |
 | `ReactLoopTest` | 同批工具并发且回执保序、串行工具整批串行、收件箱排在下一次调模型前、拼错工具名回错不抛 |
 | `AnthropicChatModelTest` / `GeminiChatModelTest` / `ResponsesChatModelTest` | 三条自研协议各自的请求体、流式解析、工具声明（不传 tool_choice） |
@@ -597,7 +597,7 @@ mvn -o test -pl wiib-agent -am -DskipTests=false -Dsurefire.failIfNoSpecifiedTes
 
 # 单个/多个测试类（逗号分隔，不是 +）
 mvn -o test -pl wiib-agent -am -DskipTests=false -Dsurefire.failIfNoSpecifiedTests=false \
-    -Dtest=SummarizerLeafTest,ChatTurnRunnerTest
+    -Dtest=MainLeafTest,ChatTurnRunnerTest
 
 # 前端
 cd wiib-web && npx tsc -b && npm run build

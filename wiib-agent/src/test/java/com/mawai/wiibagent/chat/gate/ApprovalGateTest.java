@@ -286,7 +286,7 @@ class ApprovalGateTest {
         assertThat(registry.peekPending(SESSION)).isEmpty();
     }
 
-    /** 非贵操作的工具（专家那些）不该被闸门碰，原样放行 */
+    /** 非贵操作的工具（行情那些）不该被闸门碰，原样放行 */
     @Test
     void 其他工具原样放行() {
         Optional<ToolResponseMessage> out = gate.intercept(SESSION,

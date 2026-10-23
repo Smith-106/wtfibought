@@ -101,7 +101,7 @@ class AgentChatTest {
     }
 
     /**
-     * 服务端搜索许可（只有 chat 的 summarizer 开）：对本 agent 的<b>每次</b>调用都生效。
+     * 服务端搜索许可（只有 chat 的主 agent 与 researcher worker 开）：对本 agent 的<b>每次</b>调用都生效。
      * 经 toolContext 捎带，ResponsesChatModel 建请求体时读回。
      */
     @Test
@@ -122,7 +122,7 @@ class AgentChatTest {
         when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
 
         AgentChat chat = AgentChat.builder()
-                .model(model).systemPrompt("你是汇总者").webSearch(true).build();
+                .model(model).systemPrompt("你是助手").webSearch(true).build();
 
         ToolCallingChatOptions options = (ToolCallingChatOptions) chat.chatOptions().orElseThrow();
         assertThat(options.getToolContext().get(SseChatModel.WEB_SEARCH_KEY)).isEqualTo(Boolean.TRUE);
@@ -231,7 +231,7 @@ class AgentChatTest {
         assertThat(completed).isTrue();           // 下游看到的是正常结束，不是异常
     }
 
-    /** Mono.fromFuture 会在流结束时反向 cancel 这个 future，专家等待期的 anyOf 就被误唤醒了 */
+    /** Mono.fromFuture 缺省会在流结束时反向 cancel 这个 future，循环的中断检查点会把正常收尾当成用户中断 */
     @Test
     void 流正常结束不会反向取消信号() {
         when(model.stream(any(Prompt.class))).thenReturn(Flux.just(responseOf("答完了")));

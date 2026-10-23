@@ -54,7 +54,7 @@ function loadSuggests(): string[] | null {
  * trader 三个动作、行为分析、编辑提示词都收进 Plus 菜单。
  * <p>
  * 行为分析是菜单里唯一一个"点了就真发消息"的项：它发的那句话带 BEHAVIOR 意图，
- * 后端据此跳过专家派发直奔 analyze_my_behavior——不带意图的同一句话会被路由猜成 trader 问题。
+ * 后端据此给本轮钉一句"必须调 analyze_my_behavior、不许凭上下文里的旧结论作答"——按钮点下去就是明确的动作，不落到模型的自由裁量。
  */
 export function ChatComposer({ loading, onSend, fullscreen, empty, stopping, onStop }: {
   loading: boolean;

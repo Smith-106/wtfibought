@@ -236,7 +236,7 @@ class AnthropicChatModelTest {
         ToolResponseMessage toolResult = ToolResponseMessage.builder().responses(List.of(
                 new ToolResponseMessage.ToolResponse("toolu_1", "get_price", "60000"))).build();
         model().call(new Prompt(List.of(new UserMessage("问题"), new UserMessage("补充"),
-                assistant, toolResult, new UserMessage("专家结论"))));
+                assistant, toolResult, new UserMessage("子运行报告"))));
 
         JsonNode messages = body().get("messages");
         assertThat(messages).hasSize(3);

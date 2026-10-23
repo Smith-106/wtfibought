@@ -68,7 +68,7 @@ The main act here is backtesting, quant strategy simulation, and AI Trader:
 - **BTC 5-minute prediction**: Polymarket order books plus a Chainlink BTC price line, auto-settled on 5-minute windows (settlement uses Polymarket open/close prices) with a dynamic fee.
 - **Unified margin and a complete ledger**: borrow-to-buy through the unified margin account, with interest accrual and liquidation checks on trading days; every balance change passes through the `@Ledger` aspect into the ledger table across 44 labeled business types; statements paginate by cursor and filter by type, and position history shows one row per position, expandable into partial-close detail.
 - **AI Trader Arena**: one trader per user, BYOK with your own model and key, woken on your chosen candle interval to make decisions (up to 3 symbols, capped at 12 model calls per wake); you set the leverage range and margin budget, and orders outside them are rejected rather than silently clamped. A daily self-review builds its experience ledger. The decision timeline, entry theses and revisions, reviews and the experience ledger, and equity curve are public site-wide; the token-by-token live wake feed and raw tool receipts are visible only to the trader's owner.
-- **Research Workbench**: BYOK chat open to everyone over SSE streaming; a router issues a structured tool_call to decide which sub-agents (market / news / trader) to dispatch in parallel for data, then the main model writes the answer. Sessions resume after interruption, and expensive operations ask for confirmation first.
+- **Research Workbench**: BYOK chat open to everyone over SSE streaming; a single main agent calls the market / news / trader read-only tools itself and writes the answer (tool calls in one batch run in parallel), handing long jobs to background sub-agents. Sessions resume after interruption, and expensive operations ask for confirmation first.
 - **Three live strategies**: FIBO (Fibonacci retracement limit orders), SQZMOM (squeeze-release shorts), and TURTLE (channel breakout), all driven by 5m candle closes, executing into a dedicated sim sub-account or Binance USDT-M Testnet. Includes a strategy monitor, backtest engine, and walk-forward evaluation.
 - **Leaderboard and community**: leaderboard with two sort dimensions (total assets / trading profit) backed by daily asset snapshots and 30-day curves, user profiles, an anonymized site-wide trade feed, and a two-level comment board with notification push.
 - **"Poster numerals" frontend, built from scratch**: a design system with no UI-framework dependency. The main pages (home, chart & trading, portfolio, arena) use **no cards** — hierarchy comes from type size, whitespace, 2px rules between sections and 1px rules between rows; no rounded corners, shadows, gradients or translucency. Core figures are set in condensed Archivo and carry the page; apart from gain-green and loss-red, orange is the only accent color; dark mode is the paper-and-ink palette inverted. The remaining pages are being migrated onto the same primitives. Light and dark themes, with separate toggles for UI language and agent prompt language. Hand-built lightweight-charts candlesticks (per-symbol persisted drawings, indicator overlays, position lines, historical B/S markers, economic-calendar markers (BTC only, US events), fullscreen); home cockpit and PWA.
@@ -142,8 +142,8 @@ Five independent LLM call sites, each with its own shape and stop conditions. Th
 | Device | Shape | Tools | Loop | Trigger | Model source | Output |
 |---|---|:---:|:---:|---|---|---|
 | **trader agent** | ReAct loop | 15 | ✓ max 12 calls | Every candle close / volatility alert | Owner's key | Real position changes + decision entry |
-| **reviewer workflow** | Single call | 0 | ✗ | Daily boundary | Same as trader | Review note |
-| **chat agent** | Flat orchestration + ReAct loop leaves | Tiered | ✓ with loopback | User question | User's key | Streamed answer |
+| **reviewer workflow** | Single call (one more when entries await re-review) | 0 | ✗ | Daily boundary | Same as trader | Case reviews + experience ledger |
+| **chat agent** | Single ReAct main agent + background sub-runs | 16 | ✓ max 8 calls (each sub-run counts its own) | User question | User's key | Streamed answer |
 | **replay coach** | Single call | 0 | ✗ | "AI hint / AI review" in manual replay | User's key | Chart hint / full-session review |
 | **behavior workflow** | Single call | 0 | ✗ | User asks for it in chat | User's key | Behavior profile report |
 
@@ -175,7 +175,7 @@ Trader configuration: endpoint and model, candle interval, wake window, leverage
 
 ### Research Workbench
 
-BYOK streaming chat. Router fans out to market / news / trader experts, then the main model answers. Actions on your AI Trader render a form; you press the button.
+BYOK streaming chat. The main agent calls tools itself for data and answers, handing long jobs to background sub-agents. Actions on your AI Trader render a form; you press the button.
 
 <img src="docs/images/readme/chat.png" width="80%" alt="Research workbench" />
 
@@ -193,7 +193,7 @@ What works today:
 - BTC 5-minute prediction, settled on Polymarket open/close prices.
 - The FIBO / SQZMOM / TURTLE strategies running live on both the sim sub-account and Binance Testnet tracks, with a strategy monitor page and a testnet dashboard.
 - AI Trader Arena: autonomous trading and daily review, with public decision timelines and equity curves; the owner also gets a live wake feed and replay of past traces.
-- Research Workbench: parallel multi-expert analysis, strategy and portfolio backtests, walk-forward evaluation, manual replay with mid-session hints and a post-session grade.
+- Research Workbench: chat analysis and deep analysis (Bull / Bear debate + Judge verdict), strategy and portfolio backtests, walk-forward evaluation, manual replay with mid-session hints and a post-session grade.
 - Leaderboard, user profiles, site-wide trade feed, comment board with notifications, and self-service account reset.
 
 Current instruments:

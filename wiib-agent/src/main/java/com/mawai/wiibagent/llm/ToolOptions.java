@@ -12,8 +12,8 @@ import java.util.List;
  * <b>options 一律从 {@code model.getOptions().mutate()} 派生，不许用泛型 builder 另起炉灶</b>：
  * Spring AI 2.0 的 OpenAiChatModel 不再把运行时 options 合并进默认 options，而是把
  * {@code prompt.getOptions()} 直接硬转 {@code OpenAiChatOptions}——塞个 {@code ToolCallingChatOptions.builder()}
- * 造的 DefaultToolCallingChatOptions 进去当场 ClassCastException。真跑实证：路由这一次调用抛了、
- * 被兜成 FINISH，整轮零专家派发，用户看到的就是"没有可用数据"（openai 协议端点全中，responses 协议无感）。
+ * 造的 DefaultToolCallingChatOptions 进去当场 ClassCastException。真跑实证过：那一次调用当场抛，
+ * 整轮一个工具都没跑（openai 协议端点全中，responses 协议无感）。
  * <p>
  * 不带 tool_choice，一律 auto：Opus 5.5 / Sonnet 5.5 / Fable 5.1 这类模型不收 any / required。
  */

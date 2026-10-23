@@ -49,9 +49,9 @@ import static org.mockito.Mockito.when;
  * 只能证明它们各自好使（那件事 ModelCallLimiterTest/ConversationSummarizerTest 已经证过），
  * 证明不了生产装配里传上了。
  */
-class SummarizerLeafTest {
+class MainLeafTest {
 
-    private static final String SESSION = "wb-1-summarizer-leaf";
+    private static final String SESSION = "wb-1-main-leaf";
     /** 压缩提示词的特征串：浅模型这里只服务摘要一种请求，留着当断言锚点 */
     private static final String SUMMARY_PROMPT_MARK = "请把下面的对话历史压缩成一段要点记录";
     private static final String SUMMARY_PREFIX = "## 早前对话摘要：";
@@ -124,10 +124,10 @@ class SummarizerLeafTest {
     }
 
     /**
-     * 闸门真的传给了 summarizer 的循环：生产叶子跑一轮，模型要调深研判，未授权时必须被拦下、
+     * 闸门真的传给了主 agent 的循环：生产叶子跑一轮，模型要调深研判，未授权时必须被拦下、
      * 留下待确认。
      * <p>
-     * 这是唯一抓得住"忘了把 ApprovalGate 传给 summarizer 的 {@link ReactLoop}"的钉子——
+     * 这是唯一抓得住"忘了把 ApprovalGate 传给主 agent 的 {@link ReactLoop}"的钉子——
      * gate 是可空参数，漏传编译照过、一个字都不报，HITL 整条链直接哑掉。
      */
     @Test

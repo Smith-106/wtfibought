@@ -50,7 +50,7 @@ import static org.mockito.Mockito.when;
 class ChatTurnRunnerTest {
 
     private static final String SESSION = "wb-1-runner";
-    /** 阈值给足 = 这几跑都不碰历史压缩，那件事归 {@link SummarizerLeafTest} */
+    /** 阈值给足 = 这几跑都不碰历史压缩，那件事归 {@link MainLeafTest} */
     private static final int NO_COMPRESSION = 999_999;
     /** 生产口径的调用上限 */
     private static final int LIMIT = 8;

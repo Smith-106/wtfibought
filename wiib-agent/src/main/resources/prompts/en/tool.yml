@@ -141,7 +141,7 @@ tool:
     What you get is the computed path plus focus_bars — the last N candles and the ones
     around each key point; `klines` is the tool that hands you every raw bar instead.
 
-  # ---- The trader read-only profile tools (held by the chat summarizer; userId baked in at leaf build) ----
+  # ---- The trader read-only profile tools (held by the chat main agent; userId baked in at leaf build) ----
   trader_overview: |-
     Get the current user's AI trader profile: status (RUNNING/PAUSED/LIQUIDATED and why),
     equity vs initial balance, round number, traded symbols, wake interval, risk spec,
@@ -172,7 +172,7 @@ tool:
     stop and target) and, for a manual close, the close reason it wrote. Also count, wins and total
     realized PnL over the returned trades. Returns hasTrader=false when the user has not created a trader yet.
 
-  # ---- The three form tools that act on the trader (held by the chat summarizer; they only open a form) ----
+  # ---- The three form tools that act on the trader (held by the chat main agent; they only open a form) ----
   wake_trader: |-
     Open the "wake trader now" form for the user. IMPORTANT: this does NOT wake the trader.
     It only shows a card with when it last woke, when it wakes next, and a button the user presses themselves.

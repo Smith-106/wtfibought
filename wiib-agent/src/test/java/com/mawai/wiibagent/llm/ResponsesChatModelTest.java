@@ -38,7 +38,7 @@ import static org.mockito.Mockito.when;
 /**
  * 钉死与框架的契约边界（这些曾被别处单测 mock 掉，真跑才暴露）：
  * Spring AI 2.0 的契约方法是 getOptions()，覆写成旧名 getDefaultOptions() 会命中接口默认实现
- * 返回普通 ChatOptions → AgentChat 挂工具的 instanceof 恒假 → 专家请求 tools=[]。
+ * 返回普通 ChatOptions → AgentChat 挂工具的 instanceof 恒假 → 请求 tools=[]。
  * <p>
  * 阻塞路径用例走真 HTTP + SSE（JDK HttpServer 假服务器，零新依赖）：
  * call() 与 stream() 共用 streamOnce 一条协议解析路，这些用例钉住的是各类 BYOK 渠道的
@@ -103,7 +103,7 @@ class ResponsesChatModelTest {
                 "grok-test", null, null, mock(ToolCallingManager.class), webSearch);
     }
 
-    /** 汇总者那样的调用方：本次调用允许服务端搜索（经 toolContext 捎给模型） */
+    /** 主 agent 那样的调用方：本次调用允许服务端搜索（经 toolContext 捎给模型） */
     private ChatOptions allowWebSearch(ResponsesChatModel model) {
         return ((ToolCallingChatOptions) model.getOptions()).mutate()
                 .toolContext(Map.of(ResponsesChatModel.WEB_SEARCH_KEY, true)).build();
@@ -132,7 +132,7 @@ class ResponsesChatModelTest {
 
     @Test
     void 请求侧_调用未捎许可_端点开了也不注入() {
-        // 专家/trader 链路不捎许可键：同一个端点开了搜索，它们的请求里也不许出现服务端工具
+        // analyst worker / trader 链路不捎许可键：同一个端点开了搜索，它们的请求里也不许出现服务端工具
         events = PLAIN_COMPLETED;
         ResponsesChatModel m = model(true);
         m.call(new Prompt("查行情", m.getOptions()));

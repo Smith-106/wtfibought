@@ -37,8 +37,8 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
  * 手动复盘 AI 教练的一次请求：准入 → 交出 emitter → 虚拟线程里跑流式调用。
  * 一次请求 = 一次 BYOK 模型流式调用，SSE 事件协议与研判工作台同款（token/done/error），前端复用同一套解析。
  * <p>
- * 与工作台对话的区别：不进会话历史、不记忆、不排队——纯一次性问答，所以没有 ChatConcurrencyGate
- * 那套名额与让位；只挡"同一用户上一次还没跑完又点"（{@link ErrorCode#REPLAY_AI_BUSY}）。
+ * 与工作台对话的区别：不进会话历史、不记忆——纯一次性问答，所以不占 ChatConcurrencyGate
+ * 的名额；只挡"同一用户上一次还没跑完又点"（{@link ErrorCode#REPLAY_AI_BUSY}）。
  * 断连即停：没有落库诉求，用户切走了就别再烧他的 token。
  */
 @Slf4j

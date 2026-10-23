@@ -28,7 +28,7 @@ import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
  * 对话轨读 trader 的唯一入口：只查询、不动手，动作归 {@link TraderActionService}。
- * chat 汇总者的 trader 只读工具（TraderQueryToolkit）全部落在这里。
+ * chat 主 agent 的 trader 只读工具（TraderQueryToolkit）全部落在这里。
  * <p>
  * <b>两个 agent 的解耦纪律在这里落地</b>：chat 与 trader 从不互相对话，查询只读 trader
  * 自己写下的表。trader 依旧是那个"醒来读库→决策→写库→睡去"的无状态回路，

@@ -38,7 +38,7 @@ public class UserLlmEndpoint {
     private String reasoningEffort;
     /**
      * 服务端联网搜索：请求里声明该协议的服务端搜索工具才搜（opt-in），上游拒收自动退回不搜。
-     * 能声明的协议才存 true（AiProtocols.supportsServerSearch）；端点支不支持查不到，由用户自己勾。当前只有对话 summarizer 会用到。
+     * 能声明的协议才存 true（AiProtocols.supportsServerSearch）；端点支不支持查不到，由用户自己勾。当前只有对话的主 agent 与 researcher worker 会用到。
      */
     private Boolean webSearch;
     /** AES-GCM 密文 base64(iv+cipher)，密钥来自 WIIB_TRADER_KEY_SECRET */

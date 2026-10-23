@@ -14,7 +14,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 /**
- * 汇总者的 trader 只读工具集。
+ * 主 agent 的 trader 只读工具集。
  * <p>
  * 这里只钉一件事：<b>工具认人靠的是建叶子时烤进来的 userId，不是模型填的参数</b>。
  * 归属判断本身归 {@code TraderChatServiceTest}，那是另一层的事。

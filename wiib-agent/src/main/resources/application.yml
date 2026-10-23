@@ -208,12 +208,6 @@ internal:
   api:
     token: ${INTERNAL_API_TOKEN}
 
-# 降噪：主 agent 用文本收尾时框架必打"JSON 路由解析失败"WARN+堆栈，
-# 那是 FINISH 判定机制(解析失败=本轮结束)，预期路径非故障，压到 ERROR 零损失
-logging:
-  level:
-    com.alibaba.cloud.ai.graph.agent.flow.node.MainAgentNodeAction: error
-
 ---
 # 哨兵模式(线上高可用，配合 redis-compose.yml)：.env 里 SPRING_PROFILES_ACTIVE=sentinel 启用，
 # 经哨兵发现主库、故障自动切换。生效后上面的 REDIS_HOST/PORT 被忽略，REDIS_PASSWORD/DB 照常
