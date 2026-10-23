@@ -3,12 +3,12 @@ import { useTranslation } from 'react-i18next';
 import { MonitorCard } from './MonitorCard';
 import { cn } from '../lib/utils';
 
-// 三进程 JVM，统一订 /topic/monitor/{进程}（sim 自推，feed/quant 经 sim 中继）
+// 三进程 JVM，统一订 /topic/monitor/{进程}（sim 自推，feed/agent 经 sim 中继）
 // label 是进程代号不翻；desc 存词表 key，渲染时现查
 const PROCESSES = [
   { topic: '/topic/monitor/sim', label: 'sim', descKey: 'monitor.proc.sim' },
   { topic: '/topic/monitor/feed', label: 'feed', descKey: 'monitor.proc.feed' },
-  { topic: '/topic/monitor/quant', label: 'quant', descKey: 'monitor.proc.quant' },
+  { topic: '/topic/monitor/agent', label: 'agent', descKey: 'monitor.proc.agent' },
 ];
 
 /**

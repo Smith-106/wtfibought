@@ -104,20 +104,20 @@ const LED_LABEL_KEY: Record<HealthLevel, string> = {
   ok: 'led.ok', warn: 'led.warn', down: 'led.down', unknown: 'led.unknown',
 };
 
-/** 三服务状态灯组：feed(行情上游) / quant(量化) / sim(交易主进程)，悬停看明细 */
+/** 三服务状态灯组：feed(行情上游) / agent(AI 与策略) / sim(交易主进程)，悬停看明细 */
 function SystemLeds() {
-  const { feed, quant, sim } = useSystemHealth();
+  const { feed, agent, sim } = useSystemHealth();
   const { t } = useTranslation('layout');
   const cls = (l: HealthLevel) =>
     l === 'ok' ? 'led' : l === 'warn' ? 'led led-warn' : l === 'down' ? 'led led-down' : 'led led-off';
   return (
     <span
       className="leds"
-      // feed / quant / sim 是服务名，不翻
-      title={`feed ${t(LED_LABEL_KEY[feed])} · quant ${t(LED_LABEL_KEY[quant])} · sim ${t(LED_LABEL_KEY[sim])}`}
+      // feed / agent / sim 是服务名，不翻
+      title={`feed ${t(LED_LABEL_KEY[feed])} · agent ${t(LED_LABEL_KEY[agent])} · sim ${t(LED_LABEL_KEY[sim])}`}
     >
       <i className={cls(feed)} />
-      <i className={cls(quant)} />
+      <i className={cls(agent)} />
       <i className={cls(sim)} />
     </span>
   );

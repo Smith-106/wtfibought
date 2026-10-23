@@ -451,7 +451,7 @@
     "proc": {
       "sim": "Paper trading",
       "feed": "Market data feed",
-      "quant": "Quant engine"
+      "agent": "AI & strategies"
     }
   },
   "feed": {

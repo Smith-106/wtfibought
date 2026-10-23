@@ -3,23 +3,23 @@ import { onConnectionState, subscribe } from './stompClient';
 import { quantApi } from '../api';
 
 export type HealthLevel = 'ok' | 'warn' | 'down' | 'unknown';
-export interface SystemHealth { feed: HealthLevel; quant: HealthLevel; sim: HealthLevel }
+export interface SystemHealth { feed: HealthLevel; agent: HealthLevel; sim: HealthLevel }
 
 // 行情静默阈值：BTC 现货流按 3s 节流广播，20s 没消息就是不对劲，60s 判死
 const FEED_STALE_MS = 20_000;
-const QUANT_POLL_MS = 60_000;
+const AGENT_POLL_MS = 60_000;
 
 /**
  * 壳层三颗 LED 的数据源（全部借现成链路，零新增后端）：
  * - sim   = 前端到 sim(8080) 的 STOMP 连接态
  * - feed  = 行情心跳：借 BTC 现货 topic 当脉搏（stompClient 同 topic 共享订阅，无额外开销），
  *           行情链路是 feed→Redis→sim→前端，静默即上游断
- * - quant = 60s 轻量探活快讯接口（内存缓存，零上游成本）
+ * - agent = 60s 轻量探活快讯接口（agent(8082) 挂载，内存缓存，零上游成本）
  */
 export function useSystemHealth(): SystemHealth {
   const [sim, setSim] = useState<HealthLevel>('unknown');
   const [feed, setFeed] = useState<HealthLevel>('unknown');
-  const [quant, setQuant] = useState<HealthLevel>('unknown');
+  const [agent, setAgent] = useState<HealthLevel>('unknown');
   const lastTickRef = useRef(0);
 
   useEffect(() => onConnectionState(up => setSim(up ? 'ok' : 'down')), []);
@@ -40,13 +40,13 @@ export function useSystemHealth(): SystemHealth {
   useEffect(() => {
     let alive = true;
     const probe = () => quantApi.news().then(
-      () => { if (alive) setQuant('ok'); },
-      () => { if (alive) setQuant('down'); },
+      () => { if (alive) setAgent('ok'); },
+      () => { if (alive) setAgent('down'); },
     );
     void probe();
-    const timer = setInterval(probe, QUANT_POLL_MS);
+    const timer = setInterval(probe, AGENT_POLL_MS);
     return () => { alive = false; clearInterval(timer); };
   }, []);
 
-  return { feed, quant, sim };
+  return { feed, agent, sim };
 }
