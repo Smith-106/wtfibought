@@ -90,7 +90,7 @@ class ModelCallLimiterTest {
                     .build())));
         });
 
-        ResilientChatService chat = ResilientChatService.builder()
+        AgentChat chat = AgentChat.builder()
                 .model(model)
                 .systemPrompt("测试")
                 .tools(new LocalizedToolCallbacks(new PromptCatalog()).of(AgentLang.ZH, new EchoTools()))

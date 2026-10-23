@@ -13,10 +13,10 @@ import com.mawai.wiibcommon.market.BinanceRestClient;
 import com.mawai.wiibagent.i18n.LocalizedToolCallbacks;
 import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.i18n.UserLangResolver;
+import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.LlmErrorMessages;
 import com.mawai.wiibagent.llm.ModelCallLimiter;
 import com.mawai.wiibagent.llm.ReactLoop;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import com.mawai.wiibagent.llm.ToolCallTraceHook;
 import com.mawai.wiibagent.llm.UsageTrackingChatModel;
 import com.mawai.wiibagent.learning.ExperienceLedger;
@@ -314,7 +314,7 @@ public class TraderWakeupRunner {
         // 全量工具轨迹（含数据工具）：收集器在本方法手里，超时 cancel 也保得住已发生的记录
         ToolCallTraceHook trace = new ToolCallTraceHook();
         // 不强制 tool_choice："先读事实、用工具求证"写在开场白里（routineQuestion / alertQuestion）
-        ResilientChatService chat = ResilientChatService.builder().model(model).systemPrompt(prompt)
+        AgentChat chat = AgentChat.builder().model(model).systemPrompt(prompt)
                 .tools(wakeTools(lang, tradeTools)).build();
         ReactLoop loop = ReactLoop.builder().chat(chat)
                 .streaming(true)      // 模型文本逐字推给现场

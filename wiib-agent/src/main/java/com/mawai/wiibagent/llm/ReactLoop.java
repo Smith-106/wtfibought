@@ -94,7 +94,7 @@ public final class ReactLoop {
     public record Result(List<Message> messages, int modelCalls) {
     }
 
-    private final ResilientChatService chat;
+    private final AgentChat chat;
     /** 按工具名查 callback，就是 chat 挂给模型的那份表 */
     private final Map<String, ToolCallback> toolsByName = new LinkedHashMap<>();
     private final boolean streaming;
@@ -121,7 +121,7 @@ public final class ReactLoop {
 
     public static final class Builder {
 
-        private ResilientChatService chat;
+        private AgentChat chat;
         private boolean streaming;
         private ModelCallLimiter limiter;
         private ToolGate gate;
@@ -130,7 +130,7 @@ public final class ReactLoop {
         private Set<String> serialTools = Set.of();
 
         /** 模型调用层，必填 */
-        public Builder chat(ResilientChatService chat) {
+        public Builder chat(AgentChat chat) {
             this.chat = chat;
             return this;
         }

@@ -36,7 +36,7 @@ class UsageTrackingChatModelTest {
 
     /**
      * 最要命的一条：getOptions 必须是被包模型那个实例本身。
-     * 返回自己新造的 options，ResilientChatService 挂出去的 tools 就是空数组，一个工具都调不动。
+     * 返回自己新造的 options，AgentChat 挂出去的 tools 就是空数组，一个工具都调不动。
      */
     @Test
     void getOptionsIsPassedThroughUntouched() {
@@ -182,7 +182,7 @@ class UsageTrackingChatModelTest {
         assertThat(m.untrusted()).isFalse();
     }
 
-    /** 重订阅（ResilientChatService 的流式重试）：每次尝试各自入账，成功那次的 token 不能丢 */
+    /** 重订阅（AgentChat 的流式重试）：每次尝试各自入账，成功那次的 token 不能丢 */
     @Test
     void 重订阅时每次尝试各自入账() {
         ChatModel inner = mock(ChatModel.class);

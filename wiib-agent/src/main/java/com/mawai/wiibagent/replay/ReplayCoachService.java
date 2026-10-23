@@ -7,10 +7,10 @@ import com.mawai.wiibcommon.exception.BizException;
 import com.mawai.wiibagent.chat.ChatModelFactory;
 import com.mawai.wiibagent.i18n.PromptCatalog;
 import com.mawai.wiibagent.i18n.UserLangResolver;
+import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.ChatEndpoints;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.LlmErrorMessages;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import com.mawai.wiibagent.llm.SseChannel;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -140,11 +140,11 @@ public class ReplayCoachService {
                 channel::heartbeat, HEARTBEAT_SECONDS, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
         StringBuilder answer = new StringBuilder();
         try {
-            // ResilientChatService 捎系统提示 + 流式重试；不挂工具不进 ReactLoop，落到底就是一次 model.stream
-            ResilientChatService service = ResilientChatService.builder().model(model)
+            // AgentChat 捎系统提示 + 流式重试；不挂工具不进 ReactLoop，落到底就是一次 model.stream
+            AgentChat chat = AgentChat.builder().model(model)
                     .systemPrompt(coachPrompts.system(request, lang)).build();
             // toStream + try-with-resources：用户切走（通道关闭）后 takeWhile 停止迭代、close 取消订阅，不再烧 token
-            try (Stream<ChatResponse> frames = service.streamingExecute(
+            try (Stream<ChatResponse> frames = chat.streamingExecute(
                     List.of(new UserMessage(coachPrompts.user(request, lang))), null).toStream()) {
                 frames.takeWhile(f -> !channel.isClosed()).forEach(f -> {
                     String chunk = textOf(f);

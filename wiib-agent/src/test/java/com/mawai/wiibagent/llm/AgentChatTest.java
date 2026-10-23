@@ -36,14 +36,14 @@ import static org.mockito.Mockito.when;
  * 另钉一条 options 契约：options 类型跟着模型走（openai 协议硬转 OpenAiChatOptions）；
  * 以及中断两条：信号完成时掐断在途流并把取消传到上游、流正常结束不能反过来把信号 future 取消掉。
  */
-class ResilientChatServiceTest {
+class AgentChatTest {
 
-    private final ChatModel primary = mock(ChatModel.class);
+    private final ChatModel model = mock(ChatModel.class);
 
-    private ResilientChatService service() {
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        return ResilientChatService.builder()
-                .model(primary)
+    private AgentChat chat() {
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        return AgentChat.builder()
+                .model(model)
                 .systemPrompt("你是助手")
                 .build();
     }
@@ -57,21 +57,21 @@ class ResilientChatServiceTest {
     /** 重试是模型层的事：本层只调一次，失败原样抛给上层归类（LlmErrorMessages） */
     @Test
     void 阻塞路径失败只调一次且原样抛出() {
-        when(primary.call(any(Prompt.class))).thenThrow(new TransientAiException("502"));
+        when(model.call(any(Prompt.class))).thenThrow(new TransientAiException("502"));
 
-        assertThatThrownBy(() -> service().execute(ASK))
+        assertThatThrownBy(() -> chat().execute(ASK))
                 .isInstanceOf(TransientAiException.class);
-        verify(primary, times(1)).call(any(Prompt.class));
+        verify(model, times(1)).call(any(Prompt.class));
     }
 
     /** 系统提示是每个 agent 的纪律与格式约定，缺了不许静默放行 */
     @Test
     void systemPrompt缺省直接拦下() {
-        assertThatThrownBy(() -> ResilientChatService.builder().model(primary).build())
+        assertThatThrownBy(() -> AgentChat.builder().model(model).build())
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /** 主模型收到的 Prompt 的 options */
+    /** 模型收到的 Prompt 的 options */
     private ChatOptions optionsSentTo(ChatModel model) {
         ArgumentCaptor<Prompt> prompt = ArgumentCaptor.forClass(Prompt.class);
         verify(model).call(prompt.capture());
@@ -85,14 +85,14 @@ class ResilientChatServiceTest {
      */
     @Test
     void openai协议下options保持OpenAiChatOptions且不强制() {
-        when(primary.getOptions()).thenReturn(OpenAiChatOptions.builder().model("deepseek-chat").build());
-        when(primary.call(any(Prompt.class))).thenReturn(responseOf("ok"));
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
+        when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("deepseek-chat").build());
+        when(model.call(any(Prompt.class))).thenReturn(responseOf("ok"));
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
 
-        service.execute(ASK);
+        chat.execute(ASK);
 
-        ChatOptions sent = optionsSentTo(primary);
+        ChatOptions sent = optionsSentTo(model);
         assertThat(sent).isInstanceOf(OpenAiChatOptions.class);
         OpenAiChatOptions openAi = (OpenAiChatOptions) sent;
         assertThat(openAi.getToolChoice()).isNull();
@@ -106,25 +106,25 @@ class ResilientChatServiceTest {
      */
     @Test
     void webSearch开关_许可落进chatOptions的toolContext() {
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
 
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        ToolCallingChatOptions options = (ToolCallingChatOptions) service.chatOptions().orElseThrow();
+        ToolCallingChatOptions options = (ToolCallingChatOptions) chat.chatOptions().orElseThrow();
         assertThat(options.getToolContext().get(SseChatModel.WEB_SEARCH_KEY)).isEqualTo(Boolean.TRUE);
     }
 
     @Test
     void webSearch开关_无function工具的agent也捎得上() {
         // 没挂工具时 chatOptions 本是 null；搜索许可不许因此静默丢
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
 
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是汇总者").webSearch(true).build();
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是汇总者").webSearch(true).build();
 
-        ToolCallingChatOptions options = (ToolCallingChatOptions) service.chatOptions().orElseThrow();
+        ToolCallingChatOptions options = (ToolCallingChatOptions) chat.chatOptions().orElseThrow();
         assertThat(options.getToolContext().get(SseChatModel.WEB_SEARCH_KEY)).isEqualTo(Boolean.TRUE);
     }
 
@@ -134,14 +134,14 @@ class ResilientChatServiceTest {
      */
     @Test
     void 响应读取中断单次重试() {
-        when(primary.call(any(Prompt.class)))
+        when(model.call(any(Prompt.class)))
                 .thenThrow(new com.openai.errors.OpenAIInvalidDataException("Error reading response",
                         new java.io.IOException("stream was reset: CANCEL")))
                 .thenReturn(responseOf("重试成功"));
 
-        ChatResponse result = service().execute(ASK);
+        ChatResponse result = chat().execute(ASK);
 
-        verify(primary, times(2)).call(any(Prompt.class));
+        verify(model, times(2)).call(any(Prompt.class));
         assertThat(result.getResult().getOutput().getText()).isEqualTo("重试成功");
     }
 
@@ -151,20 +151,20 @@ class ResilientChatServiceTest {
      */
     @Test
     void 搜索被拒时去掉许可重发一次() {
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         List<Prompt> prompts = new ArrayList<>();
-        when(primary.stream(any(Prompt.class))).thenAnswer(inv -> {
+        when(model.stream(any(Prompt.class))).thenAnswer(inv -> {
             prompts.add(inv.getArgument(0));
             return prompts.size() == 1
                     ? Flux.error(new NonTransientAiException(
                             "Gemini API HTTP 400: Multiple tools are supported only when they are all search tools."))
                     : Flux.just(responseOf("不搜也答"));
         });
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        List<ChatResponse> out = service.streamingExecute(ASK, null).collectList().block();
+        List<ChatResponse> out = chat.streamingExecute(ASK, null).collectList().block();
 
         assertThat(out).hasSize(1);
         assertThat(prompts).hasSize(2);
@@ -178,33 +178,33 @@ class ResilientChatServiceTest {
     /** 没捎许可的失败退无可退，报错原样透传，不会白发第二次 */
     @Test
     void 没捎许可时搜索类报错不降级() {
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        when(primary.stream(any(Prompt.class))).thenReturn(Flux.error(new NonTransientAiException("400 search")));
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        when(model.stream(any(Prompt.class))).thenReturn(Flux.error(new NonTransientAiException("400 search")));
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class))).build();
 
-        assertThatThrownBy(() -> service.streamingExecute(ASK, null).collectList().block())
+        assertThatThrownBy(() -> chat.streamingExecute(ASK, null).collectList().block())
                 .isInstanceOf(NonTransientAiException.class);
-        verify(primary, times(1)).stream(any(Prompt.class));
+        verify(model, times(1)).stream(any(Prompt.class));
     }
 
     /** 阻塞路径同一条降级：researcher worker 不走流式，也捎搜索许可 */
     @Test
     void 阻塞路径搜索被拒时也去掉许可重发一次() {
-        when(primary.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
+        when(model.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         List<Prompt> prompts = new ArrayList<>();
-        when(primary.call(any(Prompt.class))).thenAnswer(inv -> {
+        when(model.call(any(Prompt.class))).thenAnswer(inv -> {
             prompts.add(inv.getArgument(0));
             if (prompts.size() == 1) {
                 throw new NonTransientAiException("400: web_search tool is not supported by this model");
             }
             return responseOf("不搜也答");
         });
-        ResilientChatService service = ResilientChatService.builder()
-                .model(primary).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
+        AgentChat chat = AgentChat.builder()
+                .model(model).systemPrompt("你是助手").tools(List.of(mock(ToolCallback.class)))
                 .webSearch(true).build();
 
-        assertThat(service.execute(ASK).getResult().getOutput().getText()).isEqualTo("不搜也答");
+        assertThat(chat.execute(ASK).getResult().getOutput().getText()).isEqualTo("不搜也答");
         assertThat(prompts).hasSize(2);
         assertThat(((ToolCallingChatOptions) prompts.get(0).getOptions()).getToolContext())
                 .containsEntry(SseChatModel.WEB_SEARCH_KEY, true);
@@ -217,12 +217,12 @@ class ResilientChatServiceTest {
     @Test
     void 信号到达时掐断在途流并取消上游() {
         AtomicBoolean upstreamCancelled = new AtomicBoolean();
-        when(primary.stream(any(Prompt.class))).thenReturn(
+        when(model.stream(any(Prompt.class))).thenReturn(
                 Flux.<ChatResponse>never().doOnCancel(() -> upstreamCancelled.set(true)));
         CompletableFuture<Void> signal = new CompletableFuture<>();
         AtomicBoolean completed = new AtomicBoolean();
 
-        service().streamingExecute(ASK, signal).subscribe(r -> { }, e -> { }, () -> completed.set(true));
+        chat().streamingExecute(ASK, signal).subscribe(r -> { }, e -> { }, () -> completed.set(true));
         assertThat(upstreamCancelled).isFalse();
 
         signal.complete(null);
@@ -234,10 +234,10 @@ class ResilientChatServiceTest {
     /** Mono.fromFuture 会在流结束时反向 cancel 这个 future，专家等待期的 anyOf 就被误唤醒了 */
     @Test
     void 流正常结束不会反向取消信号() {
-        when(primary.stream(any(Prompt.class))).thenReturn(Flux.just(responseOf("答完了")));
+        when(model.stream(any(Prompt.class))).thenReturn(Flux.just(responseOf("答完了")));
         CompletableFuture<Void> signal = new CompletableFuture<>();
 
-        List<ChatResponse> out = service().streamingExecute(ASK, signal).collectList().block();
+        List<ChatResponse> out = chat().streamingExecute(ASK, signal).collectList().block();
 
         assertThat(out).hasSize(1);
         assertThat(signal.isDone()).isFalse();

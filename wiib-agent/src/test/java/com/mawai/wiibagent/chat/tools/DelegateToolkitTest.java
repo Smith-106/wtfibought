@@ -8,9 +8,9 @@ import com.mawai.wiibagent.chat.run.ChildRunRegistry;
 import com.mawai.wiibagent.chat.run.WorkbenchPrefService;
 import com.mawai.wiibagent.chat.run.WorkerKind;
 import com.mawai.wiibagent.chat.store.ChatContextStore;
+import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.ModelCallLimiter;
 import com.mawai.wiibagent.llm.ReactLoop;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import com.mawai.wiibagent.llm.UsageTrackingChatModel;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -65,7 +65,7 @@ class DelegateToolkitTest {
         // worker 不挂工具：这里验的是派发与回灌，不是预设的工具表（那在 ChatAgentFactoryTest）
         Function<WorkerKind, ChatAgentFactory.Worker> workers = kind -> {
             UsageTrackingChatModel usage = new UsageTrackingChatModel(model);
-            ResilientChatService chat = ResilientChatService.builder().model(usage).systemPrompt("worker").build();
+            AgentChat chat = AgentChat.builder().model(usage).systemPrompt("worker").build();
             return new ChatAgentFactory.Worker(ReactLoop.builder().chat(chat)
                     .limiter(new ModelCallLimiter(3, "未执行", "收尾")).build(), usage);
         };

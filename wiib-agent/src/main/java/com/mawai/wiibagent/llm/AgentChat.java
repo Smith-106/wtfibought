@@ -25,7 +25,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 叶子 {@link ReactLoop} 的模型调用层：捎系统提示、挂工具与 options、搜索许可、退避重试。
+ * 一个 agent 的模型调用端：模型、系统提示、工具表绑在一起，负责捎系统提示、挂工具与 options、搜索许可、退避重试。
+ * {@link ReactLoop} 经它调模型，behavior / replay coach 这类不进循环的直接调。
  * <p>
  * 韧性分层（两条路径职责不同，别再往回加）：
  * <ul>
@@ -47,9 +48,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 不做兜底模型：BYOK 只有用户自己那一个端点，切"同端点另一个模型"没意义（端点挂了两个一起挂）。
  */
 @Slf4j
-public class ResilientChatService {
+public class AgentChat {
 
-    private final ChatModel primaryModel;
+    private final ChatModel model;
     private final int maxAttempts;
     private final long initialDelayMs;
     private final long maxDelayMs;
@@ -58,8 +59,8 @@ public class ResilientChatService {
     /** 本 agent 的工具表：既挂进 options 给模型看，也是 {@link ReactLoop} 执行工具时的查表处 */
     private final List<ToolCallback> tools;
 
-    private ResilientChatService(Builder builder) {
-        this.primaryModel = builder.primaryModel;
+    private AgentChat(Builder builder) {
+        this.model = builder.model;
         this.maxAttempts = builder.maxAttempts;
         this.initialDelayMs = builder.initialDelayMs;
         this.maxDelayMs = builder.maxDelayMs;
@@ -67,10 +68,10 @@ public class ResilientChatService {
         // 工具挂进 options：没工具的 agent 保持 null 走模型默认。
         // 从模型自己的 options 派生而非泛型 builder：具体类型必须跟着模型走，理由见 ToolOptions 类头
         ChatOptions base = tools.isEmpty()
-                || !(primaryModel.getOptions() instanceof ToolCallingChatOptions)
+                || !(model.getOptions() instanceof ToolCallingChatOptions)
                 ? null
-                : ToolOptions.withTools(primaryModel, tools);
-        this.chatOptions = builder.webSearch ? withWebSearch(base, primaryModel) : base;
+                : ToolOptions.withTools(model, tools);
+        this.chatOptions = builder.webSearch ? withWebSearch(base, model) : base;
         this.systemMessage = SystemMessage.builder().text(builder.systemPrompt).build();
     }
 
@@ -106,7 +107,7 @@ public class ResilientChatService {
     public Flux<ChatResponse> streamingExecute(List<Message> messages, CompletableFuture<Void> cancel) {
         List<Message> withSystem = withSystem(messages);
         AtomicBoolean emitted = new AtomicBoolean(false);
-        Flux<ChatResponse> stream = primaryModel.stream(promptOf(primaryModel, withSystem, chatOptions))
+        Flux<ChatResponse> stream = model.stream(promptOf(model, withSystem, chatOptions))
                 .doOnNext(_ -> emitted.set(true))
                 .retryWhen(Retry.backoff(maxAttempts - 1, Duration.ofMillis(initialDelayMs))
                         .maxBackoff(Duration.ofMillis(maxDelayMs))
@@ -119,7 +120,7 @@ public class ResilientChatService {
                     // 搜索工具被拒：去掉许可重发一次，这一轮就不搜。被拒发生在请求刚落地、必然还没吐过帧，重订阅不会拼出重复文本
                     if (searchRejected(e, chatOptions)) {
                         log.warn("上游拒收服务端搜索工具，本次降级为不搜重发: {}", e.toString());
-                        return primaryModel.stream(promptOf(primaryModel, withSystem, withoutWebSearch(chatOptions)));
+                        return model.stream(promptOf(model, withSystem, withoutWebSearch(chatOptions)));
                     }
                     return Flux.error(e);
                 });
@@ -162,25 +163,25 @@ public class ResilientChatService {
     public ChatResponse execute(List<Message> messages) {
         List<Message> withSystem = withSystem(messages);
         try {
-            return callPrimary(withSystem, chatOptions);
+            return callModel(withSystem, chatOptions);
         } catch (RuntimeException e) {
             // 搜索工具被拒：去掉许可重发一次，这一轮就不搜（与流式路径同一条降级）
             if (!searchRejected(e, chatOptions)) {
                 throw e;
             }
             log.warn("上游拒收服务端搜索工具，本次降级为不搜重发: {}", e.toString());
-            return callPrimary(withSystem, withoutWebSearch(chatOptions));
+            return callModel(withSystem, withoutWebSearch(chatOptions));
         }
     }
 
     /** 一处就地补救，其余异常原样抛：读响应失败是 SDK 重试盲区（类头注释的唯一豁免），再试一次 */
-    private ChatResponse callPrimary(List<Message> withSystem, ChatOptions options) {
-        Prompt prompt = promptOf(primaryModel, withSystem, options);
+    private ChatResponse callModel(List<Message> withSystem, ChatOptions options) {
+        Prompt prompt = promptOf(model, withSystem, options);
         try {
-            return primaryModel.call(prompt);
+            return model.call(prompt);
         } catch (OpenAIInvalidDataException e) {
             log.warn("响应读取中断（SDK 不重试此类失败），单次重试: {}", e.toString());
-            return primaryModel.call(prompt);
+            return model.call(prompt);
         }
     }
 
@@ -200,7 +201,7 @@ public class ResilientChatService {
 
     public static class Builder {
 
-        private ChatModel primaryModel;
+        private ChatModel model;
         private String systemPrompt;
         private List<ToolCallback> tools = List.of();
         private int maxAttempts = 3;
@@ -217,8 +218,8 @@ public class ResilientChatService {
             return this;
         }
 
-        public Builder model(ChatModel primaryModel) {
-            this.primaryModel = primaryModel;
+        public Builder model(ChatModel model) {
+            this.model = model;
             return this;
         }
 
@@ -249,12 +250,12 @@ public class ResilientChatService {
             return this;
         }
 
-        public ResilientChatService build() {
+        public AgentChat build() {
             if (systemPrompt == null || systemPrompt.isBlank()) {
                 throw new IllegalArgumentException(
                         "systemPrompt 不能为空：系统提示是每个 agent 的纪律与格式约定，不许静默缺席");
             }
-            return new ResilientChatService(this);
+            return new AgentChat(this);
         }
     }
 }

@@ -6,10 +6,10 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.mawai.wiibagent.chat.gate.ApprovalGate;
 import com.mawai.wiibagent.chat.store.ChatContextStore;
+import com.mawai.wiibagent.llm.AgentChat;
 import com.mawai.wiibagent.llm.ChatEndpoints;
 import com.mawai.wiibagent.llm.LlmEndpointService;
 import com.mawai.wiibagent.llm.ConversationSummarizer;
-import com.mawai.wiibagent.llm.ResilientChatService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -170,7 +170,7 @@ class ConversationSummarizerRealRunTest {
 
     private final ListAppender<ILoggingEvent> summarizeLogs = new ListAppender<>();
     /**
-     * {@link ResilientChatService} 的日志。硬失败现在会直接把这一跑弄红（这条链上已经没有兜底模型），
+     * {@link AgentChat} 的日志。硬失败现在会直接把这一跑弄红（这条链上已经没有兜底模型），
      * 但<b>重试之后成功</b>那类只在日志里留一行、答案照出、测试照绿——这一层是那类问题唯一的观测点。
      */
     private final ListAppender<ILoggingEvent> resilienceLogs = new ListAppender<>();
@@ -180,7 +180,7 @@ class ConversationSummarizerRealRunTest {
     @AfterEach
     void detachAppenders() {
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).detachAppender(summarizeLogs);
-        ((Logger) LoggerFactory.getLogger(ResilientChatService.class)).detachAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(AgentChat.class)).detachAppender(resilienceLogs);
     }
 
     @Test
@@ -188,7 +188,7 @@ class ConversationSummarizerRealRunTest {
         summarizeLogs.start();
         ((Logger) LoggerFactory.getLogger(ConversationSummarizer.class)).addAppender(summarizeLogs);
         resilienceLogs.start();
-        ((Logger) LoggerFactory.getLogger(ResilientChatService.class)).addAppender(resilienceLogs);
+        ((Logger) LoggerFactory.getLogger(AgentChat.class)).addAppender(resilienceLogs);
 
         ChatEndpoints llmConfig = endpointService.chatEndpoints(ADMIN_USER_ID);
         assertThat(llmConfig).as("先用管理员账号在 AI 页「模型配置」加一条 BYOK 端点再跑").isNotNull();
@@ -238,7 +238,7 @@ class ConversationSummarizerRealRunTest {
                 .isGreaterThanOrEqualTo(0);
         assertThat(answers).allSatisfy(answer -> assertThat(answer).isNotBlank());
         // 答案非空远远不够：400 发生在首帧之前，兜底模型会无缝接盘，答案照出、测试照绿（见类头）。
-        // 上游到底有没有拒过这份压缩历史，只有 ResilientChatService 的日志说得清
+        // 上游到底有没有拒过这份压缩历史，只有 AgentChat 的日志说得清
         assertThat(upstreamTroubles())
                 .as("压缩后的历史让上游出错了——兜底接了盘所以答案还在，但这条链已经废了")
                 .isEmpty();
@@ -296,7 +296,7 @@ class ConversationSummarizerRealRunTest {
     }
 
     /**
-     * 上游出错的痕迹。三串关键词覆盖 {@link ResilientChatService} 的<b>全部四个</b>出错日志点：
+     * 上游出错的痕迹。三串关键词覆盖 {@link AgentChat} 的<b>全部四个</b>出错日志点：
      * 流式退避重试、流式重试耗尽切兜底、阻塞路径切兜底（后两个共用"切换兜底"这句）、
      * 阻塞路径读响应中断。任何一条出现都说明这轮请求被上游拒过或断过。
      *（"切换兜底"这两句今天已经打不出来了——BYOK 后全链路都不带兜底模型；
