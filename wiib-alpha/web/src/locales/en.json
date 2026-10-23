@@ -65,7 +65,7 @@
     "references": "Reference factors",
     "refresh": "Refresh data",
     "refreshing": "Refreshing",
-    "refreshHint": "Lists symbols, pulls daily bars to rank the pool, then pulls 15m, funding, premium and metrics per symbol and assembles panels, and finally builds the reference grid. The first run is long; a rerun only fills what is missing.",
+    "refreshHint": "Lists symbols, pulls daily bars to rank the pool, then pulls 15m, funding, premium and metrics per symbol and assembles panels, and finally builds the reference grid. The first run is long; a rerun only fills what is missing. It also runs by itself from 14:00 UTC on the 1st of each month to rank that month's pool; a failed run is retried an hour later, and while another job is running it waits for it to finish.",
     "stage": {
       "symbols": "Listing symbols",
       "daily": "Daily bars and pool ranking",

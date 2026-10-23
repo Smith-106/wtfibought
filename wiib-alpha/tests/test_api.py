@@ -24,7 +24,7 @@ ADMIN = {"satoken": "admin"}
 REAL_BUILD_MODELS = m.build_models
 
 
-async def idle(app, library) -> None:
+async def idle(app, library, refresh) -> None:
     return None
 
 

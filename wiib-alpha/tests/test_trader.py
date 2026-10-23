@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pandas as pd
 import pytest
 from conftest import POOL_SYMBOLS
 from fakes import FakeFapi, FakeSim
@@ -10,6 +11,7 @@ from wiib_alpha import main as m
 from wiib_alpha.data import binance as b
 from wiib_alpha.data.binance import DAY_MS
 from wiib_alpha.data.panel import FEATURE_COLUMNS, PanelStore
+from wiib_alpha.data.refresh import RefreshResult
 from wiib_alpha.dsl import parse
 from wiib_alpha.trade import executor, scheduler
 
@@ -196,29 +198,76 @@ async def test_tick_rebalances_between_0005_and_0100_and_records_equity_every_ho
     monkeypatch.setattr(scheduler, "rebalance", rebalance)
     t0 = DAY + 5 * 60_000
     # 00:05 之前、刷新中都不调
-    await scheduler.tick(m.app, m._library, t0 - 60_000)
+    await scheduler.tick(m.app, m._library, m._start_refresh, t0 - 60_000)
     m.app.state.runs.jobs["refresh"]["running"] = True
-    await scheduler.tick(m.app, m._library, t0)
+    await scheduler.tick(m.app, m._library, m._start_refresh, t0)
     m.app.state.runs.jobs["refresh"]["running"] = False
     assert ran == [] and await store.trade_equity() == []
     # 一笔单都没下出去就失败了：下一分钟再来；调成了当天不再调。调过仓有了账户：每个小时记一次净值
-    await scheduler.tick(m.app, m._library, t0)
-    await scheduler.tick(m.app, m._library, t0 + 60_000)
-    await scheduler.tick(m.app, m._library, t0 + 120_000)
+    await scheduler.tick(m.app, m._library, m._start_refresh, t0)
+    await scheduler.tick(m.app, m._library, m._start_refresh, t0 + 60_000)
+    await scheduler.tick(m.app, m._library, m._start_refresh, t0 + 120_000)
     assert ran == [t0, t0 + 60_000]
     # 下了单但一笔都没成：下一分钟再来；成了一笔的当天不重跑
     day2 = t0 + DAY_MS
-    await scheduler.tick(m.app, m._library, day2)
-    await scheduler.tick(m.app, m._library, day2 + 60_000)
-    await scheduler.tick(m.app, m._library, day2 + 120_000)
+    await scheduler.tick(m.app, m._library, m._start_refresh, day2)
+    await scheduler.tick(m.app, m._library, m._start_refresh, day2 + 60_000)
+    await scheduler.tick(m.app, m._library, m._start_refresh, day2 + 120_000)
     assert ran == [t0, t0 + 60_000, day2, day2 + 60_000]
     # 01:00 之后还没调过：跳过这一天，不拿 0 点的信号隔几小时再下
     day3 = DAY + 2 * DAY_MS + 61 * 60_000
-    await scheduler.tick(m.app, m._library, day3)
+    await scheduler.tick(m.app, m._library, m._start_refresh, day3)
     assert ran == [t0, t0 + 60_000, day2, day2 + 60_000] and await store.trade_run(scheduler.day_label(day3)) is None
     curve = await store.trade_equity()
     assert [p["ts"] for p in curve] == [t0 + 60_000, day2, day3]
     assert curve[0] == {"ts": t0 + 60_000, "equity": 10000, "balance": 10000, "long_notional": 0, "short_notional": 0}
+
+
+async def test_tick_refreshes_after_1400_utc_until_the_month_has_its_pool(client, monkeypatch):
+    store, jobs = m.app.state.store, m.app.state.runs.jobs
+    hour = scheduler.HOUR_MS
+    # 刷新的开始时刻跟着调度的时钟走
+    clock = {"now": 0}
+    monkeypatch.setattr(m, "now_ms", lambda: clock["now"])
+    table = pd.DataFrame(await store.universe())
+    pulls: list[int] = []
+
+    def pull(cfg, job):
+        pulls.append(clock["now"])
+        # 前两次归档连不上，第三次排出 4 月的榜单
+        if len(pulls) < 3:
+            raise RuntimeError("归档连不上")
+        return RefreshResult(pd.concat([table, table[table["month"] == "2025-03"].assign(month="2025-04")]), {})
+
+    monkeypatch.setattr(m, "_refresh_panels", pull)
+
+    async def tick(at: int) -> None:
+        clock["now"] = at
+        await scheduler.tick(m.app, m._library, m._start_refresh, at)
+
+        async def settled():
+            return not jobs["refresh"]["running"]
+
+        await wait_until(settled)
+
+    april = DAY + 31 * DAY_MS
+    # 3 月的池子在：不刷；4 月 1 日 14 点前不刷
+    await tick(DAY + 15 * hour)
+    await tick(april + 14 * hour - 60_000)
+    # 参照集在跑（刷新接口 409）：下一分钟再看
+    jobs["reference"]["running"] = True
+    await tick(april + 14 * hour)
+    jobs["reference"]["running"] = False
+    assert pulls == []
+    # 刷失败了隔一小时再起，2 日 14 点前也起；排出 4 月的池子就不再起
+    await tick(april + 14 * hour + 60_000)
+    assert jobs["refresh"]["error"] == "归档连不上"
+    await tick(april + 15 * hour)
+    await tick(april + 15 * hour + 60_000)
+    await tick(april + DAY_MS + 2 * hour)
+    await tick(april + DAY_MS + 4 * hour)
+    assert pulls == [april + 14 * hour + 60_000, april + 15 * hour + 60_000, april + DAY_MS + 2 * hour]
+    assert await store.has_universe("2025-04") and jobs["refresh"]["error"] is None
 
 
 async def test_daily_pnl_runs_from_one_rebalance_to_the_next_and_drawdown_uses_hourly_snapshots(client):

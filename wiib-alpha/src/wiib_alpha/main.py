@@ -518,7 +518,12 @@ async def data_status(request: Request):
 
 @router.post("/data/refresh")
 async def data_refresh(request: Request):
-    app = request.app
+    await _start_refresh(request.app)
+    return _ok({"started": True})
+
+
+async def _start_refresh(app: FastAPI) -> None:
+    """起刷新的后台任务：页面上点的和交易员调度月初自动起的都走这里"""
     job = app.state.runs.jobs["refresh"]
     if job.get("running"):
         raise HTTPException(409, "已经在刷新了")
@@ -554,7 +559,6 @@ async def data_refresh(request: Request):
             job["running"] = False
 
     asyncio.create_task(work())
-    return _ok({"started": True})
 
 
 def _not_refreshing(app: FastAPI) -> None:
@@ -1452,8 +1456,8 @@ async def lifespan(app: FastAPI):
         if active is not None:
             await store.update_campaign(active["id"], status="stopped", stop_reason="服务重启")
         await _load(app, cfg)
-        # 交易员的后台循环：整点记净值，每天 UTC 00:05 起补尾巴、00:15 下单
-        trader = asyncio.create_task(scheduler.loop(app, _library))
+        # 交易员的后台循环：整点记净值，每天 UTC 00:05 起补尾巴、00:15 下单，每月 1 日 UTC 14 点起自动刷新数据
+        trader = asyncio.create_task(scheduler.loop(app, _library, _start_refresh))
         yield
     finally:
         if trader is not None:
