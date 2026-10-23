@@ -26,6 +26,13 @@ export const localTime = (ms: number | null | undefined): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+/** 本地时分秒：实时数是什么时候的 */
+export const localClock = (ms: number | null | undefined): string => {
+  if (ms == null) return DASH;
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
 /** 6h/12h/24h 三档 */
 export const HORIZONS = ['6h', '12h', '24h'] as const;
 /** 判门用的那一档：现在是 24h，之前落库的老结果没记、是 12h */

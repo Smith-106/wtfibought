@@ -285,15 +285,16 @@ html.dark {
   .bars .b i.on { background: var(--color-primary); }
   .sec.rv:not(.in) .bars .b i { transform: scaleY(0); }
 
-  /* ===== 净值曲线：墨线 + 淡墨面积 + 初始资金虚线；从左往右画出来，末端橙方块等线画完再浮现 ===== */
-  .eq-line { fill: none; stroke: var(--color-fg); stroke-width: 1.75; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-  .eq-area { fill: var(--color-fg); fill-opacity: .05; stroke: none; }
-  .eq-init { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
-  .eq-cross { stroke: var(--color-muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
-  .eq-draw { transition: clip-path 1.4s cubic-bezier(.4, 0, .2, 1) .4s; clip-path: inset(-12px); }
-  .eq-end { transition: opacity .4s ease 1.7s; }
-  .sec.rv:not(.in) .eq-draw { clip-path: inset(0 100% 0 0); }
-  .sec.rv:not(.in) .eq-end { opacity: 0; }
+  /* ===== 每日盈亏柱：一天一根，对着中线赚的朝上、亏的朝下，从中线长出来；还没完的今天淡一点，指着的那根橙色 ===== */
+  .pnl-bars { position: relative; display: flex; gap: 2px; height: 168px; }
+  .pnl-bars::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--color-fg); }
+  .pnl-bars .b { position: relative; flex: 1; min-width: 1px; max-width: 28px; cursor: crosshair; }
+  .pnl-bars .b i { position: absolute; left: 0; right: 0; transition: transform .75s var(--ease-out), background-color .12s; }
+  .pnl-bars .b i.pos { bottom: 50%; background: var(--color-gain); transform-origin: bottom; }
+  .pnl-bars .b i.neg { top: 50%; background: var(--color-loss); transform-origin: top; }
+  .pnl-bars .b i.live { opacity: .45; }
+  .pnl-bars .b i.on { background: var(--color-primary); opacity: 1; }
+  .sec.rv:not(.in) .pnl-bars .b i { transform: scaleY(0); }
 
   /* ===== 抽屉：从右滑进来，墨线左边框，不投影 ===== */
   .drawer-mask { position: absolute; inset: 0; background: rgb(0 0 0 / .35); animation: fade .25s ease; }

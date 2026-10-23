@@ -535,14 +535,9 @@ export interface TraderJob {
   error?: string | null;
 }
 
-/** 账户概况；还没调过仓（还没建账户）的都是 null */
+/** 账户：userId 还没调过仓（还没建账户）是 null；净值这些实时数在 TraderLive */
 export interface TraderAccount {
   userId: number | null;
-  /** 全仓净值 = 余额 + Σ浮盈亏 */
-  equity: number | null;
-  balance: number | null;
-  /** 全仓可用 = 净值 − 占用保证金 − 挂单占用 */
-  available: number | null;
   initialBalance: number;
   job: TraderJob;
 }
@@ -563,13 +558,42 @@ export interface TraderPosition {
   legs: Record<TradeLeg, number> | null;
 }
 
-/** 每小时一次的净值快照；long/short 是多空持仓名义 */
-export interface EquityPoint {
+/** 交易员页的实时数（trade/realtime.py），每 3 秒一帧 */
+export interface TraderLive {
   ts: number;
+  userId: number;
+  /** 全仓净值 = 余额 + Σ浮盈亏 */
   equity: number;
   balance: number;
-  long: number;
-  short: number;
+  /** 全仓可用 = 净值 − 占用保证金 − 挂单占用 */
+  available: number;
+  /** 今天：最近一次调仓的日期（UTC）、那次调仓前的净值、从那时到现在的盈亏；还没调过仓是 null */
+  day: string | null;
+  dayStart: number | null;
+  dayPnl: number | null;
+  positions: TraderPosition[];
+  /** 持仓里 legs 用的那次调仓的日期 */
+  positionsDay: string | null;
+}
+
+/** 推送的一帧：ok 是 false 是这一下没问到 sim；还没建账户的只有 userId: null */
+export type TraderLiveFrame = { ts: number; ok: false } | { ts: number; ok: true; userId: null } | ({ ok: true } & TraderLive);
+
+/** 一天：从这天调仓前的净值到下一次调仓前的净值，含调仓手续费和期间的资金费 */
+export interface DailyPnl {
+  day: string;
+  start: number;
+  end: number;
+  pnl: number;
+  pct: number;
+}
+
+export interface TraderDaily {
+  initialBalance: number;
+  /** 按每小时快照算 */
+  maxDrawdown: number;
+  /** 旧的在前；最近一次调仓之后的还没完，在 TraderLive 的 dayPnl 里 */
+  days: DailyPnl[];
 }
 
 /** done 全成；partial 有币失败或停在半路但有成交；failed 一笔没成 */
@@ -776,7 +800,7 @@ async function stream(path: string, onEvent: (e: RunEvent) => void, signal: Abor
 
 const ALPHA = '/api/alpha';
 
-/** 公开的只有 overview、data/status、reference 和交易员的 account、positions、equity；其余要管理员 token，没 token 是 code 401，不是管理员是 403 */
+/** 公开的只有 overview、data/status、reference 和交易员的 account、daily、live；其余要管理员 token，没 token 是 code 401，不是管理员是 403 */
 export const alpha = {
   /** 手里的 token 是不是管理员 */
   me: (signal?: AbortSignal) => call<{ admin: boolean; lang: string }>('GET', `${ALPHA}/me`, undefined, signal),
@@ -823,10 +847,14 @@ export const alpha = {
   /** 真发一句话，回答与耗时；上游报错会以 400 带回来 */
   testModel: (role: ModelRole, body: ModelSave) =>
     call<{ reply: string; ms: number }>('POST', `${ALPHA}/models/${role}/test`, body),
-  /** 交易员：sim 不通时账户和持仓是 502 */
   traderAccount: () => call<TraderAccount>('GET', `${ALPHA}/trader/account`),
-  traderPositions: () => call<{ items: TraderPosition[]; day: string | null }>('GET', `${ALPHA}/trader/positions`),
-  traderEquity: () => call<{ initialBalance: number; items: EquityPoint[] }>('GET', `${ALPHA}/trader/equity`),
+  traderDaily: () => call<TraderDaily>('GET', `${ALPHA}/trader/daily`),
+  /** 实时数，每 3 秒一帧；EventSource 断了会自己重连。返回关掉它的函数 */
+  traderLive: (onFrame: (f: TraderLiveFrame) => void) => {
+    const source = new EventSource(`${ALPHA}/trader/live`);
+    source.onmessage = e => onFrame(JSON.parse(e.data) as TraderLiveFrame);
+    return () => source.close();
+  },
   traderRuns: () => call<{ items: TradeRunBrief[]; job: TraderJob }>('GET', `${ALPHA}/trader/runs`),
   traderRun: (day: string) => call<TradeRunDetail>('GET', `${ALPHA}/trader/runs/${day}`),
   traderFactors: () => call<{ items: TraderFactor[]; compare: CompareJob }>('GET', `${ALPHA}/trader/factors`),

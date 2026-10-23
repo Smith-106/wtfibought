@@ -46,7 +46,7 @@ from .llm import LlmError, build_chat_model
 from .prompts import eval_brief, holdout_brief, horizons_brief
 from .reference import Grid
 from .store import Store, clean, now_ms
-from .trade import executor, live, scheduler, scheme
+from .trade import executor, live, realtime, scheduler, scheme
 
 logger = logging.getLogger(__name__)
 # 包里的 info 日志（刷新进度、fapi 已用权重、调仓）打到容器日志；根 logger 没有 handler
@@ -437,7 +437,7 @@ async def is_admin(request: Request) -> bool:
 
 # ========== 接口 ==========
 
-# 公开的只有数据状态、参照集、概览数字和交易员的账户、持仓、净值；候选、事件流、因子库的内容、
+# 公开的只有数据状态、参照集、概览数字和交易员的账户、每日盈亏、实时数；候选、事件流、因子库的内容、
 # 交易员用的因子与调仓明细、全部 POST 只有管理员
 public = APIRouter(prefix="/api/alpha")
 router = APIRouter(prefix="/api/alpha", dependencies=[Depends(auth)])
@@ -1233,58 +1233,52 @@ class TraderFactor(BaseModel):
     selected: bool
 
 
-async def _sim(fn, *args):
-    """在线程里调 sim；不通、返回不对给 502"""
-    try:
-        return await asyncio.to_thread(fn, *args)
-    except executor.SimError as exc:
-        raise UpstreamError(str(exc)) from exc
-
-
 @public.get("/trader/account")
 async def trader_account(request: Request):
-    """账户概况：userId、净值、余额、可用；还没调过仓（还没建账户）的都是 null。job 是调仓任务的进度"""
+    """账户：userId（还没调过仓是 null）、初始资金；job 是调仓任务的进度。净值、持仓这些实时数在 /trader/live"""
     app = request.app
-    user_id = await app.state.store.trade_user()
     job = app.state.runs.jobs["trader"]
     # 出错原文可能带着因子表达式，访客拿到的不带 error
     if not await is_admin(request):
         job = {k: v for k, v in job.items() if k != "error"}
-    out = {"userId": user_id, "equity": None, "balance": None, "available": None,
-           "initialBalance": executor.INITIAL_BALANCE, "job": job}
-    if user_id is not None:
-        balance, positions = await _sim(scheduler.account, app.state.sim, user_id)
-        out.update(equity=executor.equity(balance, positions), balance=float(balance["balance"]),
-                   available=float(balance["available"]))
-    return _ok(out)
+    return _ok({"userId": await app.state.store.trade_user(), "initialBalance": executor.INITIAL_BALANCE, "job": job})
 
 
-@public.get("/trader/positions")
-async def trader_positions(request: Request):
-    """当前持仓：每币方向、数量、名义（数量 × 标记价）、浮盈；legs 是最近一次出了目标的调仓里两条腿各给这个币的目标名义"""
-    app = request.app
-    store: Store = app.state.store
-    user_id = await store.trade_user()
-    if user_id is None:
-        return _ok({"items": [], "day": None})
-    positions = await _sim(app.state.sim.positions, user_id)
-    last = next((r for r in await store.trade_runs(30) if r["targets"]), None)
-    legs = {}
-    if last:
-        legs = {c["symbol"]: {k: c[k] * last["equity_before"] for k in ("combo", "carry")} for c in last["targets"]["coins"]}
-    items = [{"symbol": p["symbol"], "side": p["side"], "quantity": p["quantity"], "notional": p["positionValue"],
-              "entryPrice": p["entryPrice"], "markPrice": p["markPrice"], "unrealizedPnl": p["unrealizedPnl"],
-              "legs": legs.get(p["symbol"])} for p in positions]
-    return _ok({"items": items, "day": last["day"] if last else None})
+@public.get("/trader/daily")
+async def trader_daily(request: Request):
+    """每天的盈亏，旧的在前：一天是从这天调仓前的净值到下一次调仓前的净值，含调仓手续费和期间的资金费；
+    最近一次调仓之后的还没完，在 /trader/live 的 dayPnl 里。最大回撤按每小时快照算"""
+    store: Store = request.app.state.store
+    starts = await store.rebalances()
+    days = [{"day": a["day"], "start": a["equity_before"], "end": b["equity_before"],
+             "pnl": b["equity_before"] - a["equity_before"], "pct": b["equity_before"] / a["equity_before"] - 1}
+            for a, b in zip(starts, starts[1:])]
+    peak, drawdown = float(executor.INITIAL_BALANCE), 0.0
+    for r in await store.trade_equity():
+        peak = max(peak, r["equity"])
+        drawdown = max(drawdown, 1 - r["equity"] / peak)
+    return _ok({"initialBalance": executor.INITIAL_BALANCE, "maxDrawdown": drawdown, "days": days})
 
 
-@public.get("/trader/equity")
-async def trader_equity(request: Request):
-    """每小时一次的净值快照，旧的在前"""
-    rows = await request.app.state.store.trade_equity()
-    return _ok({"initialBalance": executor.INITIAL_BALANCE,
-                "items": [{"ts": r["ts"], "equity": r["equity"], "balance": r["balance"], "long": r["long_notional"],
-                           "short": r["short_notional"]} for r in rows]})
+@public.get("/trader/live")
+async def trader_live(request: Request):
+    """交易员页的实时数（trade/realtime.py），每 3 秒一帧"""
+    return StreamingResponse(_live(request.app), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+async def _live(app: FastAPI) -> AsyncIterator[str]:
+    rt: realtime.Realtime = app.state.realtime
+    queue = rt.subscribe()
+    try:
+        while True:
+            try:
+                frame = await asyncio.wait_for(queue.get(), timeout=_PING_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            yield f"data: {json.dumps(clean(frame), ensure_ascii=False)}\n\n"
+    finally:
+        rt.unsubscribe(queue)
 
 
 @public.get("/board")
@@ -1445,6 +1439,7 @@ async def lifespan(app: FastAPI):
     app.state.sim = getattr(app.state, "sim", None) or executor.Sim(cfg.sim_base_url, cfg.internal_api_token)
     # 交易员的缓存：组合权重，数据重新装载就作废
     app.state.trade_cache = {}
+    app.state.realtime = realtime.Realtime(app)
     store = app.state.store = await Store.open(cfg.db_path)
     trader: asyncio.Task | None = None
     # 启动中途出错也要把 store 关掉，aiosqlite 的线程不是 daemon，不关进程退不出去

@@ -454,6 +454,15 @@ class Store:
         row = await self._one("SELECT user_id FROM trade_run WHERE user_id IS NOT NULL ORDER BY day DESC LIMIT 1", ())
         return row["user_id"] if row else None
 
+    async def rebalances(self) -> list[dict[str, Any]]:
+        """每次调仓前的净值，旧的在前：一天的盈亏就是这一次到下一次之间的变化"""
+        return await self._all("SELECT day, equity_before FROM trade_run WHERE equity_before IS NOT NULL ORDER BY day", ())
+
+    async def last_targets(self) -> dict[str, Any] | None:
+        """最近一次出了目标的调仓：day、equity_before、targets"""
+        return await self._one("SELECT day, equity_before, targets_json FROM trade_run WHERE targets_json IS NOT NULL "
+                               "ORDER BY day DESC LIMIT 1", ())
+
     async def add_trade_equity(self, ts: int, equity: float, balance: float, long_notional: float,
                                short_notional: float) -> None:
         await self.db.execute(

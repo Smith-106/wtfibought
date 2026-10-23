@@ -31,4 +31,6 @@ COPY --from=web /web/dist web/dist
 
 EXPOSE 8084
 
-CMD ["uv", "run", "--frozen", "--no-dev", "uvicorn", "wiib_alpha.main:app", "--host", "0.0.0.0", "--port", "8084"]
+# 退出时最多等 5 秒：交易员页的实时推送不会自己结束，超时就取消请求、照常关库（docker stop 10 秒后强杀）
+CMD ["uv", "run", "--frozen", "--no-dev", "uvicorn", "wiib_alpha.main:app", "--host", "0.0.0.0", "--port", "8084", \
+     "--timeout-graceful-shutdown", "5"]

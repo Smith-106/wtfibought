@@ -1,13 +1,14 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, GitCompare, RefreshCw, Square, SquareCheck, TriangleAlert,
 } from 'lucide-react';
 import {
-  alpha, TRADE_LEGS, type CompareJob, type EquityPoint, type SchemeResult, type TradeRunBrief, type TradeRunDetail,
-  type TradeStatus, type TraderAccount, type TraderFactor, type TraderJob, type TraderPosition,
+  alpha, TRADE_LEGS, type CompareJob, type DailyPnl, type SchemeResult, type TradeRunBrief, type TradeRunDetail,
+  type TradeStatus, type TraderAccount, type TraderDaily, type TraderFactor, type TraderJob, type TraderLive,
+  type TraderPosition,
 } from '../api';
-import { cx, DASH, localTime, num, pct, signedPct, utcMinute } from '../format';
+import { cx, DASH, localClock, localTime, num, pct, signedPct, utcMinute } from '../format';
 import { usePoll } from '../poll';
 import { useFail } from '../toast';
 import { Badge, Button, Card, Empty, Progress, Spinner, Stat, Strip, type Tone } from '../components/ui';
@@ -18,23 +19,31 @@ const METRICS: (keyof SchemeResult)[] = ['netReturn', 'sharpe', 'maxDrawdown', '
 
 /** 金额两位小数 */
 const money = (v: number | null | undefined) => num(v, 2);
+/** 盈亏：两位小数，正的带加号 */
+const signedMoney = (v: number | null | undefined) => (v == null ? DASH : `${v > 0 ? '+' : ''}${v.toFixed(2)}`);
+/** 这么久没收到推送（后端重启、网断了、sim 卡住）也算停了；正常 3 秒一帧 */
+const STALE_MS = 10_000;
 
-/** 交易员页：账户、净值曲线、持仓谁都能看；交易因子的勾选与对比、调仓记录（带着因子名和权重）只给管理员 */
+/** 交易员页：账户、每日盈亏、持仓谁都能看，净值和持仓走实时推送；交易因子的勾选与对比、调仓记录（带着因子名和权重）只给管理员 */
 export function TraderPanel({ active, admin, loaded }: { active: boolean; admin: boolean; loaded: boolean }) {
   const { t } = useTranslation();
   const fail = useFail();
   const [account, setAccount] = useState<TraderAccount | null>(null);
-  const [positions, setPositions] = useState<{ items: TraderPosition[]; day: string | null } | null>(null);
-  const [curve, setCurve] = useState<{ initialBalance: number; items: EquityPoint[] } | null>(null);
+  const [daily, setDaily] = useState<TraderDaily | null>(null);
+  const [live, setLive] = useState<TraderLive | null>(null);
+  // 没问到 sim、或者好一阵没收到推送：数字停在上一帧
+  const [stale, setStale] = useState(false);
   const [runs, setRuns] = useState<TradeRunBrief[] | null>(null);
   const [factors, setFactors] = useState<TraderFactor[] | null>(null);
   const [compare, setCompare] = useState<CompareJob | null>(null);
+  // 实时数里的调仓日：变了是又调过一次仓，每日盈亏和调仓记录重拉
+  const liveDay = useRef<string | null>(null);
+  // 上一次收到推送的时刻
+  const lastFrame = useRef(0);
 
-  // 账户和持仓要问 sim，sim 不通是 502，各自报错，不拖累别的
   const loadTrader = useCallback(() => Promise.all([
     alpha.traderAccount().then(setAccount).catch(fail),
-    alpha.traderPositions().then(setPositions).catch(fail),
-    alpha.traderEquity().then(setCurve).catch(fail),
+    alpha.traderDaily().then(setDaily).catch(fail),
     ...(admin ? [alpha.traderRuns().then(r => setRuns(r.items)).catch(fail)] : []),
   ]), [admin, fail]);
 
@@ -48,14 +57,40 @@ export function TraderPanel({ active, admin, loaded }: { active: boolean; admin:
     if (admin) void loadFactors();
   }, [active, admin, loadTrader, loadFactors]);
 
+  // 实时数：在这一页才连，离开就断
+  useEffect(() => {
+    if (!active) return;
+    lastFrame.current = Date.now();
+    const close = alpha.traderLive(f => {
+      lastFrame.current = Date.now();
+      setStale(!f.ok);
+      if (!f.ok || f.userId == null) return;
+      setLive(f);
+      if (liveDay.current !== null && f.day !== liveDay.current) void loadTrader();
+      liveDay.current = f.day;
+    });
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastFrame.current > STALE_MS) setStale(true);
+    }, 1000);
+    return () => {
+      close();
+      clearInterval(watchdog);
+    };
+  }, [active, loadTrader]);
+
   usePoll(active && (account?.job.running ?? false), loadTrader, 5000);
   usePoll(active && (compare?.running ?? false), loadFactors, 3000);
 
+  // 持仓跟着实时数走；还没建账户的就是空的
+  const positions = useMemo(() => (live ? { items: live.positions, day: live.positionsDay }
+    : account?.userId === null ? { items: [], day: null } : null), [account?.userId, live]);
+
   return (
     <div className="space-y-14">
-      <AccountCard account={account} curve={curve} lastRun={runs?.[0] ?? null} onReload={loadTrader} />
-      <Card title={t('trader.curve')} hint={t('trader.curveHint')}>
-        {!curve ? <Spinner /> : <EquityChart points={curve.items} initial={curve.initialBalance} />}
+      <AccountCard account={account} live={live} stale={stale} daily={daily} lastRun={runs?.[0] ?? null}
+                   onReload={loadTrader} />
+      <Card title={t('trader.daily')} hint={t('trader.dailyHint')}>
+        {!daily ? <Spinner /> : <DailyView daily={daily} live={live} />}
       </Card>
       {admin ? (
         <div className="grid items-start gap-x-12 gap-y-14 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
@@ -68,46 +103,51 @@ export function TraderPanel({ active, admin, loaded }: { active: boolean; admin:
   );
 }
 
-function AccountCard({ account, curve, lastRun, onReload }: {
+function AccountCard({ account, live, stale, daily, lastRun, onReload }: {
   account: TraderAccount | null;
-  curve: { initialBalance: number; items: EquityPoint[] } | null;
+  live: TraderLive | null;
+  stale: boolean;
+  daily: TraderDaily | null;
   lastRun: TradeRunBrief | null;
   onReload: () => Promise<unknown>;
 }) {
   const { t } = useTranslation();
-  // 最大回撤按每小时快照算
-  const drawdown = useMemo(() => {
-    if (!curve?.items.length) return null;
-    let peak = curve.initialBalance;
-    let worst = 0;
-    for (const p of curve.items) {
-      peak = Math.max(peak, p.equity);
-      worst = Math.max(worst, 1 - p.equity / peak);
-    }
-    return worst;
-  }, [curve]);
   return (
     <Card title={t('trader.title')} hint={t('trader.hint')}
           actions={<Button variant="icon" icon={RefreshCw} aria-label={t('common.refresh')} onClick={() => void onReload()} />}>
       {!account ? <Spinner /> : (
         <div className="space-y-4">
-          {account.userId == null ? <Empty>{t('trader.noAccount')}</Empty> : (
+          {!live ? (account.userId == null ? <Empty>{t('trader.noAccount')}</Empty> : !stale && <Spinner />) : (
             <div>
-              {/* 记分牌：净值、累计收益两个大数，底下一排细项 */}
+              {/* 记分牌：净值、累计收益两个大数，底下一排细项；数字跟着实时推送跳 */}
               <Strip cols={2}>
-                <Stat label={t('trader.equity')} size="lg">{money(account.equity)}</Stat>
+                <Stat label={t('trader.equity')} size="lg">{money(live.equity)}</Stat>
                 <Stat label={t('trader.totalReturn')} hint={t('trader.totalReturnHint', { initial: account.initialBalance })}
-                      size="lg" tone={tone(account.equity == null ? null : account.equity - account.initialBalance)}>
-                  {account.equity == null ? DASH : signedPct(account.equity / account.initialBalance - 1, 2)}
+                      size="lg" tone={tone(live.equity - account.initialBalance)}>
+                  {signedPct(live.equity / account.initialBalance - 1, 2)}
                 </Stat>
               </Strip>
-              <Strip cols={4}>
-                <Stat label={t('trader.drawdown')} hint={t('trader.drawdownHint')}>{pct(drawdown, 2)}</Stat>
-                <Stat label={t('trader.balance')}>{money(account.balance)}</Stat>
-                <Stat label={t('trader.available')}>{money(account.available)}</Stat>
-                <Stat label={t('trader.userId')}>{account.userId}</Stat>
+              <Strip cols={5}>
+                <Stat label={t('trader.today')} tone={tone(live.dayPnl)}
+                      hint={live.dayPnl == null || live.dayStart == null ? undefined
+                        : t('trader.todayHint', { pct: signedPct(live.dayPnl / live.dayStart, 2), day: live.day })}>
+                  {signedMoney(live.dayPnl)}
+                </Stat>
+                <Stat label={t('trader.drawdown')} hint={t('trader.drawdownHint')}>{pct(daily?.maxDrawdown, 2)}</Stat>
+                <Stat label={t('trader.balance')}>{money(live.balance)}</Stat>
+                <Stat label={t('trader.available')}>{money(live.available)}</Stat>
+                <Stat label={t('trader.userId')}>{live.userId}</Stat>
               </Strip>
             </div>
+          )}
+          {stale ? (
+            <div>
+              <Badge tone="warn" icon={TriangleAlert}>
+                {live ? t('trader.stale', { time: localClock(live.ts) }) : t('trader.down')}
+              </Badge>
+            </div>
+          ) : live && (
+            <div><Badge tone="gain" pulse>{t('trader.live', { time: localClock(live.ts) })}</Badge></div>
           )}
           <JobLine job={account.job} lastRun={lastRun} />
         </div>
@@ -144,75 +184,86 @@ function JobLine({ job, lastRun }: { job: TraderJob; lastRun: TradeRunBrief | nu
   );
 }
 
-// ========== 净值曲线 ==========
+// ========== 每日盈亏 ==========
 
-const W = 800;
-const H = 200;
+/** 一天一行；live 是还没到下次调仓的今天，跟着实时数走 */
+type DayRow = DailyPnl & { live: boolean };
 
-/**
- * 一条墨线 + 淡墨面积 + 初始资金虚线；揭开时从左往右画出来，末端橙方块等线画完再浮现。
- * 悬停看那一刻的净值：线宽不随拉伸变，点和提示用 HTML 叠在上面
- */
-function EquityChart({ points, initial }: { points: EquityPoint[]; initial: number }) {
+/** 上面一天一根柱，底下明细表（新的在前） */
+function DailyView({ daily, live }: { daily: TraderDaily; live: TraderLive | null }) {
   const { t } = useTranslation();
-  const [hover, setHover] = useState<number | null>(null);
-  if (points.length < 2) return <Empty>{t('trader.curveEmpty')}</Empty>;
-  const values = points.map(p => p.equity);
-  const lo = Math.min(initial, ...values);
-  const hi = Math.max(initial, ...values);
-  const pad = (hi - lo) * 0.08 || initial * 0.005;
-  const [y0, y1] = [lo - pad, hi + pad];
-  const [t0, t1] = [points[0].ts, points[points.length - 1].ts];
-  const x = (ts: number) => ((ts - t0) / (t1 - t0)) * W;
-  const y = (v: number) => H - ((v - y0) / (y1 - y0)) * H;
-  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)},${y(p.equity).toFixed(1)}`).join('');
-  const last = points[points.length - 1];
-
-  const onMove = (e: MouseEvent<SVGSVGElement>) => {
-    const box = e.currentTarget.getBoundingClientRect();
-    const ts = t0 + ((e.clientX - box.left) / box.width) * (t1 - t0);
-    // 离鼠标最近的那个快照
-    const i = points.findIndex(p => p.ts >= ts);
-    if (i === -1) setHover(points.length - 1);
-    else if (i === 0) setHover(0);
-    else setHover(ts - points[i - 1].ts < points[i].ts - ts ? i - 1 : i);
-  };
-  const h = hover == null ? null : points[hover];
-  const left = h ? (x(h.ts) / W) * 100 : 0;
+  const rows = useMemo<DayRow[]>(() => {
+    const done = daily.days.map(d => ({ ...d, live: false }));
+    // 刚调过仓、每日盈亏还没重拉回来的那几秒，实时数的今天可能已经在 done 里
+    if (!live || live.day == null || live.dayStart == null || live.dayPnl == null || done.some(d => d.day === live.day)) {
+      return done;
+    }
+    return [...done, { day: live.day, start: live.dayStart, end: live.equity, pnl: live.dayPnl,
+                       pct: live.dayPnl / live.dayStart, live: true }];
+  }, [daily, live]);
+  if (!rows.length) return <Empty>{t('trader.dailyEmpty')}</Empty>;
   return (
-    <div className="space-y-2">
-      <div className="relative h-60">
-        <div className="eq-draw absolute inset-0">
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 h-full w-full cursor-crosshair overflow-visible"
-               onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label={t('trader.curve')}>
-            <path d={`${line}L${W},${H}L0,${H}Z`} className="eq-area" />
-            <line x1={0} x2={W} y1={y(initial)} y2={y(initial)} className="eq-init" />
-            <path d={line} className="eq-line" />
-            {h && <line x1={x(h.ts)} x2={x(h.ts)} y1={0} y2={H} className="eq-cross" />}
-          </svg>
-          <span className="eq-end pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 bg-primary"
-                style={{ left: '100%', top: `${(y(last.equity) / H) * 100}%` }} />
-        </div>
-        <span className="pointer-events-none absolute left-1 top-0 text-[11.5px] text-muted num">{money(y1)}</span>
-        <span className="pointer-events-none absolute left-1 bottom-0 text-[11.5px] text-muted num">{money(y0)}</span>
-        <span className="pointer-events-none absolute right-1 text-[11.5px] text-muted num -translate-y-full"
-              style={{ top: `${(y(initial) / H) * 100}%` }}>{t('trader.initial', { v: initial })}</span>
-        {h && (
-          <>
-            <span className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 bg-fg ring-2 ring-bg"
-                  style={{ left: `${left}%`, top: `${(y(h.equity) / H) * 100}%` }} />
-            <div className={cx('pointer-events-none absolute top-2 border border-fg bg-bg px-2.5 py-1.5 text-[12px] num',
-              left > 70 ? '-translate-x-[calc(100%+12px)]' : 'translate-x-3')} style={{ left: `${left}%` }}>
-              <div className="text-muted">{localTime(h.ts)}</div>
-              <div className="font-bold">{money(h.equity)}</div>
-              <div className={tone(h.equity - initial)}>{signedPct(h.equity / initial - 1, 2)}</div>
-            </div>
-          </>
-        )}
+    <div className="space-y-6">
+      <PnlBars rows={rows} />
+      <div className="tw max-h-[24rem] overflow-y-auto">
+        <table className="tbl tbl-sticky">
+          <thead>
+            <tr>
+              <th>{t('trader.dailyCol.day')}</th>
+              <th className="r">{t('trader.dailyCol.start')}</th>
+              <th className="r">{t('trader.dailyCol.end')}</th>
+              <th className="r">{t('trader.dailyCol.pnl')}</th>
+              <th className="r">{t('trader.dailyCol.pct')}</th>
+              <th className="r">{t('trader.dailyCol.total')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...rows].reverse().map(r => (
+              <tr key={r.day}>
+                <td className="num whitespace-nowrap">
+                  {r.day}{r.live && <Badge tone="info" pulse className="ml-2">{t('trader.ongoing')}</Badge>}
+                </td>
+                <td className="r num">{money(r.start)}</td>
+                <td className="r num">{money(r.end)}</td>
+                <td className={cx('r num font-semibold', tone(r.pnl))}>{signedMoney(r.pnl)}</td>
+                <td className={cx('r num', tone(r.pnl))}>{signedPct(r.pct, 2)}</td>
+                <td className={cx('r num', tone(r.end - daily.initialBalance))}>
+                  {signedPct(r.end / daily.initialBalance - 1, 2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <div className="flex justify-between text-[11.5px] text-muted num">
-        <span>{utcMinute(t0)}</span>
-        <span>{utcMinute(t1)}</span>
+    </div>
+  );
+}
+
+/** 一天一根，对着中线赚的朝上、亏的朝下；还没完的今天淡一点，鼠标指上去变橙、右上角读数 */
+function PnlBars({ rows }: { rows: DayRow[] }) {
+  const { t } = useTranslation();
+  const [hover, setHover] = useState<string | null>(null);
+  const h = rows.find(r => r.day === hover);
+  const max = Math.max(...rows.map(r => Math.abs(r.pnl))) || 1;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between text-[12.5px] text-muted">
+        <span>{t('trader.dailyBars')}</span>
+        <span className={cx('num font-bold', h ? tone(h.pnl) : undefined)}>
+          {h ? t('trader.dayTip', { day: h.day, pnl: signedMoney(h.pnl), pct: signedPct(h.pct, 2) }) : ''}
+        </span>
+      </div>
+      <div className="pnl-bars mt-2" onMouseLeave={() => setHover(null)}>
+        {rows.map((r, i) => (
+          <div key={r.day} className="b" onMouseEnter={() => setHover(r.day)}>
+            <i className={cx(r.pnl >= 0 ? 'pos' : 'neg', r.live && 'live', hover === r.day && 'on')}
+               style={{ height: `${(Math.abs(r.pnl) / max) * 50}%`, transitionDelay: `${i * 8}ms, 0ms` }} />
+          </div>
+        ))}
+      </div>
+      <div className="mt-1.5 flex justify-between text-[11px] text-muted num">
+        <span>{rows[0].day}</span>
+        <span>{rows[rows.length - 1].day}</span>
       </div>
     </div>
   );

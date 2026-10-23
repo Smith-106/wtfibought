@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from conftest import POOL_SYMBOLS
@@ -19,6 +21,18 @@ NOW = DAY + 20 * 60_000
 @pytest.fixture(autouse=True)
 def no_rest_gap(monkeypatch):
     monkeypatch.setattr(b, "REST_GAP_S", 0.0)
+
+
+async def first_frame(stream=None) -> dict:
+    """交易员页实时推送的一帧：流不会自己结束，直接取生成器的下一帧；没给流就开一条、取完关掉"""
+    own = stream is None
+    stream = m._live(m.app) if own else stream
+    try:
+        frame = await anext(stream)
+    finally:
+        if own:
+            await stream.aclose()
+    return json.loads(frame.removeprefix("data: "))
 
 
 async def add_factor(fid: str, name: str, expr: str, approved_at: int = 1) -> None:
@@ -97,16 +111,18 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     assert [(f["name"], f["expr"], f["inCombo"]) for f in admin["factors"]] == [("vol4", "Mean($volume, 4)", True),
                                                                                 ("inv8", "-Mean($volume, 8)", True)]
 
-    # 页面：账户、持仓（带两条腿各占多少）、调仓记录与详情
+    # 页面：账户、实时数（持仓带两条腿各占多少）、调仓记录与详情
     account = data(await client.get("/api/alpha/trader/account", headers=ADMIN))
-    assert account["userId"] == 42 and account["equity"] == pytest.approx(10000) and account["available"] == 10000
-    positions = data(await client.get("/api/alpha/trader/positions", headers=ADMIN))
-    assert positions["day"] == "2025-03-01" and len(positions["items"]) == len(coins)
-    # 访客看到的账户和持仓跟管理员一样，只是调仓任务里不带 error
+    assert account["userId"] == 42 and account["initialBalance"] == 10000
+    # 访客看到的账户跟管理员一样，只是调仓任务里不带 error
     guest = data(await client.get("/api/alpha/trader/account"))
     assert guest == {**account, "job": {k: v for k, v in account["job"].items() if k != "error"}}
-    assert data(await client.get("/api/alpha/trader/positions")) == positions
-    for p in positions["items"]:
+    live = await first_frame()
+    assert (live["ok"], live["userId"], live["day"], live["dayStart"], live["available"]) == (True, 42, "2025-03-01",
+                                                                                              10000, 10000)
+    assert live["equity"] == pytest.approx(10000) and live["dayPnl"] == pytest.approx(0)
+    assert live["positionsDay"] == "2025-03-01" and len(live["positions"]) == len(coins)
+    for p in live["positions"]:
         c = coins[p["symbol"]]
         assert p["side"] == ("LONG" if c["weight"] > 0 else "SHORT")
         assert p["legs"] == {"combo": pytest.approx(c["combo"] * 10000), "carry": pytest.approx(c["carry"] * 10000)}
@@ -130,11 +146,17 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     assert market.watched[1] == sorted(set(POOL_SYMBOLS) - {"X00"})
     runs = data(await client.get("/api/alpha/trader/runs", headers=ADMIN))
     assert [r["day"] for r in runs["items"]] == ["2025-03-02", "2025-03-01"] and runs["job"]["running"] is False
+    # 每日盈亏：03-01 那天从它调仓前算到 03-02 调仓前；03-02 还没完，在实时数里
+    daily = data(await client.get("/api/alpha/trader/daily"))
+    assert [(d["day"], d["start"], d["end"]) for d in daily["days"]] == [("2025-03-01", 10000, second["equity_before"])]
+    live = await first_frame()
+    assert (live["day"], live["dayStart"], live["positionsDay"]) == ("2025-03-02", second["equity_before"], "2025-03-02")
 
-    # sim 不通：页面拿到 502
+    # sim 不通：推一帧 ok 是 false 的，页面停在上一帧
     m.app.state.sim = executor.Sim("http://sim", "tok", httpx.Client(transport=httpx.MockTransport(
         lambda r: (_ for _ in ()).throw(httpx.ConnectError("连不上")))))
-    assert (await client.get("/api/alpha/trader/account", headers=ADMIN)).status_code == 502
+    live = await first_frame()
+    assert live["ok"] is False and set(live) == {"ts", "ok"}
 
 
 async def test_a_month_missing_from_the_pool_table_fails_the_day_without_trading(client, trader):
@@ -194,10 +216,41 @@ async def test_tick_rebalances_between_0005_and_0100_and_records_equity_every_ho
     day3 = DAY + 2 * DAY_MS + 61 * 60_000
     await scheduler.tick(m.app, m._library, day3)
     assert ran == [t0, t0 + 60_000, day2, day2 + 60_000] and await store.trade_run(scheduler.day_label(day3)) is None
-    curve = data(await client.get("/api/alpha/trader/equity", headers=ADMIN))
-    assert [p["ts"] for p in curve["items"]] == [t0 + 60_000, day2, day3]
-    assert curve["items"][0] == {"ts": t0 + 60_000, "equity": 10000, "balance": 10000, "long": 0, "short": 0}
-    assert curve["initialBalance"] == 10000
+    curve = await store.trade_equity()
+    assert [p["ts"] for p in curve] == [t0 + 60_000, day2, day3]
+    assert curve[0] == {"ts": t0 + 60_000, "equity": 10000, "balance": 10000, "long_notional": 0, "short_notional": 0}
+
+
+async def test_daily_pnl_runs_from_one_rebalance_to_the_next_and_drawdown_uses_hourly_snapshots(client):
+    store = m.app.state.store
+    # 03-02 那次没走到下单（没有调仓前净值）：03-01 那天一直算到 03-03 调仓前
+    for day, before in (("2025-03-01", 10000.0), ("2025-03-02", None), ("2025-03-03", 9700.0), ("2025-03-04", 9894.0)):
+        await store.add_trade_run({"day": day, "signal_ms": 0, "started_at": 0, "finished_at": 0, "status": "done",
+                                   "user_id": 42, "orders": [], "equity_before": before})
+    for ts, equity in ((1, 10000.0), (2, 10500.0), (3, 9450.0), (4, 9800.0)):
+        await store.add_trade_equity(ts, equity, equity, 0, 0)
+    daily = data(await client.get("/api/alpha/trader/daily"))
+    assert daily["initialBalance"] == 10000 and daily["maxDrawdown"] == pytest.approx(0.1)
+    assert [(d["day"], d["start"], d["end"]) for d in daily["days"]] == [("2025-03-01", 10000, 9700),
+                                                                         ("2025-03-03", 9700, 9894)]
+    assert daily["days"][1]["pnl"] == pytest.approx(194) and daily["days"][1]["pct"] == pytest.approx(0.02)
+
+
+async def test_live_frames_are_shared_and_stop_when_nobody_watches(client, trader, monkeypatch):
+    await scheduler.rebalance(m.app, m._library, NOW)
+    calls: list[int] = []
+    account = scheduler.account
+    monkeypatch.setattr(scheduler, "account", lambda sim, user_id: calls.append(user_id) or account(sim, user_id))
+    rt = m.app.state.realtime
+    a, b = m._live(m.app), m._live(m.app)
+    # 第二个人订上时直接拿到第一个人那帧：两个人只问了 sim 一次
+    first, second = await first_frame(a), await first_frame(b)
+    assert first == second and first["ok"] and calls == [42] and len(rt.queues) == 2
+    await a.aclose()
+    assert rt.task is not None
+    # 最后一个人走了就停
+    await b.aclose()
+    assert rt.task is None and not rt.queues
 
 
 async def test_factor_selection_and_compare(client, trader):
@@ -239,10 +292,12 @@ async def test_factor_selection_and_compare(client, trader):
 
 
 async def test_trader_account_is_public_but_factors_are_not_and_holds_off_refresh(client):
-    # 账户、持仓、净值公开；用了哪些因子、调仓明细、因子对比只有管理员
+    # 账户、每日盈亏、实时数公开；用了哪些因子、调仓明细、因子对比只有管理员
     assert data(await client.get("/api/alpha/trader/account"))["userId"] is None
-    assert data(await client.get("/api/alpha/trader/positions", headers={"satoken": "user"})) == {"items": [], "day": None}
-    assert data(await client.get("/api/alpha/trader/equity"))["items"] == []
+    assert data(await client.get("/api/alpha/trader/daily", headers={"satoken": "user"})) == {
+        "initialBalance": 10000, "maxDrawdown": 0, "days": []}
+    live = await first_frame()
+    assert live["ok"] and live["userId"] is None
     # 调仓的出错原文可能带因子表达式，只有管理员拿得到
     jobs = m.app.state.runs.jobs
     jobs["trader"]["error"] = "因子 Mean($volume, 4) 在 T 那根全池没有值"
