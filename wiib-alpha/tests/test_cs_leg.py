@@ -207,6 +207,28 @@ def test_each_side_is_sized_by_inverse_vol():
     assert out["fundingBps"] == pytest.approx(-15.0)
 
 
+def test_inverse_vol_caps_a_name_and_spreads_the_excess_by_inverse_vol():
+    # 一个点多头 5 个币按 1/波动是 0.5、0.35、0.05、0.05、0.05，上限 2/5 = 0.4：0 号截到 0.4，多出的 0.1 按 1/波动摊，
+    # 1 号摊到 0.42 又超了再截，剩下的 0.2 三个平分；空头 2 个币按 1/波动是 3/4、1/4，上限 2/2 = 1 不截
+    g = np.zeros(7, dtype="int64")
+    w = np.r_[np.ones(5), -np.ones(2)]
+    vol = 1 / np.array([100, 70, 10, 10, 10, 30, 10.0])
+    assert cs_leg.inverse_vol(g, w, vol, 1, 2.0) == pytest.approx([0.4, 0.4, 0.2 / 3, 0.2 / 3, 0.2 / 3, -0.75, -0.25])
+    # 不设上限就是纯按 1/波动分仓
+    assert cs_leg.inverse_vol(g, w, vol, 1, np.inf) == pytest.approx([0.5, 0.35, 0.05, 0.05, 0.05, -0.75, -0.25])
+    # 随机的 60 个点：每边仍加起来是 1，单币不超过上限，有的币正好截在上限上
+    rng = np.random.default_rng(8)
+    g = np.repeat(np.arange(60), 20)
+    w = rng.choice([-1.0, 0.0, 1.0], size=len(g))
+    out = cs_leg.inverse_vol(g, w, np.exp(rng.normal(-4, 1, len(g))), 60, 2.0)
+    for s in (1, -1):
+        side = np.sign(w) == s
+        n = np.bincount(g[side], minlength=60)
+        limit = 2.0 / n[g[side]]
+        assert np.bincount(g[side], out[side], 60)[n > 0] == pytest.approx(s)
+        assert (np.abs(out[side]) <= limit + 1e-12).all() and np.isclose(np.abs(out[side]), limit).any()
+
+
 def test_permutation_matches_the_closed_form():
     # 5 个币各取 1 个名额：只有多头抽中 +5%、空头抽中 −5% 才不小于真实，概率 1/20；
     # 另一个 6 个币的点收益全 0，不改变分布，只验不同币数的点能一起打乱

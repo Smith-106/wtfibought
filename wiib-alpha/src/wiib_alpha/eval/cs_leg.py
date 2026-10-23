@@ -3,7 +3,7 @@
 方向 = 训练窗里月度截面 IC 均值的符号。答案是对数收益，先 expm1 成算术收益，再减持有期内结算的资金费（多头付、空头收）。
 缓冲带：排进头部 leg_enter 才做多、掉出头部 leg_exit 才平，空头对称看尾部，中间的不动；
 方向换号、上一点没仓位或被跳过时从头建仓，本点不在样本里的币自动出场。交易员一天只算一期，用单步版 step（规则同 weights）；
-挖掘的腿和交易方案一样按波动分仓（inverse_vol），只用因子和波动都有数的行（sized）。
+挖掘的腿和交易方案一样按波动分仓（inverse_vol，单币有上限 leg_cap），只用因子和波动都有数的行（sized）。
 成本按流动性分档：每次调仓每个名字付 |w_t − w_{t−1}| × 该币当月档的单边成本，名字不换不付；
 没仓位的网格点收益是 0，从有仓位变成没仓位那一点付平仓成本。毛收益 = 涨跌 + 资金费，扣交易成本之前；
 盈亏平衡成本 = Σ毛收益 / Σ换手量，折成单边 bps。
@@ -90,13 +90,22 @@ def sized(rows: pd.DataFrame, f: np.ndarray, vol: np.ndarray, bars: int, min_nam
     return p, points(rows, np.where(np.isfinite(f), vol, np.nan), bars, min_names).f
 
 
-def inverse_vol(g: np.ndarray, w: np.ndarray, vol: np.ndarray, total: int) -> np.ndarray:
-    """按波动分仓：每个点多头每个币 ∝ 1/波动、加起来 1，空头同理加起来 −1；w 只看正负"""
+def inverse_vol(g: np.ndarray, w: np.ndarray, vol: np.ndarray, total: int, cap: float) -> np.ndarray:
+    """按波动分仓：每个点多头每个币 ∝ 1/波动、加起来 1，空头同理加起来 −1；w 只看正负。
+    一边 n 个币时单个币最多 cap / n：超出的截掉，按 1/波动摊给没到上限的，摊到没有超的为止"""
     inv = 1.0 / np.maximum(vol, 1e-6)
     out = np.zeros(len(w))
     for s in (1, -1):
         m = np.sign(w) == s
-        out[m] = s * inv[m] / np.bincount(g[m], inv[m], total)[g[m]]
+        gm, iv = g[m], inv[m]
+        x = iv / np.bincount(gm, iv, total)[gm]
+        limit = cap / np.bincount(gm, minlength=total)[gm]
+        while (over := x > limit + 1e-12).any():
+            excess = np.bincount(gm, np.where(over, x - limit, 0.0), total)[gm]
+            x = np.where(over, limit, x)
+            free = x < limit - 1e-12
+            x = np.where(free, x + excess * iv / np.bincount(gm, np.where(free, iv, 0.0), total)[gm], x)
+        out[m] = s * x
     return out
 
 
@@ -118,7 +127,7 @@ def rebalance(p: Points, w: np.ndarray, unit_costs: tuple[float, float, float]) 
 def fixed(p: Points, vol: np.ndarray, params: EvalParams) -> tuple[np.ndarray, np.ndarray]:
     """方向一直 +1 的多空腿：每个网格点的毛收益（含资金费）与换仓成本，没仓位也没换仓的点是 NaN；
     方向 −1 就是多空两头对调，毛收益取反、成本不变。p、vol 来自 sized"""
-    w = inverse_vol(p.g, weights(p, np.ones(p.total), params.leg_enter, params.leg_exit), vol, p.total)
+    w = inverse_vol(p.g, weights(p, np.ones(p.total), params.leg_enter, params.leg_exit), vol, p.total, params.leg_cap)
     gross = np.bincount(p.g, w * (np.expm1(p.y) - p.fund), p.total)
     cost = rebalance(p, w, params.costs)[0]
     active = (np.bincount(p.g, np.abs(w), p.total) > 0) | (cost > 0)
@@ -157,7 +166,7 @@ def simulate(p: Points, vol: np.ndarray, ic: np.ndarray, wins: list[Window], bar
     if not oos.any():
         return {"periods": 0}
     direction = directions(ic, p.months, wins, params.min_points)
-    w = inverse_vol(p.g, weights(p, direction, params.leg_enter, params.leg_exit), vol, p.total)
+    w = inverse_vol(p.g, weights(p, direction, params.leg_enter, params.leg_exit), vol, p.total, params.leg_cap)
     # 一个币持有一期的收益：涨跌减资金费，空头仓位 w < 0 正好变成收费
     r = np.expm1(p.y) - p.fund
     gross = np.bincount(p.g, w * r, p.total)

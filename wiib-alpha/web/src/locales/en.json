@@ -422,7 +422,7 @@
   },
   "trader": {
     "title": "Trader account",
-    "hint": "Paper account quant-factor: every day it signals on the 15m bar closing at 00:00 UTC and rebalances the whole basket at 00:15 — half the capital on the combo of the selected factors, half on basis carry, both sides sized by inverse volatility, 4x cross market orders, no stops. The paper venue is optimistic: 0.04% fees, no slippage, low-volume coins fill at the mark price that updates once a minute; the backtest fills one bar later at 5 / 8 / 12 bps per side.",
+    "hint": "Paper account quant-factor: every day it signals on the 15m bar closing at 00:00 UTC and rebalances the whole basket at 00:15 — three quarters of the capital on the combo of the selected factors, a quarter on basis carry, both sides sized by inverse volatility with no coin above twice the side's average, 4x cross market orders, no stops. The paper venue is optimistic: 0.04% fees and no slippage; the backtest fills one bar later at 5 / 8 / 12 bps per side.",
     "noAccount": "No rebalance yet: the account is created on the first one.",
     "equity": "Equity",
     "balance": "Balance",

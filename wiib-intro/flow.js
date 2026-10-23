@@ -376,10 +376,10 @@ const PANELS = [
         title: { zh: '因子库 → 因子交易员', en: 'Library → factor trader' },
         rows: [
           { id: 'l1', t: { zh: '成为 G6 · G8 · G9 的尺子', en: 'the yardstick for G6/G8/G9' } },
-          { id: 'l2', t: { zh: '一半因子组合 · 一半 carry', en: 'half factors · half carry' } },
+          { id: 'l2', t: { zh: '3/4 因子组合 · 1/4 carry', en: '3/4 factors · 1/4 carry' } },
           { id: 'l3', t: { zh: '每天 UTC 00:15 调仓', en: 'rebalance daily 00:15 UTC' } }
         ],
-        detail: { zh: '入库的因子成了之后所有候选的尺子：G6 冗余对比、G8 已知结构、G9 交易方案的基线，下一轮出题也带着它们。因子交易员用勾选的库因子下单：一半资金做组合腿（各因子先转截面秩再加权，权重的符号跟 24h 截面 IC、大小是它单独做多空腿扣完成本和资金费的净收益，不赚钱的不进组合；多空两头缓冲带选币、按波动分仓），一半做基差 carry，每天 UTC 00:15 整篮子调仓，跑在模拟盘子账户上。', en: 'Library factors become the yardstick for every later candidate — G6 redundancy, G8 known structures, the G9 baseline — and they show up in the next proposals. The factor trader trades the ticked library factors: half the capital on the combo leg (each factor ranked cross-sectionally and weighted with the sign of its 24h cross-sectional IC and the size of its own long-short leg’s net return after costs and funding, zero if it does not make money; buffered long/short picks, vol-sized), half on basis carry, the whole basket rebalanced daily at 00:15 UTC on a paper sub-account.' } }
+        detail: { zh: '入库的因子成了之后所有候选的尺子：G6 冗余对比、G8 已知结构、G9 交易方案的基线，下一轮出题也带着它们。因子交易员用勾选的库因子下单：3/4 资金做组合腿（各因子先转截面秩再加权，权重的符号跟 24h 截面 IC、大小是它单独做多空腿扣完成本和资金费的净收益，不赚钱的不进组合；多空两头缓冲带选币、按波动分仓），1/4 做基差 carry，每天 UTC 00:15 整篮子调仓，跑在模拟盘子账户上。', en: 'Library factors become the yardstick for every later candidate — G6 redundancy, G8 known structures, the G9 baseline — and they show up in the next proposals. The factor trader trades the ticked library factors: three quarters of the capital on the combo leg (each factor ranked cross-sectionally and weighted with the sign of its 24h cross-sectional IC and the size of its own long-short leg’s net return after costs and funding, zero if it does not make money; buffered long/short picks, vol-sized), a quarter on basis carry, the whole basket rebalanced daily at 00:15 UTC on a paper sub-account.' } }
     ],
     edges: [
       { id: 'cp-gen', from: 'camp', to: 'gen', pts: [[186, 106], [216, 106]] },

@@ -1,9 +1,9 @@
-"""交易方案的回测：组合腿 + 基差 carry 腿各一半、24h 调仓、每边按波动分仓、晚一根成交（选方案时那段脚本收进来）。
+"""交易方案的回测：组合腿占 3/4、基差 carry 腿占 1/4，24h 调仓、每边按波动分仓、晚一根成交（选方案时那段脚本收进来）。
 
 骨架就是挖掘装载的那份（晚一根成交：信号那根收盘后再过一根才建仓，资金费从建仓那刻起算）。
 组合腿：勾选因子先转截面秩再 z 分数，按 24h 档学到的权重加权（combo 那一套：符号跟 IC，大小是单独做多空腿的净收益，
 不赚钱的是 0）；搜索段 walk-forward 学权重和方向，holdout 用搜索段整段定权重、方向定 +1。carry 腿：basis_7d，方向定死 −1（做空溢价高的）。
-两腿都按缓冲带选币（cs_leg.weights），每边按 1/Std($ret, 672) 分仓，按档扣成本、扣资金费；每期净收益两腿各占一半。
+两腿都按缓冲带选币（cs_leg.weights），每边按 1/Std($ret, 672) 分仓、单币不超过这一边平均的 leg_cap 倍，按档扣成本、扣资金费；每期净收益按两腿的份额合成。
 交易员的组合权重也从这里学（learned_weights）：全部历史、同一套骨架和函数。
 挖掘的 G9 也用它：库里的因子加基差 carry 是基线（Base），候选加进组合腿后搜索段净 Sharpe 升多少（gain）。
 python -m wiib_alpha.trade.scheme 在当前数据上把勾选因子的方案跑一遍，打印搜索段和 holdout。
@@ -33,7 +33,7 @@ from ..store import snapshot
 # 24h 调仓
 BARS = HORIZON_BARS[24]
 # 每条腿占净值的比例
-SHARE = 0.5
+SHARES = {"combo": 0.75, "carry": 0.25}
 CARRY = parse(reference.KNOWN_EFFECTS["basis_7d"][0], FEATURE_COLUMNS)
 VOL = parse("Std($ret, 672)", FEATURE_COLUMNS)
 
@@ -48,8 +48,9 @@ class Leg:
 
 
 def positions(p: cs_ic.Points, vol: np.ndarray, direction: np.ndarray, params: EvalParams) -> np.ndarray:
-    """缓冲带选币、每边按 1/波动分仓；vol 与 p 的行对齐"""
-    return cs_leg.inverse_vol(p.g, cs_leg.weights(p, direction, params.leg_enter, params.leg_exit), vol, p.total)
+    """缓冲带选币、每边按 1/波动分仓（单币有上限）；vol 与 p 的行对齐"""
+    w = cs_leg.weights(p, direction, params.leg_enter, params.leg_exit)
+    return cs_leg.inverse_vol(p.g, w, vol, p.total, params.leg_cap)
 
 
 def leg(rows: pd.DataFrame, f: np.ndarray, vol: np.ndarray, params: EvalParams, fixed: float | None,
@@ -103,7 +104,8 @@ def run(rows: pd.DataFrame, symbols: tuple[str, ...], values: Sequence[np.ndarra
     a = leg(rows, signal, vol, params, None if since is None else 1.0, since)
     b = leg(rows, basis, vol, params, -1.0, since)
     active = a.active & b.active
-    net = (SHARE * a.net + SHARE * b.net)[active]
+    net = (SHARES["combo"] * a.net + SHARES["carry"] * b.net)[active]
+    traded = (SHARES["combo"] * a.traded + SHARES["carry"] * b.traded)[active]
     curve = np.cumprod(np.concatenate(([1.0], 1 + net)))
     return {
         "periods": int(active.sum()),
@@ -111,7 +113,7 @@ def run(rows: pd.DataFrame, symbols: tuple[str, ...], values: Sequence[np.ndarra
         "sharpe": annualized_sharpe(net, periods_per_year(BARS)),
         "maxDrawdown": float(np.max(1 - curve / np.maximum.accumulate(curve))),
         # Σ|Δw| / 4：两条腿各自整个换掉是 1
-        "turnover": float(np.mean(SHARE * a.traded[active] + SHARE * b.traded[active]) / 4) if net.size else np.nan,
+        "turnover": float(np.mean(traded) / 4) if net.size else np.nan,
         # carry 腿每期平均资金费 bps，正数是收
         "carryFundingBps": float(np.mean(b.funding[active]) * 1e4) if net.size else np.nan,
     }

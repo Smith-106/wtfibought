@@ -2,8 +2,8 @@
 
 和回测同一套函数：组合腿是勾选因子的截面秩 z 分数按学好的权重加权（combo.score），方向 +1（权重已带 IC 符号）；
 carry 腿是 basis_7d，方向定死 −1。选币用 cs_leg.step（cs_leg.weights 的单步版，进头部 1/5、出头部 2/5），
-每边按 1/Std($ret, 672) 分仓（cs_leg.inverse_vol），多头加起来 1、空头 −1。
-两条腿各占一半资金：每币净权重 = 0.5 × 组合腿权重 + 0.5 × carry 腿权重，乘净值就是目标名义，总敞口约 2 倍净值。
+每边按 1/Std($ret, 672) 分仓、单币不超过这一边平均的 leg_cap 倍（cs_leg.inverse_vol），多头加起来 1、空头 −1。
+组合腿占 3/4 资金、carry 腿占 1/4：每币净权重 = 0.75 × 组合腿权重 + 0.25 × carry 腿权重，乘净值就是目标名义，总敞口约 2 倍净值。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from ..data.pool import cross_at, cross_values
 from ..dsl import Expr, parse
 from ..eval import combo, cs_leg
 from ..eval.params import EvalParams
-from .scheme import CARRY, SHARE, VOL
+from .scheme import CARRY, SHARES, VOL
 
 # 每条腿的方向
 SIGNS = {"combo": 1.0, "carry": -1.0}
@@ -48,7 +48,7 @@ def leg(signal: pd.Series, vol: pd.Series, sign: float, held: Mapping[str, Seque
     f, v = signal[names].to_numpy(dtype="float64"), vol[names].to_numpy(dtype="float64")
     long_, short = cs_leg.step(f, sign, np.isin(names, held.get("long", [])), np.isin(names, held.get("short", [])),
                                params.leg_enter, params.leg_exit)
-    w = cs_leg.inverse_vol(np.zeros(len(names), dtype="int64"), long_.astype("float64") - short, v, 1)
+    w = cs_leg.inverse_vol(np.zeros(len(names), dtype="int64"), long_.astype("float64") - short, v, 1, params.leg_cap)
     # 名次：信号从大到小数，1 是信号最大的
     rank = pd.Series(f).rank(ascending=False, method="first").to_numpy(dtype="int64")
     return {"long": [s for s, x in zip(names, long_) if x], "short": [s for s, x in zip(names, short) if x],
@@ -58,7 +58,7 @@ def leg(signal: pd.Series, vol: pd.Series, sign: float, held: Mapping[str, Seque
 
 def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights: np.ndarray,
             held: Mapping[str, Mapping[str, Sequence[str]]], t_ms: int, params: EvalParams) -> dict[str, Any]:
-    """factors 与 weights 一一对应（勾选的因子、全部历史上学的 IC 权重），一条都没有时组合腿空仓、那一半资金闲着；
+    """factors 与 weights 一一对应（勾选的因子、全部历史上学的 IC 权重），一条都没有时组合腿空仓、它那份资金闲着；
     held 是上一期各腿的多空集合。出每条腿的多空与每币明细，和每币净权重（只列不是 0 的）。
     T 那根在池有波动的币不够 min_names 个、或者一条因子全池没值，就报错：数据没补全时出的空目标会把仓位全平掉，
     缺值按 0 合成等于把那条因子静默踢出组合"""
@@ -80,7 +80,7 @@ def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights
     for name, out in legs.items():
         for c in out["coins"]:
             if c["weight"]:
-                coins.setdefault(c["symbol"], {"combo": 0.0, "carry": 0.0})[name] = SHARE * c["weight"]
+                coins.setdefault(c["symbol"], {"combo": 0.0, "carry": 0.0})[name] = SHARES[name] * c["weight"]
     return {"legs": legs, "coins": {s: {"weight": x["combo"] + x["carry"], **x} for s, x in sorted(coins.items())}}
 
 

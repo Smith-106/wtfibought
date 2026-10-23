@@ -17,7 +17,7 @@ PLANTED = parse("Mean($volume, 4)", FEATURE_COLUMNS)
 
 
 def test_target_leg_day_by_day_matches_the_backtest_positions():
-    # 交易员每天算的一条腿（缓冲选币 + 每边按 1/波动分仓）和回测整段算的仓位逐点一样，两个方向都比；
+    # 交易员每天算的一条腿（缓冲选币 + 每边按 1/波动分仓、单币有上限）和回测整段算的仓位逐点一样，两个方向都比；
     # 有的点缺几个币，上一期持有的币缺席就不带
     rng = np.random.default_rng(5)
     total, n = 30, 25
@@ -31,6 +31,7 @@ def test_target_leg_day_by_day_matches_the_backtest_positions():
                times=BASE + (np.arange(total) + 1) * 96 * BAR_MS - 1, months=np.zeros(total, dtype="int64"))
     names = np.array([f"C{i:02d}" for i in range(n)])
     params = EvalParams()
+    capped = False
     for sign in (1.0, -1.0):
         w = scheme.positions(p, vol[g, sym], np.full(total, sign), params)
         held: dict = {}
@@ -41,7 +42,11 @@ def test_target_leg_day_by_day_matches_the_backtest_positions():
             got = pd.Series({c["symbol"]: c["weight"] for c in out["coins"]})[signal.index].to_numpy()
             np.testing.assert_allclose(got, w[at], rtol=0, atol=1e-15, err_msg=f"{sign} {k}")
             assert got[got > 0].sum() == pytest.approx(1.0) and got[got < 0].sum() == pytest.approx(-1.0)
+            for side in (got > 0, got < 0):
+                capped |= bool(np.isclose(np.abs(got[side]), params.leg_cap / side.sum()).any())
             held = {"long": out["long"], "short": out["short"]}
+    # 上限真的截到过
+    assert capped
 
 
 def test_board_views_by_direction_and_skips_what_it_cannot_compute(planted_pool, planted_store):
@@ -90,15 +95,16 @@ def test_targets_split_capital_between_the_legs(planted_store, planted_pool):
     for leg in legs.values():
         w = np.array([c["weight"] for c in leg["coins"]])
         assert w[w > 0].sum() == pytest.approx(1.0) and w[w < 0].sum() == pytest.approx(-1.0)
-    # 每币净权重 = 两条腿各一半
+    # 每币净权重 = 组合腿 3/4 + carry 腿 1/4
     for s, c in out["coins"].items():
         combo = next((x["weight"] for x in legs["combo"]["coins"] if x["symbol"] == s), 0.0)
         carry = next((x["weight"] for x in legs["carry"]["coins"] if x["symbol"] == s), 0.0)
-        assert (c["combo"], c["carry"], c["weight"]) == pytest.approx((0.5 * combo, 0.5 * carry, 0.5 * (combo + carry)))
+        assert (c["combo"], c["carry"], c["weight"]) == pytest.approx((0.75 * combo, 0.25 * carry,
+                                                                        0.75 * combo + 0.25 * carry))
     # 多空两边总名义各是净值的 1 倍
     weights = np.array([c["weight"] for c in out["coins"].values()])
     assert weights.sum() == pytest.approx(0.0, abs=1e-12) and np.abs(weights).sum() <= 2.0 + 1e-12
-    # 一条因子都没勾：组合腿空仓，carry 那一半照旧
+    # 一条因子都没勾：组合腿空仓，carry 腿照旧
     bare = targets.compute(panels, [], np.empty(0), {}, t, PARAMS)
     assert bare["legs"]["combo"]["long"] == [] and bare["legs"]["carry"] == legs["carry"]
     # T 那根有数的币不够：不出空目标（那会把仓位全平掉），报错
@@ -113,7 +119,7 @@ def test_backtest_and_weights(planted_pool):
     carry_only = scheme.backtest(planted_pool, [], basis, vol, PARAMS, False)
     assert set(with_factor) == {"periods", "netReturn", "sharpe", "maxDrawdown", "turnover", "carryFundingBps"}
     assert with_factor["periods"] == carry_only["periods"] > 0 and 0 < with_factor["turnover"] <= 1
-    # 埋了信号的组合腿：搜索段比只有 carry 那一半好
+    # 埋了信号的组合腿：搜索段比只有 carry 腿好
     assert with_factor["sharpe"] > carry_only["sharpe"] and with_factor["netReturn"] > 0
     assert 0 <= with_factor["maxDrawdown"] < 1
     held = scheme.backtest(planted_pool, [planted], basis, vol, PARAMS, True)
