@@ -14,8 +14,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.util.concurrent.CompletableFuture;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -58,14 +56,14 @@ class PromptGenRealRunTest {
         long endpointId = eps.deep().getId();
         ChatModel model = service.model(ADMIN_USER_ID, endpointId);
 
-        service.start(channel(), new CompletableFuture<>(), ADMIN_USER_ID, model, endpointId, AgentLang.ZH);
+        service.start(channel(), ADMIN_USER_ID, model, endpointId, AgentLang.ZH);
         PromptGenView view = service.view(ADMIN_USER_ID);
         for (int round = 0; round < MAX_ROUNDS && view.currentNo() == null; round++) {
             assertThat(view.question()).as("agent 这一轮既没出题也没写稿，看日志里它说了什么").isNotNull();
             log.info("[RealRun] 第 {} 题 [{}] {} → 选推荐：{}（{}）", round + 1, view.question().key(),
                     view.question().question(), view.question().recommended(), view.question().reason());
             PromptGenSession session = service.session(ADMIN_USER_ID);
-            service.reply(channel(), new CompletableFuture<>(), ADMIN_USER_ID, model, session,
+            service.reply(channel(), ADMIN_USER_ID, model, session,
                     service.replyHistory(ADMIN_USER_ID, session, view.question().recommended(), false));
             view = service.view(ADMIN_USER_ID);
         }

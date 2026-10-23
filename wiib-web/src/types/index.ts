@@ -1539,7 +1539,7 @@ export interface BacktestResultPayload {
   equity: [number, number][];
 }
 
-// ========== 交易指令生成器（agent，/api/ai/prompt-gen） ==========
+// ========== 提示词生成（agent，/api/ai/prompt-gen） ==========
 
 /** 一张题卡：一个推荐项 + 几个其他选项，用户也能自己填；required=必问题，没有跳过 */
 export interface PromptGenQuestion {
@@ -1551,13 +1551,17 @@ export interface PromptGenQuestion {
   required: boolean;
 }
 
-/** 对话里的一条：agent / user 只有 text，question 带题和回答（还没答是 null），version 只有版本号 */
+/**
+ * 对话里的一条：agent / user 只有 text，question 带题和回答（还没答是 null），version 只有版本号；
+ * tool 是 agent 读了一次数据，text 是工具名、args 是参数
+ */
 export interface PromptGenItem {
-  type: 'agent' | 'user' | 'question' | 'version';
+  type: 'agent' | 'user' | 'question' | 'version' | 'tool';
   text: string | null;
   question: PromptGenQuestion | null;
   answer: string | null;
   no: number | null;
+  args: Record<string, unknown> | null;
 }
 
 /** 一版指令：body 是正文，notes 是这版改了什么 + 做不到的写法；finalVersion=agent 认为写完了 */
@@ -1579,6 +1583,8 @@ export interface PromptGenView {
   /** 当前对话里最后写出的那版 */
   currentNo: number | null;
   done: boolean;
+  /** 有一轮还在后台跑、没落库：这时的对话是那一轮开始前的样子 */
+  running: boolean;
   /** 新的在前 */
   versions: PromptGenVersion[];
 }
@@ -1587,6 +1593,7 @@ export interface PromptGenView {
 export type PromptGenEvent =
   | { type: 'status'; stage: 'thinking' | 'reading' | 'writing' }
   | { type: 'text'; text: string }
+  | { type: 'tool_calls'; calls: { name: string; args?: Record<string, unknown> }[] }
   | { type: 'draft'; text: string }
   | ({ type: 'version' } & PromptGenVersion)
   | { type: 'done' }

@@ -324,7 +324,7 @@
     "viewPrompt": "View the platform system prompt (environment, tools, spec and guard only; follows interval/symbols/spec/wake window; your instructions are appended after it)",
     "customPrompt": "Your trading instructions (the only source of method, style and discipline; position spec, guard and closing format are enforced by the system)",
     "customPromptPh": "e.g. Trend breakouts only, never catch a falling knife; risk at most 2% of equity per trade; after two losses in a row, watch only for the rest of the day.",
-    "genPrompt": "Write it with the generator",
+    "genPrompt": "Prompt Generator",
     "resetDefaultPrompt": "Reset to platform default",
     "resetDefaultPromptConfirm": "Replace the current instructions with the platform default?",
     "save": "Save config",
@@ -463,6 +463,7 @@
       "trader_trades": "Check trader trades",
       "trader_plans": "Check trader plans",
       "trader_decisions": "Check trader decisions",
+      "trader_play_stats": "Check trader record by thesis",
       "analyze_my_behavior": "Analyze trading behavior",
       "unknown": "Call {{name}}"
     }

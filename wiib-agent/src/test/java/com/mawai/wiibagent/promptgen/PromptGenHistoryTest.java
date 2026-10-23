@@ -41,6 +41,29 @@ class PromptGenHistoryTest {
         assertThat(PromptGenHistory.transcript(steps, "用户补充：")).isEqualTo("- [direction] 方向？ → 只做多");
     }
 
+    /** 读数据成了过程步：同一批里排在题前面，用户的回答照样配给题 */
+    @Test
+    void readsInTheSameBatchGoBeforeTheQuestion() {
+        List<Message> history = new ArrayList<>(List.of(new UserMessage("开场")));
+        history.add(AssistantMessage.builder().content("").toolCalls(List.of(
+                new AssistantMessage.ToolCall("a", "function", "ask_user", "{\"key\":\"style\",\"question\":\"风格？\"}"),
+                new AssistantMessage.ToolCall("b", "function", "trader_trades", "{\"limit\":20}"))).build());
+        history.add(ToolResponseMessage.builder().responses(List.of(
+                new ToolResponseMessage.ToolResponse("a", "ask_user", MAPPER.writeValueAsString("{\"shown\":true}")),
+                new ToolResponseMessage.ToolResponse("b", "trader_trades", MAPPER.writeValueAsString("[]")))).build());
+        history.add(new UserMessage("均衡"));
+
+        List<PromptGenHistory.Step> steps = PromptGenHistory.steps(history);
+
+        assertThat(steps).hasSize(2);
+        assertThat(steps.getFirst()).isInstanceOfSatisfying(PromptGenHistory.Tool.class, tool -> {
+            assertThat(tool.name()).isEqualTo("trader_trades");
+            assertThat(tool.args().path("limit").asInt()).isEqualTo(20);
+        });
+        assertThat(steps.getLast()).isInstanceOfSatisfying(PromptGenHistory.Ask.class,
+                ask -> assertThat(ask.answer()).isEqualTo("均衡"));
+    }
+
     /** 被拒的题、保险丝的占位回执（不是 JSON）都不算问过 */
     @Test
     void refusedOrPlaceholderAsksAreNotCounted() {
@@ -61,6 +84,8 @@ class PromptGenHistoryTest {
         history.add(new UserMessage("只做多"));
         history.addAll(call("write_draft", "{\"brief\":\"-\",\"finalVersion\":true}",
                 "{\"no\":7,\"finalVersion\":true,\"body\":\"正文\",\"notes\":\"说明\"}"));
+        // 交了最终版又读了一次数据：用户没开口，照样算写完
+        history.addAll(call("trader_plans", "{}", "[]"));
         history.add(AssistantMessage.builder().content("可以复制使用了").build());
 
         List<PromptGenHistory.Step> steps = PromptGenHistory.steps(history);
@@ -127,7 +152,7 @@ class PromptGenHistoryTest {
     }
 
     private static boolean pendingRequired(List<Message> history) {
-        return PromptGenView.of(new PromptGenSession(), PromptGenHistory.steps(history), REQUIRED, List.of())
+        return PromptGenView.of(new PromptGenSession(), PromptGenHistory.steps(history), REQUIRED, false, List.of())
                 .question().required();
     }
 

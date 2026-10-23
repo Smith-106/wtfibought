@@ -32,7 +32,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -78,6 +78,8 @@ public class PromptGenService {
         t.setDaemon(true);
         return t;
     });
+    /** 有一轮还没跑完落库的用户 */
+    private final Set<Long> running = ConcurrentHashMap.newKeySet();
 
     @PreDestroy
     public void stop() {
@@ -104,12 +106,13 @@ public class PromptGenService {
 
     public PromptGenView view(long userId) {
         List<PromptGenView.Version> versions = store.versions(userId).stream().map(PromptGenView.Version::of).toList();
+        boolean busy = running.contains(userId);
         PromptGenSession session = store.session(userId);
         if (session == null) {
-            return PromptGenView.empty(versions);
+            return PromptGenView.empty(busy, versions);
         }
         List<PromptGenHistory.Step> steps = PromptGenHistory.steps(PromptGenStore.messages(session.getState()));
-        return PromptGenView.of(session, steps, required(userId, steps), versions);
+        return PromptGenView.of(session, steps, required(userId, steps), busy, versions);
     }
 
     private Set<String> required(long userId, List<PromptGenHistory.Step> steps) {
@@ -128,11 +131,10 @@ public class PromptGenService {
     }
 
     /** 开新对话（旧对话整个覆盖，版本保留）并跑第一轮 */
-    public void start(SseChannel channel, CompletableFuture<Void> cancel, long userId, ChatModel model,
-                      long endpointId, AgentLang outputLang) {
+    public void start(SseChannel channel, long userId, ChatModel model, long endpointId, AgentLang outputLang) {
         List<Message> history = List.of(new UserMessage(prompts.get(userLangResolver.of(userId), "promptgen.kickoff")));
         store.open(userId, endpointId, outputLang, history);
-        round(channel, cancel, userId, model, outputLang, history);
+        round(channel, userId, model, outputLang, history);
     }
 
     /** 这一轮的起跑历史：当前对话 + 用户这句（回答、跳过、或直接说要改哪里）；还没答的必问项不让跳 */
@@ -149,22 +151,23 @@ public class PromptGenService {
         return history;
     }
 
-    public void reply(SseChannel channel, CompletableFuture<Void> cancel, long userId, ChatModel model,
-                      PromptGenSession session, List<Message> history) {
-        round(channel, cancel, userId, model, AgentLang.of(session.getOutputLang()), history);
+    public void reply(SseChannel channel, long userId, ChatModel model, PromptGenSession session,
+                      List<Message> history) {
+        round(channel, userId, model, AgentLang.of(session.getOutputLang()), history);
     }
 
-    private void round(SseChannel channel, CompletableFuture<Void> cancel, long userId, ChatModel model,
-                       AgentLang outputLang, List<Message> history) {
+    private void round(SseChannel channel, long userId, ChatModel model, AgentLang outputLang, List<Message> history) {
         AgentLang lang = userLangResolver.of(userId);
         PromptGenRun run = null;
+        Exception failure = null;
         ScheduledFuture<?> heartbeat = heartbeatScheduler.scheduleWithFixedDelay(
                 channel::heartbeat, HEARTBEAT_SECONDS, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
+        running.add(userId);
         try {
             AiTrader trader = traderService.mine(userId);
             boolean drafted = PromptGenHistory.lastDraft(PromptGenHistory.steps(history)) != null;
             PromptGenFacts.Prompts system = facts.prompts(trader, drafted, lang, outputLang);
-            run = new PromptGenRun(userId, lang, outputLang, trader, history, channel::send, cancel, store);
+            run = new PromptGenRun(userId, lang, outputLang, trader, history, channel::send, store);
             LlmClient writer = LlmClient.builder()
                     .model(model)
                     .systemPrompt(system.writer())
@@ -190,23 +193,27 @@ public class PromptGenService {
                     .build();
 
             run.status("thinking");
-            loop.run(history, null, cancel, run);
+            loop.run(history, null, null, run);
             store.saveState(userId, PromptGenHistory.trimDangling(run.messages()));
-            if (!channel.isClosed()) {
-                channel.send("done", MAPPER.createObjectNode());
-                channel.complete();
-            }
         } catch (Exception e) {
             log.error("[PromptGen] 这一轮失败 userId={}", userId, e);
+            failure = e;
             // 用户这句话此刻只在内存里，不落库下一轮就不知道问过
             store.saveState(userId, PromptGenHistory.trimDangling(run == null ? history : run.messages()));
-            if (!channel.isClosed()) {
-                channel.send("error", MAPPER.createObjectNode()
-                        .put("message", LlmErrorMessages.classify(e, prompts, lang)));
-                channel.complete();
-            }
         } finally {
+            running.remove(userId);
             heartbeat.cancel(false);
         }
+        // 落库、摘掉 running 之后再通知：页面收到就去拉 /session
+        if (channel.isClosed()) {
+            return;
+        }
+        if (failure == null) {
+            channel.send("done", MAPPER.createObjectNode());
+        } else {
+            channel.send("error", MAPPER.createObjectNode()
+                    .put("message", LlmErrorMessages.classify(failure, prompts, lang)));
+        }
+        channel.complete();
     }
 }

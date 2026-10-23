@@ -205,11 +205,30 @@ html.pwa nav a {
     animation: wiib-shimmer 2.2s linear infinite;
   }
 
+  /* 提示词生成写稿时的球：每隔一会儿跳一下，落地压扁、小弹一次；底下的影子跟着缩放 */
+  @keyframes wiib-orb-hop {
+    0% { transform: translateY(0) scale(1.06, .94) }
+    12% { transform: translateY(0) scale(1, 1) }
+    30% { transform: translateY(-22px) scale(.97, 1.03) }
+    46% { transform: translateY(0) scale(1.06, .94) }
+    54% { transform: translateY(-6px) scale(1, 1) }
+    62%, 100% { transform: translateY(0) scale(1, 1) }
+  }
+  @keyframes wiib-orb-shade {
+    0%, 12%, 62%, 100% { transform: scaleX(1); opacity: .3 }
+    30% { transform: scaleX(.6); opacity: .12 }
+    46% { transform: scaleX(1.08); opacity: .34 }
+    54% { transform: scaleX(.88); opacity: .24 }
+  }
+  .wiib-orb-hop { transform-origin: 50% 100%; animation: wiib-orb-hop 2.4s ease-in-out infinite }
+  .wiib-orb-shade { animation: wiib-orb-shade 2.4s ease-in-out infinite }
+
   /* 关掉动画偏好：这两层是纯装饰，停掉不丢信息（橙点与图标本身仍在）。
      两者都要连 opacity 一起收——只停动画的话，扇形会定格成一道常驻的静止橙弧 */
   @media (prefers-reduced-motion: reduce) {
     .wiib-ball-ping { animation: none; opacity: 0 }
     .wiib-ball-sweep { animation: none; opacity: 0 }
+    .wiib-orb-hop, .wiib-orb-shade { animation: none }
     /* 扫光退回普通前景色 */
     .wiib-shimmer { animation: none; background: none; color: var(--color-foreground) }
     /* 入场动画同理：一次性位移/缩放停掉即可，元素靠 fill-mode 停在终态 */

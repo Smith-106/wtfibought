@@ -17,7 +17,7 @@ const TOOL_ICON: Record<string, LucideIcon> = {
   klines: ChartCandlestick, kline_structure: ChartCandlestick, indicators: Activity, market_snapshot: Gauge,
   option_iv: Waves, funding_history: Percent, orderbook_depth: Layers, news_search: Newspaper,
   trader_overview: Bot, trader_positions: Bot, trader_trades: Bot, trader_plans: Bot, trader_decisions: Bot,
-  analyze_my_behavior: UserSearch,
+  trader_play_stats: Bot, analyze_my_behavior: UserSearch,
 };
 /** 子运行按种类取图标：派出去的 worker 是星星，深研判是天平 */
 const CHILD_ICON: Record<ChildRunKind, LucideIcon> = { DELEGATE: Sparkles, DEEP_ANALYSIS: Scale };
@@ -397,9 +397,11 @@ export function AssistantAnswer({ item, canRegenerate, onRegenerate }: {
  * <p>
  * 摘要：live（本轮还在跑、答案没开始）时"正在研判 · N 步"扫光 + 小星慢转 + 从本轮开跑起算的秒表
  * （和"分析问题中"那行的表接得上）；有后台任务在跑就报几个；都完了报搜了几个站，不显示时长——答案底部的读数里有耗时。
+ * label 给了就用它当摘要（提示词生成那边只读数据，不叫"研判"）。
  */
-export function ProcessRail({ steps, live, since, open, onToggle }: {
+export function ProcessRail({ steps, live, since, open, onToggle, label }: {
   steps: RailStep[]; live: boolean; since: number | null; open: boolean; onToggle: () => void;
+  label?: { live: string; done: string };
 }) {
   const { t } = useTranslation('ai');
   // 子运行块各自的开合，键是 runId
@@ -422,12 +424,12 @@ export function ProcessRail({ steps, live, since, open, onToggle }: {
         <ChevronRight className={cn('w-3 h-3 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
         {live ? (
           <>
-            <span className="wiib-shimmer">{t('rail.live', { count: steps.length })}</span>
+            <span className="wiib-shimmer">{label?.live ?? t('rail.live', { count: steps.length })}</span>
             <Sparkle className={SPIN_STAR} />
           </>
         ) : (
           <>
-            <span>{t('rail.title', { count: steps.length })}</span>
+            <span>{label?.done ?? t('rail.title', { count: steps.length })}</span>
             {runningChildren > 0 ? (
               <span className="inline-flex items-center gap-1.5 font-normal">
                 <span className={PULSE_DOT} />{t('rail.childrenRunning', { count: runningChildren })}

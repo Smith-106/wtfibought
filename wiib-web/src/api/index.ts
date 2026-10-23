@@ -771,7 +771,7 @@ export const backtestApi = {
     postSse<ReplayCoachEvent>('/api/ai/backtest/replay/coach', req, onEvent, signal),
 };
 
-// ========== 交易指令生成器（agent，前缀 /api/ai/prompt-gen） ==========
+// ========== 提示词生成（agent，前缀 /api/ai/prompt-gen） ==========
 export const promptGenApi = {
   /** 当前对话 + 最近 3 版；进页面和每轮结束都拉它 */
   session: () => api.get<unknown, PromptGenView>('/ai/prompt-gen/session'),

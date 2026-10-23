@@ -129,17 +129,14 @@ public class PromptGenToolkit {
 
         run.status("writing");
         String raw = write(List.of(input));
-        Draft draft = raw == null ? null : split(raw);
-        if (draft != null && draft.body().length() > MAX_CUSTOM_PROMPT) {
+        Draft draft = split(raw);
+        if (draft.body().length() > MAX_CUSTOM_PROMPT) {
             // 超长只重写一次；再发一次 writing，页面据此把首稿清掉
             run.status("writing");
             raw = write(List.of(input, AssistantMessage.builder().content(raw).build(),
                     new UserMessage(prompts.get(lang, "promptgen.shrink",
                             Map.of("max", MAX_CUSTOM_PROMPT, "mark", NOTES_MARK)))));
-            draft = raw == null ? null : split(raw);
-        }
-        if (draft == null) {
-            return notWritten(prompts.get(lang, "promptgen.writeCancelled"));
+            draft = split(raw);
         }
         if (draft.body().isBlank()) {
             return notWritten(prompts.get(lang, "promptgen.emptyDraft"));
@@ -159,12 +156,12 @@ public class PromptGenToolkit {
                 .put("notes", drafted.notes()));
     }
 
-    /** 流式写稿，逐段推给页面；中途被叫停返回 null */
+    /** 流式写稿，逐段推给页面 */
     private String write(List<Message> messages) {
         StringBuilder out = new StringBuilder();
-        try (Stream<ChatResponse> frames = writer.streamingExecute(messages, run.cancel()).toStream()) {
+        try (Stream<ChatResponse> frames = writer.streamingExecute(messages, null).toStream()) {
             Iterator<ChatResponse> iterator = frames.iterator();
-            while (!run.cancelled() && iterator.hasNext()) {
+            while (iterator.hasNext()) {
                 ChatResponse frame = iterator.next();
                 if (frame.getResults().isEmpty()) {
                     continue;
@@ -176,7 +173,7 @@ public class PromptGenToolkit {
                 }
             }
         }
-        return run.cancelled() ? null : out.toString();
+        return out.toString();
     }
 
     /** 正文 + 单独一行分界 + notes；没写分界就全算正文 */

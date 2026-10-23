@@ -70,7 +70,7 @@ class PromptGenFactsTest {
         PromptI18nAssertions.assertNoCjk("英文采访者（没 trader）", noTrader.agent());
         PromptI18nAssertions.assertNoCjk("英文写稿人（正文中文）", noTrader.writer());
         for (String key : List.of("kickoff", "skipped", "askShown", "askOnePerTurn", "draftOnce", "draftAfterAsk",
-                "writeCancelled", "emptyDraft", "noPlayStats", "noQa", "noPrevious", "userNote")) {
+                "emptyDraft", "noPlayStats", "noQa", "noPrevious", "userNote")) {
             PromptI18nAssertions.assertNoCjk("英文 " + key, prompts.get(AgentLang.EN, "promptgen." + key));
         }
         Map<String, Object> vars = Map.of("max", 10, "keys", "style", "mark", PromptGenFacts.NOTES_MARK,

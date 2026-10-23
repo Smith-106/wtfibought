@@ -21,7 +21,7 @@ import static com.mawai.wiibagent.promptgen.PromptGenToolkit.WRITE_DRAFT;
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
- * 从对话历史里认出生成器关心的几样：题、答、版本、agent 的话、用户的话。
+ * 从对话历史里认出生成器关心的几样：题、答、版本、agent 的话、agent 读的数据、用户的话。
  * 页面状态、题数上限、必问项检查、写稿用的问答记录都从这儿推，历史之外不另存状态。
  * <p>
  * 第一条用户消息是开场指令，不算用户说的话。
@@ -35,11 +35,15 @@ final class PromptGenHistory {
     private PromptGenHistory() {
     }
 
-    sealed interface Step permits AgentText, Ask, Drafted, UserText {
+    sealed interface Step permits AgentText, Ask, Drafted, Tool, UserText {
     }
 
     /** agent 自己说的话 */
     record AgentText(String text) implements Step {
+    }
+
+    /** agent 读了一次数据：ask_user、write_draft 以外的工具调用 */
+    record Tool(String name, JsonNode args) implements Step {
     }
 
     /** 一道展示出去的题；answer 为 null 就是还在等回答 */
@@ -67,24 +71,30 @@ final class PromptGenHistory {
                     steps.add(new AgentText(reply.getText().strip()));
                 }
                 Map<String, String> results = results(messages, i);
+                // 同一条里读数据排在题和版本前面：题得是最后一步，用户下一句才配得上它
+                List<Step> reads = new ArrayList<>();
+                List<Step> cards = new ArrayList<>();
                 for (AssistantMessage.ToolCall call : reply.getToolCalls()) {
-                    if (!ASK_USER.equals(call.name()) && !WRITE_DRAFT.equals(call.name())) {
-                        continue;
-                    }
                     String data = results.get(call.id());
                     // 没配上回执（被叫停）的不算数
                     if (data == null) {
                         continue;
                     }
+                    if (!ASK_USER.equals(call.name()) && !WRITE_DRAFT.equals(call.name())) {
+                        reads.add(new Tool(call.name(), args(call)));
+                        continue;
+                    }
                     JsonNode result = json(data);
                     // 被拒的题、没写成的稿也不算数
                     if (ASK_USER.equals(call.name()) && result.path("shown").asBoolean(false)) {
-                        steps.add(ask(json(call.arguments())));
+                        cards.add(ask(args(call)));
                     } else if (WRITE_DRAFT.equals(call.name()) && result.has("no")) {
-                        steps.add(new Drafted(result.path("no").asInt(), result.path("body").asString(""),
+                        cards.add(new Drafted(result.path("no").asInt(), result.path("body").asString(""),
                                 result.path("notes").asString(""), result.path("finalVersion").asBoolean(false)));
                     }
                 }
+                steps.addAll(reads);
+                steps.addAll(cards);
             } else if (message instanceof UserMessage user && i > 0) {
                 int last = steps.size() - 1;
                 if (last >= 0 && steps.get(last) instanceof Ask ask && ask.answer() == null) {
@@ -138,7 +148,7 @@ final class PromptGenHistory {
             if (step instanceof Drafted drafted) {
                 return drafted.finalVersion();
             }
-            if (!(step instanceof AgentText)) {
+            if (!(step instanceof AgentText) && !(step instanceof Tool)) {
                 return false;
             }
         }
@@ -169,6 +179,11 @@ final class PromptGenHistory {
 
     static String key(String raw) {
         return raw == null ? "" : raw.strip().toLowerCase(Locale.ROOT);
+    }
+
+    /** 工具调用的参数；不是 JSON 当空对象 */
+    static JsonNode args(AssistantMessage.ToolCall call) {
+        return json(call.arguments());
     }
 
     /**

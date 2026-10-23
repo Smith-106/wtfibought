@@ -28,18 +28,18 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 
 /**
- * 交易指令生成器。/start、/reply 走 SSE，事件 status / text / draft / version / done / error；
- * 题卡不走事件，一轮结束页面拉 /session 拿。名额与工作台共用（每用户同时一轮），页面断开就停掉这一轮。
+ * 提示词生成（写主人的交易指令）。/start、/reply 走 SSE，事件 status / text / tool_calls / draft / version / done / error；
+ * 题卡不走事件，一轮结束页面拉 /session 拿。名额与工作台共用（每用户同时一轮）。
+ * 页面断开不停：这一轮在后台跑完照常落库，刷新回来看 /session 的 running。
  */
 @Slf4j
-@Tag(name = "交易指令生成器")
+@Tag(name = "提示词生成")
 @RestController
 @RequestMapping("/api/ai/prompt-gen")
 @RequiredArgsConstructor
@@ -78,8 +78,7 @@ public class PromptGenController {
         ChatModel model = service.model(userId, req.endpointId());
         // 旧对话在这一轮的任务里才覆盖，那时名额已经在手
         concurrencyGate.acquireOrThrow(userId);
-        return stream(userId, (channel, cancel) ->
-                service.start(channel, cancel, userId, model, req.endpointId(), outputLang));
+        return stream(userId, channel -> service.start(channel, userId, model, req.endpointId(), outputLang));
     }
 
     @PostMapping(value = "/reply", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -109,7 +108,7 @@ public class PromptGenController {
             concurrencyGate.release(userId);
             throw e;
         }
-        return stream(userId, (channel, cancel) -> service.reply(channel, cancel, userId, model, session, history));
+        return stream(userId, channel -> service.reply(channel, userId, model, session, history));
     }
 
     @PostMapping("/rollback")
@@ -125,28 +124,20 @@ public class PromptGenController {
     }
 
     /** 建流并把这一轮丢给执行器；名额在任务的 finally 里还，提交失败就地还 */
-    private SseEmitter stream(long userId, BiConsumer<SseChannel, CompletableFuture<Void>> round) {
+    private SseEmitter stream(long userId, Consumer<SseChannel> round) {
         SseEmitter emitter = new SseEmitter(600_000L);
         SseChannel channel = new SseChannel(emitter);
-        // 页面断开就停：完成中断信号，循环在下一个检查点收尾
-        CompletableFuture<Void> cancel = new CompletableFuture<>();
-        emitter.onCompletion(() -> {
-            channel.markClosed();
-            cancel.complete(null);
-        });
+        // 断开只是不再往页面推，这一轮接着跑
+        emitter.onCompletion(channel::markClosed);
         emitter.onTimeout(() -> {
             channel.markClosed();
-            cancel.complete(null);
             emitter.complete();
         });
-        emitter.onError(_ -> {
-            channel.markClosed();
-            cancel.complete(null);
-        });
+        emitter.onError(_ -> channel.markClosed());
         try {
             streamExecutor.execute(() -> {
                 try {
-                    round.accept(channel, cancel);
+                    round.accept(channel);
                 } catch (Throwable e) {
                     log.error("[PromptGen] 任务异常退出 userId={}", userId, e);
                     // 那边只兜 Exception，Error 穿到这里时通道还开着：不收口前端要挂到超时

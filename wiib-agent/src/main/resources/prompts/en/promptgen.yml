@@ -103,7 +103,6 @@ promptgen:
   requiredMissing: "Required items not answered yet: {{keys}}. Ask them with ask_user first (use these names as keys), then write."
   draftOnce: A version was already written in this batch, so this one was not written.
   draftAfterAsk: A question card was already shown this turn, so nothing was written. Write after the user answers.
-  writeCancelled: Writing was interrupted and this version was not written.
   emptyDraft: The writer produced no body, so this version was not saved. You can call write_draft again.
   noPlayStats: "No thesis record available: either no closed trade in this round could be paired with a plan yet, or fetching it failed this time."
 

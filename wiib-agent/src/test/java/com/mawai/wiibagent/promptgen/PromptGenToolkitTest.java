@@ -19,7 +19,6 @@ import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 import static com.mawai.wiibcommon.util.JsonUtils.MAPPER;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -162,7 +161,7 @@ class PromptGenToolkitTest {
 
     private PromptGenRun run(List<Message> history) {
         return new PromptGenRun(1L, AgentLang.ZH, AgentLang.ZH, null, history,
-                (event, data) -> events.add(event + " " + data), new CompletableFuture<>(), store);
+                (event, data) -> events.add(event + " " + data), store);
     }
 
     private PromptGenToolkit toolkit(List<Message> history) {

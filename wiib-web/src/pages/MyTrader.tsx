@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Trans, useTranslation } from 'react-i18next';
-import { BookOpen, Bot, ChevronDown, ChevronLeft, Database, GraduationCap, Loader2, Pause, Play, RotateCcw, Save, Sparkles, Trash2, Wrench } from 'lucide-react';
+import { BookOpen, Bot, ChevronDown, ChevronLeft, Database, GraduationCap, Loader2, Pause, Play, RotateCcw, Save, Trash2, WandSparkles, Wrench } from 'lucide-react';
 import { llmEndpointApi, traderApi } from '../api';
 import { ExperienceLedgerCard } from '../components/arena/ExperienceLedgerCard';
 import { DATA_TOOLS, TRADE_TOOLS, toolName } from '../components/arena/traderTools';
@@ -524,11 +524,6 @@ export function MyTrader() {
         <div className="space-y-1 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <label htmlFor="custom-prompt" className="text-muted-foreground font-bold">{t('cfg.customPrompt')}</label>
-            {/* 引导式生成器：在那边写完复制回这个框 */}
-            <Link to="/prompt-gen"
-                  className="inline-flex items-center gap-1 text-[11px] text-primary font-bold hover:underline shrink-0 ml-auto">
-              <Sparkles className="w-3 h-3" />{t('cfg.genPrompt')}
-            </Link>
             {/* 整段换回平台默认；框里有字先确认 */}
             <button type="button" disabled={!defaultInstructions}
                     onClick={() => {
@@ -536,7 +531,7 @@ export function MyTrader() {
                         set({ customPrompt: defaultInstructions });
                       }
                     }}
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline shrink-0 disabled:opacity-50">
+                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline shrink-0 ml-auto disabled:opacity-50">
               <RotateCcw className="w-3 h-3" />{t('cfg.resetDefaultPrompt')}
             </button>
           </div>
@@ -546,16 +541,23 @@ export function MyTrader() {
         </div>
         </div>
 
-        <button
-          data-tour="save"
-          onClick={() => void run('save',
-            () => exists ? traderApi.updateConfig(form) : traderApi.create(form),
-            exists ? t('toast.saved') : t('toast.created'))}
-          disabled={busy != null}
-          className="border border-border hover:bg-surface-hover rounded-lg px-4 py-2 text-xs font-black text-primary flex items-center gap-1.5 disabled:opacity-50">
-          {busy === 'save' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-          {exists ? t('cfg.save') : t('cfg.create')}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            data-tour="save"
+            onClick={() => void run('save',
+              () => exists ? traderApi.updateConfig(form) : traderApi.create(form),
+              exists ? t('toast.saved') : t('toast.created'))}
+            disabled={busy != null}
+            className="border border-border hover:bg-surface-hover rounded-lg px-4 py-2 text-xs font-black text-primary flex items-center gap-1.5 disabled:opacity-50">
+            {busy === 'save' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {exists ? t('cfg.save') : t('cfg.create')}
+          </button>
+          {/* 提示词生成：对话式写出交易指令，写完复制回上面的框 */}
+          <Link to="/prompt-gen"
+                className="border border-border hover:bg-surface-hover rounded-lg px-4 py-2 text-xs font-black text-primary flex items-center gap-1.5">
+            <WandSparkles className="w-3.5 h-3.5" />{t('cfg.genPrompt')}
+          </Link>
+        </div>
 
         <p className="text-[10px] leading-relaxed text-muted-foreground border-l-2 border-border pl-2.5">
           {t('cfg.rules')}
