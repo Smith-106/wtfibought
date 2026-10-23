@@ -56,8 +56,8 @@ public class PromptGenController {
     public record StartRequest(long endpointId, String outputLang) {
     }
 
-    /** text 与 skip 二选一：skip=跳过当前这题 */
-    public record ReplyRequest(String text, boolean skip) {
+    /** text 与 skip 二选一：skip=跳过当前这题，回答时不带（缺了就是 false） */
+    public record ReplyRequest(String text, Boolean skip) {
     }
 
     public record RollbackRequest(int no) {
@@ -86,10 +86,11 @@ public class PromptGenController {
     @Operation(summary = "回答题卡、跳过当前题、或直接说要改哪里")
     public SseEmitter reply(@CurrentUserId long userId, @RequestBody ReplyRequest req, HttpServletResponse response) {
         SseChannel.noProxyBuffering(response);
-        if (!req.skip() && (req.text() == null || req.text().isBlank())) {
+        boolean skip = Boolean.TRUE.equals(req.skip());
+        if (!skip && (req.text() == null || req.text().isBlank())) {
             throw new BizException(ErrorCode.PARAM_ERROR);
         }
-        if (!req.skip() && req.text().length() > ChatWorkbenchController.MAX_MESSAGE_CHARS) {
+        if (!skip && req.text().length() > ChatWorkbenchController.MAX_MESSAGE_CHARS) {
             throw new BizException(ErrorCode.CHAT_MESSAGE_TOO_LONG);
         }
         // 先占名额再读对话：读早了，上一轮收尾写进去的东西会被这一轮整份覆盖掉
@@ -103,7 +104,7 @@ public class PromptGenController {
                 throw new BizException(ErrorCode.PROMPT_GEN_NO_SESSION);
             }
             model = service.model(userId, session.getEndpointId());
-            history = service.replyHistory(userId, session, req.text(), req.skip());
+            history = service.replyHistory(userId, session, req.text(), skip);
         } catch (RuntimeException e) {
             concurrencyGate.release(userId);
             throw e;
