@@ -25,7 +25,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import reactor.core.publisher.Flux;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -108,9 +107,6 @@ class ChatTurnRunnerTest {
     }
 
     private ChatAgentFactory.Leaves leaves() {
-        // ChatService 建请求时无条件读 getOptions() 挂工具，null 会 NPE
-        when(deep.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        when(light.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         ChatModelFactory chatModelFactory = mock(ChatModelFactory.class);
         when(chatModelFactory.modelsFor(any())).thenReturn(new ChatModelFactory.Models(deep, light));
         ChatEndpoints llmConfig = ChatTestEndpoints.eps(1L, "gpt-5");   // 叶子指纹含 userId（trader 工具按它认人）

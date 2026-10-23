@@ -23,7 +23,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -85,9 +84,6 @@ class SummarizerLeafTest {
      * @param limit     模型调用上限
      */
     private ChatAgentFactory.Leaves leaves(int threshold, int keep, int limit) {
-        // ChatService 建请求时无条件读 getOptions() 挂工具，null 会 NPE
-        when(deep.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
-        when(light.getOptions()).thenReturn(ToolCallingChatOptions.builder().build());
         ChatModelFactory chatModelFactory = mock(ChatModelFactory.class);
         when(chatModelFactory.modelsFor(any())).thenReturn(new ChatModelFactory.Models(deep, light));
         // run_deep_analysis 必须是能执行的真工具（要真走到工具边）——
