@@ -2,7 +2,8 @@
 
 骨架就是挖掘装载的那份（晚一根成交：信号那根收盘后再过一根才建仓，资金费从建仓那刻起算）。
 组合腿：勾选因子先转截面秩再 z 分数，按 24h 档学到的权重加权（combo 那一套：符号跟 IC，大小是单独做多空腿的净收益，
-不赚钱的是 0）；搜索段 walk-forward 学权重和方向，holdout 用搜索段整段定权重、方向定 +1。carry 腿：basis_7d，方向定死 −1（做空溢价高的）。
+不赚钱的是 0）；搜索段 walk-forward 学权重和方向，holdout 用搜索段整段定权重、方向定 +1。carry 腿：basis_7d，方向定死 −1（做空溢价高的），
+上市不满 CARRY_MIN_DAYS 天的币不碰（carry_signal 把它们当缺值；币龄按归档第一根 K 线算，Pool.listed）。
 两腿都按缓冲带选币（cs_leg.weights），每边按 1/Std($ret, 672) 分仓、单币不超过这一边平均的 leg_cap 倍，按档扣成本、扣资金费；每期净收益按两腿的份额合成。
 交易员的组合权重也从这里学（learned_weights）：全部历史、同一套骨架和函数。
 挖掘的 G9 也用它：库里的因子加基差 carry 是基线（Base），候选加进组合腿后搜索段净 Sharpe 升多少（gain）。
@@ -35,7 +36,16 @@ BARS = HORIZON_BARS[24]
 # 每条腿占净值的比例
 SHARES = {"combo": 0.75, "carry": 0.25}
 CARRY = parse(reference.KNOWN_EFFECTS["basis_7d"][0], FEATURE_COLUMNS)
+# carry 腿不碰上市不满这么多天的币
+CARRY_MIN_DAYS = 365
 VOL = parse("Std($ret, 672)", FEATURE_COLUMNS)
+
+
+def carry_signal(pool: Pool) -> np.ndarray:
+    """全量骨架上 carry 腿的信号：basis_7d，上市不满 CARRY_MIN_DAYS 天的币当缺值"""
+    f = pool.values(CARRY).f
+    f[pool.age_days(pool.rows) < CARRY_MIN_DAYS] = np.nan
+    return f
 
 
 @dataclass(frozen=True)
@@ -191,7 +201,7 @@ def main() -> None:
     pool = Pool.load(store, universe, cut, args.delay)
     print(f"因子：{', '.join(f['name'] for f in factors) or '（没有勾选，组合腿空仓）'}；晚 {args.delay} 根成交", flush=True)
     values = [pool.values(parse(f["expr"], FEATURE_COLUMNS)).f for f in factors]
-    basis, vol = pool.values(CARRY).f, pool.values(VOL).f
+    basis, vol = carry_signal(pool), pool.values(VOL).f
     print(_line("搜索段（walk-forward 样本外）", backtest(pool, values, basis, vol, params, False)), flush=True)
     print(_line(f"holdout（{np.datetime64(cut, 'ms')} 之后）", backtest(pool, values, basis, vol, params, True)))
 

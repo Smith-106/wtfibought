@@ -1,8 +1,10 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from wiib_alpha.data.binance import BAR_MS
+from wiib_alpha.data.binance import BAR_MS, DAY_MS
 from wiib_alpha.data.panel import FEATURE_COLUMNS
 from wiib_alpha.data.pool import on_grid
 from wiib_alpha.dsl import parse
@@ -89,7 +91,8 @@ def test_targets_split_capital_between_the_legs(planted_store, planted_pool):
     signal = targets.values_at(panels, PLANTED, t).sort_values(ascending=False)
     # 上一期组合腿多头里有个现在排第 7 的币（24 个币的头部 2/5 以内）：留着
     kept = signal.index[6]
-    out = targets.compute(panels, [PLANTED], np.array([0.03]), {"combo": {"long": [kept]}}, t, PARAMS, True)
+    listed = dict.fromkeys(panels, 0)
+    out = targets.compute(panels, [PLANTED], np.array([0.03]), {"combo": {"long": [kept]}}, t, PARAMS, True, listed)
     legs = out["legs"]
     assert legs["combo"]["long"] == sorted([*signal.index[:4], kept])
     for leg in legs.values():
@@ -105,15 +108,34 @@ def test_targets_split_capital_between_the_legs(planted_store, planted_pool):
     weights = np.array([c["weight"] for c in out["coins"].values()])
     assert weights.sum() == pytest.approx(0.0, abs=1e-12) and np.abs(weights).sum() <= 2.0 + 1e-12
     # 一条因子都没勾：组合腿空仓，carry 腿照旧
-    bare = targets.compute(panels, [], np.empty(0), {}, t, PARAMS, True)
+    bare = targets.compute(panels, [], np.empty(0), {}, t, PARAMS, True, listed)
     assert bare["legs"]["combo"]["long"] == [] and bare["legs"]["carry"] == legs["carry"]
     # carry 腿停了：空仓，每币只剩组合腿那份
-    off = targets.compute(panels, [PLANTED], np.array([0.03]), {}, t, PARAMS, False)
+    off = targets.compute(panels, [PLANTED], np.array([0.03]), {}, t, PARAMS, False, listed)
     assert off["legs"]["carry"] == {"long": [], "short": [], "coins": []}
     assert all(c["carry"] == 0 and c["weight"] == c["combo"] for c in off["coins"].values())
+    # 上市不满一年的币 carry 腿不碰，组合腿照旧
+    young = targets.compute(panels, [PLANTED], np.array([0.03]), {}, t, PARAMS, True, {**listed, "AAA": t - 100 * DAY_MS})
+    assert "AAA" not in {c["symbol"] for c in young["legs"]["carry"]["coins"]}
+    assert "AAA" in {c["symbol"] for c in young["legs"]["combo"]["coins"]}
     # T 那根有数的币不够：不出空目标（那会把仓位全平掉），报错
     with pytest.raises(targets.TradeError):
-        targets.compute(dict(list(panels.items())[:10]), [PLANTED], np.array([0.03]), {}, t, PARAMS, True)
+        targets.compute(dict(list(panels.items())[:10]), [PLANTED], np.array([0.03]), {}, t, PARAMS, True, listed)
+
+
+def test_carry_signal_skips_coins_listed_under_a_year(planted_pool):
+    full = planted_pool.values(scheme.CARRY).f
+    # 合成面板全在数据起点就有：都算老币，一个都不剔
+    assert (planted_pool.listed == 0).all()
+    assert np.array_equal(scheme.carry_signal(planted_pool), full, equal_nan=True)
+    # AAA 当作数据起点后 10 天才上市：之后 365 天内的行当缺值，别的币不动
+    rows = planted_pool.rows
+    start = int(rows["t"].min())
+    pool = replace(planted_pool, listed=np.where(np.arange(len(planted_pool.symbols)) == 0, start + 10 * DAY_MS, 0))
+    f = scheme.carry_signal(pool)
+    young = (rows["sym"].to_numpy() == 0) & (rows["t"].to_numpy() < start + 375 * DAY_MS)
+    assert young.any() and np.isnan(f[young]).all()
+    assert np.array_equal(f[~young], full[~young], equal_nan=True)
 
 
 def test_backtest_and_weights(planted_pool):

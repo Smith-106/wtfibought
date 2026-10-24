@@ -19,7 +19,7 @@ import pandas as pd
 
 from .. import ops
 from ..dsl import Call, Cross, Expr
-from .binance import BAR_MS
+from .binance import BAR_MS, DAY_MS
 from .panel import DELAY, HORIZON_BARS, POOL_COLUMN, PanelStore
 
 # 基础网格 6h 一个点；12h、24h 的网格是它的子集
@@ -98,6 +98,8 @@ class Pool:
     in_search: np.ndarray
     # 搜索段骨架：标准答案和资金费够到 cut 之后的记 NaN，与 truncate 同口径
     search: pd.DataFrame
+    # 每个币第一根 K 线的收盘时刻（按 symbols 的序号）；数据起点就在的币记 0。重新上市的币按第一次算
+    listed: np.ndarray
 
     @classmethod
     def load(cls, store: PanelStore, universe: pd.DataFrame, cut_ms: int, delay: int = DELAY) -> "Pool":
@@ -106,6 +108,7 @@ class Pool:
         by_symbol = {s: dict(zip(g["m"], tier_of(g["rank"].to_numpy()))) for s, g in ranks.groupby("symbol")}
         symbols = tuple(s for s in sorted(by_symbol) if store.has(s))
         parts = []
+        first = []
         # 全部数据的最后一根：还在交易的币都停在这里，比它早断的是下架了
         end = 0
         for code, s in enumerate(symbols):
@@ -113,6 +116,7 @@ class Pool:
             keep = _keep(df)
             every = df.index.to_numpy(dtype="int64")
             end = max(end, int(every.max(initial=0)))
+            first.append(int(every.min()) if len(every) else 0)
             close = df["close"].to_numpy(dtype="float64")
             t = every[keep]
             m = month_of(t)
@@ -128,7 +132,14 @@ class Pool:
         in_search = rows["t"].to_numpy() <= cut_ms
         search = rows[in_search].reset_index(drop=True)
         _blank_after(search, cut_ms, delay)
-        return cls(store, symbols, rows, cut_ms, in_search, search)
+        # 数据起点（最早那根）后两天内就有数的币算起点就在，不知道它什么时候上的
+        first_arr = np.array(first, dtype="int64")
+        listed = np.where(first_arr <= first_arr.min() + 2 * DAY_MS, 0, first_arr)
+        return cls(store, symbols, rows, cut_ms, in_search, search, listed)
+
+    def age_days(self, rows: pd.DataFrame) -> np.ndarray:
+        """每行那一刻这个币上市多少天"""
+        return (rows["t"].to_numpy(dtype="int64") - self.listed[rows["sym"].to_numpy(dtype="int64")]) / DAY_MS
 
     def frame(self, symbol: str, columns: list[str]) -> pd.DataFrame:
         return self.store.load(symbol, [*columns, POOL_COLUMN])

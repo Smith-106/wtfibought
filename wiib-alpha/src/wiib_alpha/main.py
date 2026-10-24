@@ -110,7 +110,7 @@ def load_data(cfg: Config, params: EvalParams, universe: list[dict[str, Any]]) -
         status=described,
         loaded_at=now_ms(),
         vol=pool.values(scheme.VOL).f,
-        basis=pool.values(scheme.CARRY).f,
+        basis=scheme.carry_signal(pool),
         funding=pool.values(parse("$funding_rate", FEATURE_COLUMNS)).f,
     )
 

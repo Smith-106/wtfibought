@@ -175,7 +175,7 @@ def g9(store: PanelStore, db_path: str, params: EvalParams, randoms: int, seed: 
             "SELECT name, expr FROM candidate WHERE expr IS NOT NULL ORDER BY updated_at")}
     pool = load_pool(store, universe, params.holdout_days)
     pick = pool.in_search
-    vol, basis = pool.values(scheme.VOL).f[pick], pool.values(scheme.CARRY).f[pick]
+    vol, basis = pool.values(scheme.VOL).f[pick], scheme.carry_signal(pool)[pick]
     search = lambda expr: pool.values(parse(expr, FEATURE_COLUMNS)).f[pick]
 
     def base(values: dict[str, np.ndarray]) -> scheme.Base:
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"参照网格 {len(grid.names)} 条，{time.perf_counter() - t0:.1f}s", flush=True)
 
         # 库是空的：G9 的基线是只有基差 carry 的交易方案；参照集自己不查冗余、不做 BH：它们是尺子不是候选
-        vol, basis = pool.values(scheme.VOL).f, pool.values(scheme.CARRY).f
+        vol, basis = pool.values(scheme.VOL).f, scheme.carry_signal(pool)
         empty = scheme.Base.of(Combo.empty(pool.search, pool.symbols), basis[pool.in_search], vol[pool.in_search],
                                params)
         ref_evals = run("参照集", ref_exprs, pool, vol, params, thresholds, reference.Grid.empty(), set(), empty)

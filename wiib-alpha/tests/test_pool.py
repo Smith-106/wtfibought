@@ -57,6 +57,22 @@ def test_grid_month_and_tier_helpers():
     assert tier_of(np.array([1, 20, 21, 50, 51, 80])).tolist() == [1, 1, 2, 2, 3, 3]
 
 
+def test_listed_is_the_first_bar_except_for_coins_present_at_the_data_start(tmp_path):
+    store = PanelStore(tmp_path)
+    store.save_panel("A", panel(0, np.ones(N)))
+    store.save_panel("B", panel(1, np.ones(N)))
+    # D 比别的币晚三天才有数据（数据起点后两天内有数的算起点就在）
+    store.save_panel("D", panel(2, np.ones(N)).iloc[3 * 96:])
+    universe = pd.DataFrame([(m, s, i + 1, 9.0) for m in ("2026-01", "2026-02") for i, s in enumerate(("A", "B", "D"))],
+                            columns=UNIVERSE.columns)
+    p = Pool.load(store, universe, cut_ms=close_time(N - 1), delay=0)
+    assert list(p.listed) == [0, 0, close_time(3 * 96)]
+    age = p.age_days(p.rows)
+    d = p.rows["sym"].to_numpy() == 2
+    assert age[~d].min() > 10_000
+    assert np.allclose(age[d], (p.rows["t"].to_numpy()[d] - close_time(3 * 96)) / 86_400_000)
+
+
 def test_rows_are_in_pool_grid_points_with_tiers(pool):
     # 面板不在的币不进；sym 是 symbols 里的序号
     assert pool.symbols == ("A", "B", "C")
