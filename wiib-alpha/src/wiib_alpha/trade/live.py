@@ -1,9 +1,9 @@
-"""live：交易员出信号用的最近 28 天面板，K 线、溢价 K 线、持仓量和大户持仓多空比全走 fapi，不读归档
-（归档 metrics 出过成片乱跳的非零坏数，剔不干净）。
+"""live：交易员出信号用的最近 28 天面板，K 线、溢价 K 线、metrics（持仓量、三种多空比、taker 买卖量比）、资金费全走 fapi，不读归档
+（归档晚一天出，metrics 还出过成片乱跳的非零坏数，剔不干净）。
 
 存 live/{数据集}/{币}.parquet，滚动留 30 天；不写 raw/，不然下次刷新的增量起点被顶掉、两种口径混进历史。
 和 raw 重叠的那段给一致性核对（check.py）用。
-费率读 raw；另两种多空比、taker 比、强平没补，用到这些列的因子交易员不能勾（COLUMNS）。拼好按 panel.assemble 同一套规则装配。
+强平三列没补（只有产品币有），用到的因子交易员不能勾（COLUMNS）。拼好按 panel.assemble 同一套规则装配。
 第一次要补满 29 天，约一小时：部署后先跑 python -m wiib_alpha.trade.live 预热，别留到 00:05 调仓时现补。
 """
 
@@ -28,10 +28,11 @@ KEEP_DAYS = 30
 # 出信号给多少天的面板：rally_basis_chase 是 2016 套 96（22 天），ls_pos_stable 是 672 套 672（14 天）；
 # 回看更长的因子勾了也出不了值（targets 会报错不调仓）。持仓量、多空比接口只留 30 天，再长补不到
 WINDOW_DAYS = 28
-DATASETS = ("klines_15m", "premium_15m", "metrics")
+DATASETS = ("klines_15m", "premium_15m", "metrics", "funding")
 # live 尾巴补得出来的 DSL 列
 COLUMNS = frozenset({"open", "high", "low", "close", "volume", "quote_volume", "trades", "taker_buy_base",
-                     "taker_buy_quote", "ret", "btc_close", "btc_ret", "premium", "oi", "oi_value", "ls_top_pos", "hour"})
+                     "taker_buy_quote", "ret", "btc_close", "btc_ret", "premium", "oi", "oi_value", "ls_top_pos",
+                     "ls_top_acct", "ls_acct", "taker_ls_vol", "funding_rate", "hour"})
 
 # (数据集, 币) → 这个币拼好的原始数据，只含窗口起点之后的
 Load = Callable[[str, str], pd.DataFrame | None]
@@ -40,7 +41,7 @@ Load = Callable[[str, str], pd.DataFrame | None]
 def update(store: PanelStore, binance: Binance, symbols: Iterable[str], now: int, progress: dict[str, Any]) -> None:
     """每个币每个数据集从 live 最后一条之后补到 now；没补过或断太久的从 WINDOW_DAYS + 1 天前补起，再早的出信号用不上"""
     fetch = {"klines_15m": binance.recent_klines, "premium_15m": binance.recent_premium,
-             "metrics": binance.recent_metrics}
+             "metrics": binance.recent_metrics, "funding": binance.recent_funding}
     floor = now - (WINDOW_DAYS + 1) * DAY_MS
     symbols = list(symbols)
     progress.update(total=len(symbols), done=0)
@@ -69,7 +70,7 @@ def window_start(t_ms: int) -> int:
 
 
 def loader(store: PanelStore, t_ms: int) -> Load:
-    """交易员出 t 的信号用的取数：DATASETS 只读 live/，费率读 raw"""
+    """交易员出 t 的信号用的取数：DATASETS 只读 live/，别的读 raw"""
     since = window_start(t_ms)
 
     def load(dataset: str, symbol: str) -> pd.DataFrame | None:

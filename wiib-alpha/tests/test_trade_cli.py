@@ -20,6 +20,7 @@ SYMBOLS = [f"C{i:02d}" for i in range(21)]
 @pytest.fixture(autouse=True)
 def no_rest_gap(monkeypatch):
     monkeypatch.setattr(b, "REST_GAP_S", 0.0)
+    monkeypatch.setattr(b, "DATA_GAP_S", 0.0)
     yield
     config.cache_clear()
 

@@ -136,8 +136,14 @@ class FakeFapi:
         if path.endswith("openInterestHist"):
             rows = [{"symbol": s, "sumOpenInterest": str(1000 + i + t // METRIC_MS % 7),
                      "sumOpenInterestValue": str(1e5 * (1 + i)), "timestamp": t} for t in points]
+        elif path.endswith("takerlongshortRatio"):
+            rows = [{"buySellRatio": str(0.8 + 0.01 * ((t // METRIC_MS + 2 * i) % 7)), "buyVol": "1", "sellVol": "1",
+                     "timestamp": t} for t in points]
         else:
-            rows = [{"symbol": s, "longShortRatio": str(1 + 0.01 * ((t // METRIC_MS + i) % 9)), "timestamp": t}
+            # 三个多空比接口：大户持仓、大户账户数、全体账户数，值各不一样
+            k = {"topLongShortPositionRatio": 0, "topLongShortAccountRatio": 1, "globalLongShortAccountRatio": 2}[
+                path.rsplit("/", 1)[-1]]
+            rows = [{"symbol": s, "longShortRatio": str(1 + 0.01 * ((t // METRIC_MS + i + 3 * k) % 9)), "timestamp": t}
                     for t in points]
         return httpx.Response(200, json=rows)
 
@@ -153,6 +159,7 @@ class FakeFapi:
             store.save_raw("klines_15m", s, api.recent_klines(s, start, end))
             store.save_raw("premium_15m", s, api.recent_premium(s, start, end))
             store.save_raw("metrics", s, api.recent_metrics(s, start, end))
+            store.save_raw("funding", s, api.recent_funding(s, start, end))
         self.now = now
         self.log.clear()
 

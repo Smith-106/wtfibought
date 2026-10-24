@@ -47,6 +47,8 @@ _S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _RETRIES = 3
 # fapi 费率接口每个 IP 5 分钟 500 次，服务器上 Java 服务也在用：两次之间至少隔这么多秒（5 分钟最多 250 次），几个币一起拉也一样
 REST_GAP_S = 1.2
+# /futures/data 下的 5 分钟统计是单独的限速桶（每个 IP 5 分钟 1000 次、权重 0）：间隔短一点（5 分钟最多 750 次）
+DATA_GAP_S = 0.4
 
 KLINE_COLUMNS = ["open_time", "open", "high", "low", "close", "volume", "close_time",
                  "quote_volume", "trades", "taker_buy_base", "taker_buy_quote"]
@@ -210,18 +212,22 @@ class Binance:
         return df[["close_time", "close"]].rename(columns={"close": "premium"})
 
     def recent_metrics(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-        """[start_ms, end_ms) 内的持仓量（openInterestHist）和大户持仓多空比（topLongShortPositionRatio），5 分钟一条；
-        列同归档 metrics，这两个接口给不了的另三列是 NaN。接口只留最近 30 天。
-        接口的时间戳比归档 metrics 的 create_time 晚一格（同一个值，接口记在 5 分钟之后），挪回来和归档对齐；
-        多空比接口只给 4 位小数，归档是 6 位"""
-        oi = self._history("openInterestHist", symbol, start_ms + METRIC_MS, end_ms + METRIC_MS)
-        ls = self._history("topLongShortPositionRatio", symbol, start_ms + METRIC_MS, end_ms + METRIC_MS)
-        a = pd.DataFrame({"time": pd.Series([r["timestamp"] - METRIC_MS for r in oi], dtype="int64"),
-                          "oi": pd.Series([r["sumOpenInterest"] for r in oi], dtype="float64"),
-                          "oi_value": pd.Series([r["sumOpenInterestValue"] for r in oi], dtype="float64")})
-        b = pd.DataFrame({"time": pd.Series([r["timestamp"] - METRIC_MS for r in ls], dtype="int64"),
-                          "ls_top_pos": pd.Series([r["longShortRatio"] for r in ls], dtype="float64")})
-        df = a.merge(b, on="time", how="outer").reindex(columns=METRICS_COLUMNS)
+        """[start_ms, end_ms) 内的 metrics，5 分钟一条，列同归档：持仓量（openInterestHist）、大户持仓多空比（topLongShortPositionRatio）、
+        大户账户数多空比（topLongShortAccountRatio）、全体账户多空比（globalLongShortAccountRatio）、taker 买卖量比（takerlongshortRatio）。
+        接口只留最近 30 天。前四个接口的时间戳比归档 metrics 的 create_time 晚一格（同一个值，接口记在 5 分钟之后），挪回来和归档对齐，
+        taker 买卖量比不晚、不挪；多空比接口只给 4 位小数，归档是 6 位"""
+        df = None
+        for name, shift, fields in (
+                ("openInterestHist", METRIC_MS, {"oi": "sumOpenInterest", "oi_value": "sumOpenInterestValue"}),
+                ("topLongShortPositionRatio", METRIC_MS, {"ls_top_pos": "longShortRatio"}),
+                ("topLongShortAccountRatio", METRIC_MS, {"ls_top_acct": "longShortRatio"}),
+                ("globalLongShortAccountRatio", METRIC_MS, {"ls_acct": "longShortRatio"}),
+                ("takerlongshortRatio", 0, {"taker_ls_vol": "buySellRatio"})):
+            rows = self._history(name, symbol, start_ms + shift, end_ms + shift)
+            part = pd.DataFrame({"time": pd.Series([r["timestamp"] - shift for r in rows], dtype="int64"),
+                                 **{col: pd.Series([r[f] for r in rows], dtype="float64") for col, f in fields.items()}})
+            df = part if df is None else df.merge(part, on="time", how="outer")
+        df = df.reindex(columns=METRICS_COLUMNS)
         return df[(df["time"] >= start_ms) & (df["time"] < end_ms)].sort_values("time").reset_index(drop=True)
 
     def recent_funding(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
@@ -300,7 +306,8 @@ class Binance:
 
     def _rest(self, path: str, params: dict[str, Any]) -> Any:
         with self._rest_lock:
-            time.sleep(max(0.0, self._rest_at + REST_GAP_S - time.monotonic()))
+            gap = DATA_GAP_S if path.startswith("/futures/data/") else REST_GAP_S
+            time.sleep(max(0.0, self._rest_at + gap - time.monotonic()))
             resp = self._get(self._fapi + path, params)
             self._rest_at = time.monotonic()
         if resp is None:

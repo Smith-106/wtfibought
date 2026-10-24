@@ -15,6 +15,7 @@ SYMBOLS = ["AAA", "BBB", "BTCUSDT"]
 @pytest.fixture(autouse=True)
 def no_rest_gap(monkeypatch):
     monkeypatch.setattr(b, "REST_GAP_S", 0.0)
+    monkeypatch.setattr(b, "DATA_GAP_S", 0.0)
 
 
 @pytest.fixture
@@ -34,8 +35,13 @@ def test_update_fills_29_days_then_continues_after_live_and_keeps_30_days(store)
     klines = [p for path, p in fake.log if path == "/fapi/v1/klines" and p["symbol"] == "AAA"]
     assert [(int(p["startTime"]), p["limit"]) for p in klines] == [(floor + i * 1000 * BAR_MS, "1000") for i in range(3)]
     metrics = [p for path, p in fake.log if path == "/futures/data/openInterestHist" and p["symbol"] == "AAA"]
-    # 接口时间戳晚归档一格，请求也往后挪一格
+    # 接口时间戳晚归档一格，请求也往后挪一格；taker 买卖量比不晚，不挪
     assert int(metrics[0]["startTime"]) == floor + b.METRIC_MS
+    taker = [p for path, p in fake.log if path == "/futures/data/takerlongshortRatio" and p["symbol"] == "AAA"]
+    assert int(taker[0]["startTime"]) == floor
+    # 费率也从 fapi 补
+    funding = [p for path, p in fake.log if path == "/fapi/v1/fundingRate" and p["symbol"] == "AAA"]
+    assert int(funding[0]["startTime"]) == floor
     # 09-27 0:20 之后第一根开盘的是 0:30
     first = DAY0 - 4 * DAY_MS + 45 * 60_000 - 1
     got = store.load_live("klines_15m", "AAA")
@@ -58,10 +64,9 @@ def test_window_reads_only_live_and_matches_assembling_everything(store):
     t = DAY0 + 25 * DAY_MS - 1
     fake = FakeFapi(SYMBOLS, t + 1 + 20 * 60_000)
     fake.write_raw(store, DAY0, DAY0 + 23 * DAY_MS)
-    # 归档的持仓量是坏的（假装出了事故），还有 live 补不了的全体多空比：窗口里都看不到
+    # 归档的持仓量、全体多空比、费率是坏的（假装出了事故）：窗口里都看不到，全是接口的数
     raw = store.load_raw("metrics", "AAA")
-    store.save_raw("metrics", "AAA", raw.assign(oi=raw["oi"] * 2, ls_acct=1.0))
-    # 费率照旧读归档
+    store.save_raw("metrics", "AAA", raw.assign(oi=raw["oi"] * 2, ls_acct=-5.0))
     store.save_raw("funding", "AAA", pd.DataFrame({"funding_time": [t - 3_600_000], "funding_rate": [0.0002]}))
     live.update(store, fake.binance(), SYMBOLS, fake.now, {})
     # 28 天的窗口跨到 9 月：两个月都在池才整段在池
@@ -70,7 +75,9 @@ def test_window_reads_only_live_and_matches_assembling_everything(store):
     assert set(panels) == {"AAA", "BBB"}
     a = panels["AAA"]
     assert a.index.min() == t - 28 * DAY_MS + BAR_MS and a.index.max() == t and a["in_pool"].eq(1.0).all()
-    assert a["ls_acct"].isna().all() and a.loc[t, "funding_rate"] == 0.0002
+    assert (a["ls_acct"] != -5.0).all()
+    # t 之前最近一次结算是当天 16 点那次（8 小时一次，折成每 8 小时等价就是它自己）
+    assert a.loc[t, "funding_rate"] == pytest.approx(fake.rate("AAA", t + 1 - 8 * 3_600_000))
     # 全是接口的数：和整段一次装配的一样
     whole = FakeFapi(SYMBOLS, fake.now).binance()
     since = live.window_start(t)
@@ -78,7 +85,8 @@ def test_window_reads_only_live_and_matches_assembling_everything(store):
                     premium=whole.recent_premium("AAA", since, t + 1), metrics=whole.recent_metrics("AAA", since, t + 1),
                     pool_months=months["AAA"])
     full = full.loc[a.index]
-    for c in ("close", "quote_volume", "ret", "btc_ret", "premium", "oi", "ls_top_pos", "hour"):
+    for c in ("close", "quote_volume", "ret", "btc_ret", "premium", "oi", "ls_top_pos", "ls_top_acct", "ls_acct",
+              "taker_ls_vol", "hour"):
         np.testing.assert_array_equal(a[c].to_numpy(), full[c].to_numpy(), err_msg=c)
     # 00:15 那根的收盘价一个币拉一根；拉不到的币（fapi 回 400）不出
     assert live.closes(fake.binance(), ["AAA", "CCC"], t + BAR_MS) == {"AAA": pytest.approx(fake.close("AAA", t + 1))}

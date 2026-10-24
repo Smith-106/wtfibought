@@ -159,6 +159,7 @@ def handler(bucket: Bucket, log: list[str]):
 def no_rest_gap(monkeypatch):
     """fapi 限速在这里不等，翻页的用例要连发好几次"""
     monkeypatch.setattr(b, "REST_GAP_S", 0.0)
+    monkeypatch.setattr(b, "DATA_GAP_S", 0.0)
 
 
 def client(log: list[str] | None = None, fapi: str = "https://f") -> b.Binance:
@@ -329,22 +330,27 @@ def test_recent_klines_take_one_small_window_for_a_day_and_pages_of_1000_for_a_g
     assert list(premium.columns) == b.PREMIUM_COLUMNS and premium["close_time"].tolist() == (day["close_time"]).tolist()
 
 
-def test_recent_metrics_join_open_interest_and_top_position_ratio():
+def test_recent_metrics_join_the_five_data_endpoints():
     api, fake = live_client()
     df = api.recent_metrics("Y", LIVE_NOW - 2 * DAY, LIVE_NOW)
-    # 两天 576 条，500 条一窗：两个接口各翻两窗
-    assert [path for path, _ in fake.log] == ["/futures/data/openInterestHist"] * 2 + ["/futures/data/topLongShortPositionRatio"] * 2
+    # 两天 576 条，500 条一窗：五个接口各翻两窗
+    assert [path for path, _ in fake.log] == [f"/futures/data/{name}" for name in (
+        "openInterestHist", "topLongShortPositionRatio", "topLongShortAccountRatio", "globalLongShortAccountRatio",
+        "takerlongshortRatio") for _ in range(2)]
     assert all(p["period"] == "5m" and p["limit"] == "500" for _, p in fake.log)
-    # 接口的时间戳比归档晚一格：请求往后挪一格、拿回来再挪回去。0 点过 5 分时接口最新那条记在 0 点，挪回去是 23:55
-    first = fake.log[0][1]
-    assert int(first["startTime"]) == LIVE_NOW - 2 * DAY + b.METRIC_MS
-    # 列同归档 metrics，这两个接口给不了的是空的
-    assert list(df.columns) == b.METRICS_COLUMNS and len(df) == 575 and df["ls_acct"].isna().all()
-    assert df["time"].iloc[0] == LIVE_NOW - 2 * DAY and df["time"].iloc[-1] == LIVE_NOW - 2 * b.METRIC_MS
-    assert df["time"].is_monotonic_increasing
-    # 接口记在 t + 5 分钟的那条值，落在 t
-    api_t = (LIVE_NOW - 2 * DAY) // b.METRIC_MS + 1
-    assert df["ls_top_pos"].iloc[0] == pytest.approx(1 + 0.01 * ((api_t + 1) % 9))
+    # 前四个接口的时间戳比归档晚一格：请求往后挪一格、拿回来再挪回去；taker 买卖量比不挪
+    assert int(fake.log[0][1]["startTime"]) == LIVE_NOW - 2 * DAY + b.METRIC_MS
+    assert int(fake.log[8][1]["startTime"]) == LIVE_NOW - 2 * DAY
+    # 列同归档 metrics，七列都有数
+    assert list(df.columns) == b.METRICS_COLUMNS and df.iloc[0].notna().all()
+    assert df["time"].iloc[0] == LIVE_NOW - 2 * DAY and df["time"].iloc[-1] < LIVE_NOW and df["time"].is_monotonic_increasing
+    # 挪的接口：记在 t + 5 分钟的那条值落在 t；不挪的：记在 t 的落在 t
+    i, t0 = fake.code["Y"], LIVE_NOW - 2 * DAY
+    api_t = t0 // b.METRIC_MS + 1
+    assert df["ls_top_pos"].iloc[0] == pytest.approx(1 + 0.01 * ((api_t + i) % 9))
+    assert df["ls_top_acct"].iloc[0] == pytest.approx(1 + 0.01 * ((api_t + i + 3) % 9))
+    assert df["ls_acct"].iloc[0] == pytest.approx(1 + 0.01 * ((api_t + i + 6) % 9))
+    assert df["taker_ls_vol"].iloc[0] == pytest.approx(0.8 + 0.01 * ((t0 // b.METRIC_MS + 2 * i) % 7))
     assert df["oi"].iloc[0] == 1001 + api_t % 7 and df["oi_value"].iloc[0] == 2e5
 
 
