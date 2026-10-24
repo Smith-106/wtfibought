@@ -50,6 +50,7 @@ deploy_script.txt
 docs/*.md
 !docs/architecture.md
 !docs/deploy.md
+docs/alpha/
 docs/superpowers/plans/*.md
 docs/superpowers/specs/*.md
 ### 海报设计稿只留本地，不入库 ###

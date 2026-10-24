@@ -4,9 +4,9 @@ import {
   ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, GitCompare, RefreshCw, Square, SquareCheck, TriangleAlert,
 } from 'lucide-react';
 import {
-  alpha, TRADE_LEGS, type CompareJob, type DailyPnl, type SchemeResult, type TradeRunBrief, type TradeRunDetail,
-  type TradeStatus, type TraderAccount, type TraderDaily, type TraderFactor, type TraderJob, type TraderLive,
-  type TraderPosition,
+  alpha, TRADE_LEGS, type CompareJob, type DailyPnl, type DayAttrib, type LegSummary, type SchemeResult,
+  type TradeLeg, type TradeRunBrief, type TradeRunDetail, type TradeStatus, type TraderAccount, type TraderCarry,
+  type TraderDaily, type TraderFactor, type TraderJob, type TraderLive, type TraderPosition,
 } from '../api';
 import { cx, DASH, localClock, localTime, num, pct, signedPct, utcMinute } from '../format';
 import { usePoll } from '../poll';
@@ -35,6 +35,7 @@ export function TraderPanel({ active, admin, loaded }: { active: boolean; admin:
   const [stale, setStale] = useState(false);
   const [runs, setRuns] = useState<TradeRunBrief[] | null>(null);
   const [factors, setFactors] = useState<TraderFactor[] | null>(null);
+  const [carry, setCarry] = useState<TraderCarry | null>(null);
   const [compare, setCompare] = useState<CompareJob | null>(null);
   // 实时数里的调仓日：变了是又调过一次仓，每日盈亏和调仓记录重拉
   const liveDay = useRef<string | null>(null);
@@ -48,7 +49,7 @@ export function TraderPanel({ active, admin, loaded }: { active: boolean; admin:
   ]), [admin, fail]);
 
   const loadFactors = useCallback(() => alpha.traderFactors()
-    .then(r => { setFactors(r.items); setCompare(r.compare); })
+    .then(r => { setFactors(r.items); setCarry(r.carry); setCompare(r.compare); })
     .catch(fail), [fail]);
 
   useEffect(() => {
@@ -95,7 +96,8 @@ export function TraderPanel({ active, admin, loaded }: { active: boolean; admin:
       {admin ? (
         <div className="grid items-start gap-x-12 gap-y-14 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <PositionsCard positions={positions} />
-          <FactorsCard factors={factors} compare={compare} loaded={loaded} onChanged={loadFactors} onList={setFactors} />
+          <FactorsCard factors={factors} carry={carry} compare={compare} loaded={loaded} onChanged={loadFactors}
+                       onList={setFactors} onCarry={setCarry} />
         </div>
       ) : <PositionsCard positions={positions} />}
       {admin && <RunsCard runs={runs} />}
@@ -199,11 +201,12 @@ function DailyView({ daily, live }: { daily: TraderDaily; live: TraderLive | nul
       return done;
     }
     return [...done, { day: live.day, start: live.dayStart, end: live.equity, pnl: live.dayPnl,
-                       pct: live.dayPnl / live.dayStart, live: true }];
+                       pct: live.dayPnl / live.dayStart, attrib: null, live: true }];
   }, [daily, live]);
   if (!rows.length) return <Empty>{t('trader.dailyEmpty')}</Empty>;
   return (
     <div className="space-y-6">
+      <LegsStrip legs={daily.legs} />
       <PnlBars rows={rows} />
       <div className="tw max-h-[24rem] overflow-y-auto">
         <table className="tbl tbl-sticky">
@@ -215,6 +218,9 @@ function DailyView({ daily, live }: { daily: TraderDaily; live: TraderLive | nul
               <th className="r">{t('trader.dailyCol.pnl')}</th>
               <th className="r">{t('trader.dailyCol.pct')}</th>
               <th className="r">{t('trader.dailyCol.total')}</th>
+              {TRADE_LEGS.map(leg => <th key={leg} className="r">{t(`trader.leg.${leg}`)}</th>)}
+              <th className="r">{t('trader.dailyCol.model')}</th>
+              <th className="r">{t('trader.dailyCol.residual')}</th>
             </tr>
           </thead>
           <tbody>
@@ -230,11 +236,43 @@ function DailyView({ daily, live }: { daily: TraderDaily; live: TraderLive | nul
                 <td className={cx('r num', tone(r.end - daily.initialBalance))}>
                   {signedPct(r.end / daily.initialBalance - 1, 2)}
                 </td>
+                {TRADE_LEGS.map(leg => (
+                  <td key={leg} className={cx('r num', tone(r.attrib?.legs[leg].net))}>{signedMoney(r.attrib?.legs[leg].net)}</td>
+                ))}
+                <td className={cx('r num', tone(r.attrib?.model))}>{signedMoney(r.attrib?.model)}</td>
+                <td className={cx('r num', tone(r.attrib?.residual))}>{signedMoney(r.attrib?.residual)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/** 两条腿前向到现在：累计收益、回撤对止损线；碰过线的整块标红 */
+function LegsStrip({ legs }: { legs: Record<TradeLeg, LegSummary> }) {
+  const { t } = useTranslation();
+  return (
+    <div className="grid gap-x-10 gap-y-5 md:grid-cols-2">
+      {TRADE_LEGS.map(leg => {
+        const s = legs[leg];
+        return (
+          <div key={leg} className={cx('space-y-2 border-t pt-3', s.hit ? 'border-loss' : 'border-fg')}>
+            <div className="flex items-center gap-2 text-[13px] font-extrabold">
+              {t(`trader.leg.${leg}`)}
+              <span className="text-[12px] font-normal text-muted num">{t('trader.legDays', { n: s.days })}</span>
+              {s.hit && <Badge tone="loss" icon={TriangleAlert} className="ml-auto">{t('trader.legHit')}</Badge>}
+            </div>
+            <Strip cols={3}>
+              <Stat label={t('trader.legCum')} tone={tone(s.cumReturn)}>{signedPct(s.cumReturn, 2)}</Stat>
+              <Stat label={t('trader.legDrawdown')} hint={t('trader.legStop', { stop: pct(s.stop, 1) })}
+                    tone={s.hit ? 'text-loss' : undefined}>{pct(s.drawdown, 2)}</Stat>
+              <Stat label={t('trader.legMaxDrawdown')} tone={s.hit ? 'text-loss' : undefined}>{pct(s.maxDrawdown, 2)}</Stat>
+            </Strip>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -313,12 +351,14 @@ function PositionsCard({ positions }: { positions: { items: TraderPosition[]; da
 
 // ========== 交易因子：勾选与对比 ==========
 
-function FactorsCard({ factors, compare, loaded, onChanged, onList }: {
+function FactorsCard({ factors, carry, compare, loaded, onChanged, onList, onCarry }: {
   factors: TraderFactor[] | null;
+  carry: TraderCarry | null;
   compare: CompareJob | null;
   loaded: boolean;
   onChanged: () => Promise<unknown>;
   onList: (list: TraderFactor[]) => void;
+  onCarry: (c: TraderCarry) => void;
 }) {
   const { t } = useTranslation();
   const fail = useFail();
@@ -330,6 +370,18 @@ function FactorsCard({ factors, compare, loaded, onChanged, onList }: {
     try {
       const r = await alpha.selectTraderFactor(f.id, !f.selected);
       onList((factors ?? []).map(x => (x.id === f.id ? { ...x, selected: r.selected } : x)));
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleCarry = async () => {
+    if (!carry) return;
+    setBusy('carry');
+    try {
+      onCarry(await alpha.setTraderCarry(!carry.enabled));
     } catch (err) {
       fail(err);
     } finally {
@@ -351,9 +403,26 @@ function FactorsCard({ factors, compare, loaded, onChanged, onList }: {
 
   return (
     <Card title={t('trader.factors')} hint={t('trader.factorsHint')}>
-      {!factors ? <Spinner /> : factors.length === 0 ? <Empty>{t('trader.factorsEmpty')}</Empty> : (
+      {!factors || !carry ? <Spinner /> : (
         <div className="space-y-5">
           <ul className="border-t border-fg divide-y divide-line border-b border-b-line">
+            <li className="flex items-start gap-3 py-3">
+              <button onClick={() => void toggleCarry()} disabled={busy !== null}
+                      title={carry.enabled ? t('trader.selected') : t('trader.unselected')}
+                      className="mt-0.5 inline-flex cursor-pointer text-primary disabled:cursor-not-allowed disabled:opacity-40">
+                {carry.enabled ? <SquareCheck className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+              </button>
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="font-mono text-[13px] font-bold">{t('trader.leg.carry')}</div>
+                <p className="text-[12px] text-muted">{t('trader.carryExpr')}</p>
+                {!carry.enabled && (
+                  <p className="flex items-center gap-1 text-[12px] text-warn">
+                    <TriangleAlert className="w-3 h-3" />{t('trader.carryOff')}
+                  </p>
+                )}
+              </div>
+            </li>
+            {factors.length === 0 && <li className="py-3"><Empty>{t('trader.factorsEmpty')}</Empty></li>}
             {factors.map(f => (
               <li key={f.id} className="flex items-start gap-3 py-3">
                 <button onClick={() => void toggle(f)} disabled={busy !== null || (!f.selected && f.missing.length > 0)}
@@ -538,7 +607,9 @@ function RunDetail({ run }: { run: TradeRunDetail }) {
           : run.factors.map(f => (
             <span key={f.id} title={f.expr}><Badge>{f.name} {num(f.weight, 4)}</Badge></span>
           ))}
+        {run.targets?.carry === false && <Badge tone="warn" icon={TriangleAlert}>{t('trader.carryOffBadge')}</Badge>}
       </div>
+      {run.attrib && <AttribView attrib={run.attrib} />}
       {run.legs && TRADE_LEGS.map(leg => (
         <div key={leg} className="flex flex-wrap items-center gap-1.5 text-[12px]">
           <span className="mr-1 w-16 text-muted">{t(`trader.leg.${leg}`)}</span>
@@ -660,6 +731,67 @@ function RunDetail({ run }: { run: TradeRunDetail }) {
         </details>
       )}
     </div>
+  );
+}
+
+/** 一天的按腿归因：实际 vs 回测应得，两腿各多少，每币明细按盈亏绝对值排（单币事件一眼看到） */
+function AttribView({ attrib }: { attrib: DayAttrib }) {
+  const { t } = useTranslation();
+  const coins = useMemo(() => [...(attrib.coins ?? [])]
+    .sort((a, b) => Math.abs(b.legs.combo + b.legs.carry) - Math.abs(a.legs.combo + a.legs.carry)), [attrib]);
+  return (
+    <section className="space-y-2">
+      <div className="microlabel">{t('trader.attrib', { until: attrib.until })}</div>
+      <div className="flex flex-wrap items-center gap-1.5 text-[12.5px] num">
+        <span className={cx('font-semibold', tone(attrib.actual))}>{t('trader.attribActual')} {signedMoney(attrib.actual)}</span>
+        <span className="text-muted">·</span>
+        <span className={tone(attrib.model)}>{t('trader.attribModel')} {signedMoney(attrib.model)}</span>
+        <span className="text-muted">·</span>
+        <span className={tone(attrib.residual)}>{t('trader.attribResidual')} {signedMoney(attrib.residual)}</span>
+        {TRADE_LEGS.map(leg => (
+          <Badge key={leg} tone={attrib.legs[leg].net >= 0 ? 'gain' : 'loss'} className="ml-1">
+            {t(`trader.leg.${leg}`)} {signedMoney(attrib.legs[leg].net)}
+          </Badge>
+        ))}
+      </div>
+      {attrib.missing.length > 0 && (
+        <p className="flex items-center gap-1 text-[12px] text-warn">
+          <TriangleAlert className="w-3 h-3" />{t('trader.attribMissing', { coins: attrib.missing.join(', ') })}
+        </p>
+      )}
+      {coins.length > 0 && (
+        <div className="max-h-[28rem] overflow-auto">
+          <table className="tbl tbl-sticky">
+            <thead>
+              <tr>
+                <th>{t('trader.col.symbol')}</th>
+                {TRADE_LEGS.map(leg => <th key={leg} className="r">{t(`trader.leg.${leg}`)}</th>)}
+                <th className="r">{t('trader.attribCol.entry')}</th>
+                <th className="r">{t('trader.attribCol.exit')}</th>
+                <th className="r">{t('trader.attribCol.ret')}</th>
+                <th className="r">{t('trader.attribCol.fund')}</th>
+                {TRADE_LEGS.map(leg => <th key={leg} className="r">{t('trader.attribCol.pnl', { leg: t(`trader.leg.${leg}`) })}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {coins.map(c => (
+                <tr key={c.symbol}>
+                  <td className="num font-mono text-[12.5px] font-bold">{c.symbol}</td>
+                  {TRADE_LEGS.map(leg => <td key={leg} className="r num">{c[leg] ? signedPct(c[leg], 2) : ''}</td>)}
+                  <td className="r num">{c.entry}</td>
+                  <td className="r num">{c.exit}</td>
+                  <td className={cx('r num', tone(c.ret))}>{signedPct(c.ret, 2)}</td>
+                  <td className="r num">{signedPct(c.fund, 3)}</td>
+                  {TRADE_LEGS.map(leg => (
+                    <td key={leg} className={cx('r num', tone(c.legs[leg]))}>{c[leg] ? signedMoney(c.legs[leg]) : ''}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

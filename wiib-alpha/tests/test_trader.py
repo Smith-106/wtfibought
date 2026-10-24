@@ -13,7 +13,7 @@ from wiib_alpha.data.binance import DAY_MS
 from wiib_alpha.data.panel import FEATURE_COLUMNS, PanelStore
 from wiib_alpha.data.refresh import RefreshResult
 from wiib_alpha.dsl import parse
-from wiib_alpha.trade import executor, scheduler
+from wiib_alpha.trade import attrib, executor, scheduler
 
 # 2025-03-01 00:00 UTC：出信号的是 2 月最后一根，币池按 2 月（测试的池子表有 2025-01 ~ 03）
 DAY = 1_740_787_200_000
@@ -148,17 +148,70 @@ async def test_two_days_of_rebalancing_and_the_pages_that_show_it(client, trader
     assert market.watched[1] == sorted(set(POOL_SYMBOLS) - {"X00"})
     runs = data(await client.get("/api/alpha/trader/runs", headers=ADMIN))
     assert [r["day"] for r in runs["items"]] == ["2025-03-02", "2025-03-01"] and runs["job"]["running"] is False
-    # 每日盈亏：03-01 那天从它调仓前算到 03-02 调仓前；03-02 还没完，在实时数里
+    # 每日盈亏：03-01 那天从它调仓前算到 03-02 调仓前；03-02 还没完，在实时数里。归因还没算
     daily = data(await client.get("/api/alpha/trader/daily"))
-    assert [(d["day"], d["start"], d["end"]) for d in daily["days"]] == [("2025-03-01", 10000, second["equity_before"])]
+    assert [(d["day"], d["start"], d["end"], d["attrib"]) for d in daily["days"]] == [
+        ("2025-03-01", 10000, second["equity_before"], None)]
+    assert daily["legs"]["combo"]["days"] == 0 and daily["legs"]["carry"]["hit"] is False
     live = await first_frame()
     assert (live["day"], live["dayStart"], live["positionsDay"]) == ("2025-03-02", second["equity_before"], "2025-03-02")
+
+    # 01:00 之后的一次 tick 把 03-01 按腿归因：建仓价、平仓价是两天 00:15 那根的收盘，资金费是持有期里三次结算，
+    # 换仓成本按当月档；实际是 03-02 调仓前的净值减 10000
+    fake.log.clear()
+    await scheduler.tick(m.app, m._library, m._start_refresh, NOW + DAY_MS + 60 * 60_000)
+    attrib = (await store.trade_run("2025-03-01"))["attrib"]
+    assert attrib["until"] == "2025-03-02" and attrib["actual"] == pytest.approx(second["equity_before"] - 10000)
+    assert attrib["missing"] == [] and {c["symbol"] for c in attrib["coins"]} == set(coins)
+    row = next(c for c in attrib["coins"] if c["symbol"] == "AAA")
+    assert (row["entry"], row["exit"]) == (pytest.approx(fake.close("AAA", DAY)), pytest.approx(fake.close("AAA", DAY + DAY_MS)))
+    assert row["fund"] == pytest.approx(sum(fake.rate("AAA", DAY + k * 8 * 3_600_000) for k in (1, 2, 3)))
+    legs = attrib["legs"]
+    for leg, share in (("combo", 0.75), ("carry", 0.25)):
+        assert legs[leg]["price"] == pytest.approx(sum(c[leg] * 10000 * c["ret"] for c in attrib["coins"]))
+        assert legs[leg]["funding"] == pytest.approx(-sum(c[leg] * 10000 * c["fund"] for c in attrib["coins"]))
+        # 第一天全是新开：前 20 个币一档 5 bps、其余二档 8 bps
+        assert legs[leg]["cost"] == pytest.approx(sum(
+            abs(c[leg]) * 10000 * (0.0005 if c["symbol"] in POOL_SYMBOLS[:20] else 0.0008) for c in attrib["coins"]))
+        assert legs[leg]["ret"] == pytest.approx(legs[leg]["net"] / (10000 * share))
+    assert attrib["model"] == pytest.approx(legs["combo"]["net"] + legs["carry"]["net"])
+    assert attrib["residual"] == pytest.approx(attrib["actual"] - attrib["model"])
+    # 每日盈亏带归因（不带每币明细），两条腿累计对止损线；调仓详情带每币明细；算过的不再算
+    daily = data(await client.get("/api/alpha/trader/daily"))
+    assert daily["days"][0]["attrib"]["legs"] == attrib["legs"] and "coins" not in daily["days"][0]["attrib"]
+    assert daily["legs"]["combo"] == {"days": 1, "cumReturn": pytest.approx(legs["combo"]["ret"]),
+                                      "drawdown": pytest.approx(max(0.0, -legs["combo"]["ret"])),
+                                      "maxDrawdown": pytest.approx(max(0.0, -legs["combo"]["ret"])), "stop": 0.228,
+                                      "hit": False}
+    detail = data(await client.get("/api/alpha/trader/runs/2025-03-01", headers=ADMIN))
+    assert detail["attrib"]["coins"] == attrib["coins"]
+    fetched = len(fake.log)
+    await scheduler.tick(m.app, m._library, m._start_refresh, NOW + DAY_MS + 61 * 60_000)
+    assert len(fake.log) == fetched
 
     # sim 不通：推一帧 ok 是 false 的，页面停在上一帧
     m.app.state.sim = executor.Sim("http://sim", "tok", httpx.Client(transport=httpx.MockTransport(
         lambda r: (_ for _ in ()).throw(httpx.ConnectError("连不上")))))
     live = await first_frame()
     assert live["ok"] is False and set(live) == {"ts", "ok"}
+
+
+async def test_carry_leg_can_be_switched_off_and_its_share_stays_idle(client, trader):
+    fake, market = trader
+    assert data(await client.get("/api/alpha/trader/factors", headers=ADMIN))["carry"] == {"enabled": True, "changedAt": None}
+    assert (await client.put("/api/alpha/trader/carry", json={"enabled": False},
+                             headers={"satoken": "user"})).status_code == 403
+    off = data(await client.put("/api/alpha/trader/carry", json={"enabled": False}, headers=ADMIN))
+    assert off["enabled"] is False and off["changedAt"] is not None
+    await scheduler.rebalance(m.app, m._library, NOW)
+    run = await m.app.state.store.trade_run("2025-03-01")
+    assert run["status"] == "done", run["error"]
+    # carry 腿空仓，每币只有组合腿那份：多空各 3/4 净值
+    assert run["targets"]["carry"] is False and run["legs"]["carry"] == {"long": [], "short": []}
+    coins = run["targets"]["coins"]
+    assert all(c["carry"] == 0 and c["weight"] == c["combo"] for c in coins)
+    assert sum(c["weight"] for c in coins if c["weight"] > 0) == pytest.approx(0.75)
+    assert data(await client.get("/api/alpha/trader/factors", headers=ADMIN))["carry"]["enabled"] is False
 
 
 async def test_a_month_missing_from_the_pool_table_fails_the_day_without_trading(client, trader):
@@ -344,7 +397,7 @@ async def test_trader_account_is_public_but_factors_are_not_and_holds_off_refres
     # 账户、每日盈亏、实时数公开；用了哪些因子、调仓明细、因子对比只有管理员
     assert data(await client.get("/api/alpha/trader/account"))["userId"] is None
     assert data(await client.get("/api/alpha/trader/daily", headers={"satoken": "user"})) == {
-        "initialBalance": 10000, "maxDrawdown": 0, "days": []}
+        "initialBalance": 10000, "maxDrawdown": 0, "days": [], "legs": attrib.summary([])}
     live = await first_frame()
     assert live["ok"] and live["userId"] is None
     # 调仓的出错原文可能带因子表达式，只有管理员拿得到

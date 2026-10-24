@@ -46,7 +46,7 @@ from .llm import LlmError, build_chat_model
 from .prompts import eval_brief, holdout_brief, horizons_brief
 from .reference import Grid
 from .store import Store, clean, now_ms
-from .trade import executor, live, realtime, scheduler, scheme
+from .trade import attrib, executor, live, realtime, scheduler, scheme
 
 logger = logging.getLogger(__name__)
 # 包里的 info 日志（刷新进度、fapi 已用权重、调仓）打到容器日志；根 logger 没有 handler
@@ -1237,6 +1237,10 @@ class TraderFactor(BaseModel):
     selected: bool
 
 
+class TraderCarry(BaseModel):
+    enabled: bool
+
+
 @public.get("/trader/account")
 async def trader_account(request: Request):
     """账户：userId（还没调过仓是 null）、初始资金；job 是调仓任务的进度。净值、持仓这些实时数在 /trader/live"""
@@ -1251,17 +1255,20 @@ async def trader_account(request: Request):
 @public.get("/trader/daily")
 async def trader_daily(request: Request):
     """每天的盈亏，旧的在前：一天是从这天调仓前的净值到下一次调仓前的净值，含调仓手续费和期间的资金费；
-    最近一次调仓之后的还没完，在 /trader/live 的 dayPnl 里。最大回撤按每小时快照算"""
+    最近一次调仓之后的还没完，在 /trader/live 的 dayPnl 里。最大回撤按每小时快照算。
+    attrib 是这一天按腿归因（trade/attrib.py，每币明细在调仓详情里），还没算是 null；legs 是两条腿前向累计对止损线"""
     store: Store = request.app.state.store
-    starts = await store.rebalances()
+    starts = await store.trade_days()
     days = [{"day": a["day"], "start": a["equity_before"], "end": b["equity_before"],
-             "pnl": b["equity_before"] - a["equity_before"], "pct": b["equity_before"] / a["equity_before"] - 1}
+             "pnl": b["equity_before"] - a["equity_before"], "pct": b["equity_before"] / a["equity_before"] - 1,
+             "attrib": {k: v for k, v in a["attrib"].items() if k != "coins"} if a["attrib"] else None}
             for a, b in zip(starts, starts[1:])]
     peak, drawdown = float(executor.INITIAL_BALANCE), 0.0
     for r in await store.trade_equity():
         peak = max(peak, r["equity"])
         drawdown = max(drawdown, 1 - r["equity"] / peak)
-    return _ok({"initialBalance": executor.INITIAL_BALANCE, "maxDrawdown": drawdown, "days": days})
+    return _ok({"initialBalance": executor.INITIAL_BALANCE, "maxDrawdown": drawdown, "days": days,
+                "legs": attrib.summary([a["attrib"] for a in starts if a["attrib"]])})
 
 
 @public.get("/trader/live")
@@ -1311,12 +1318,12 @@ async def trader_runs(request: Request):
 
 @router.get("/trader/runs/{day}")
 async def trader_run(day: str, request: Request):
-    """一天的详情：用的因子与权重、每条腿的多空、每币目标与现有、下单与结果"""
+    """一天的详情：用的因子与权重、每条腿的多空、每币目标与现有、下单与结果、按腿归因（带每币明细，还没算是 null）"""
     r = await request.app.state.store.trade_run(day)
     if r is None:
         raise HTTPException(404, "这天没有调仓记录")
     return _ok({**_trade_brief(r), "userId": r["user_id"], "factors": r["factors"] or [], "legs": r["legs"],
-                "targets": r["targets"], "orders": r["orders"] or []})
+                "targets": r["targets"], "orders": r["orders"] or [], "attrib": r["attrib"]})
 
 
 def _trade_brief(r: dict[str, Any]) -> dict[str, Any]:
@@ -1330,13 +1337,21 @@ def _trade_brief(r: dict[str, Any]) -> dict[str, Any]:
 @router.get("/trader/factors")
 async def trader_factors(request: Request):
     """库里的因子与交易员的勾选，调仓用"勾选且还在库里"的；missing 是 live 尾巴补不出来的列，有就不能勾。
-    compare 是因子对比任务的进度与结果"""
+    carry 是 carry 腿的开关；compare 是因子对比任务的进度与结果"""
     app = request.app
     store: Store = app.state.store
     chosen = await store.trade_factor_ids()
     items = [{"id": f["id"], "name": f["name"], "expr": f["expr"], "selected": f["id"] in chosen,
               "missing": sorted(set(f["columns"]) - live.COLUMNS)} for f in await store.factors()]
-    return _ok({"items": items, "compare": app.state.runs.jobs["compare"]})
+    return _ok({"items": items, "carry": await store.carry(), "compare": app.state.runs.jobs["compare"]})
+
+
+@router.put("/trader/carry")
+async def trader_carry(body: TraderCarry, request: Request):
+    """开或停 carry 腿，从下一次调仓起生效；停了那 1/4 资金闲着，不挪给组合腿"""
+    store: Store = request.app.state.store
+    await store.set_carry(body.enabled)
+    return _ok(await store.carry())
 
 
 @router.put("/trader/factors/{factor_id}")

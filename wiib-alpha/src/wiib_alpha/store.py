@@ -83,18 +83,21 @@ SCHEMA = [
         short_notional REAL NOT NULL)""",
     # 交易员勾选的因子
     "CREATE TABLE IF NOT EXISTS trade_factor(factor_id TEXT PRIMARY KEY, selected_at INTEGER NOT NULL)",
+    # carry 腿的开关，一行；没有这行是开着
+    """CREATE TABLE IF NOT EXISTS trade_carry(
+        id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, changed_at INTEGER NOT NULL)""",
 ]
 
 _JSON_COLUMNS = {"eval_json": "eval", "gates_json": "gates", "review_json": "review", "data_json": "data",
                  "columns_json": "columns", "recheck_json": "recheck", "reeval_json": "reeval",
                  "factors_json": "factors", "legs_json": "legs", "targets_json": "targets", "orders_json": "orders",
-                 "board_json": "board"}
+                 "board_json": "board", "attrib_json": "attrib"}
 # 建表之后才加的列：老库启动时补上
 _ADDED_COLUMNS = {"campaign": {"gen_model": "TEXT", "review_model": "TEXT"},
                   "run": {"campaign_id": "TEXT", "cut_ms": "INTEGER"},
                   "candidate": {"direction": "INTEGER", "reeval_json": "TEXT"},
                   "factor": {"reeval_json": "TEXT", "retired_at": "INTEGER", "retire_reason": "TEXT"},
-                  "trade_run": {"board_json": "TEXT"}}
+                  "trade_run": {"board_json": "TEXT", "attrib_json": "TEXT"}}
 
 
 def clean(obj: Any) -> Any:
@@ -491,6 +494,31 @@ class Store:
                                   (factor_id, now_ms()))
         else:
             await self.db.execute("DELETE FROM trade_factor WHERE factor_id = ?", (factor_id,))
+        await self.db.commit()
+
+    async def carry(self) -> dict[str, Any]:
+        """carry 腿开没开、什么时候改的"""
+        row = await self._one("SELECT enabled, changed_at FROM trade_carry WHERE id = 1", ())
+        return {"enabled": bool(row["enabled"]) if row else True, "changedAt": row["changed_at"] if row else None}
+
+    async def set_carry(self, enabled: bool) -> None:
+        await self.db.execute("INSERT OR REPLACE INTO trade_carry(id, enabled, changed_at) VALUES (1, ?, ?)",
+                              (int(enabled), now_ms()))
+        await self.db.commit()
+
+    async def trade_days(self) -> list[dict[str, Any]]:
+        """每次调仓：day、signal_ms、调仓前净值、出没出目标、按腿归因（还没算是 None），旧的在前"""
+        return await self._all("SELECT day, signal_ms, equity_before, targets_json IS NOT NULL AS has_targets, attrib_json "
+                               "FROM trade_run WHERE equity_before IS NOT NULL ORDER BY day", ())
+
+    async def prev_targets(self, day: str) -> dict[str, Any] | None:
+        """day 之前最近一次出了目标的调仓的目标：换仓成本按它算"""
+        row = await self._one("SELECT targets_json FROM trade_run WHERE targets_json IS NOT NULL AND day < ? "
+                              "ORDER BY day DESC LIMIT 1", (day,))
+        return row["targets"] if row else None
+
+    async def set_trade_attrib(self, day: str, attrib: dict[str, Any]) -> None:
+        await self.db.execute("UPDATE trade_run SET attrib_json = ? WHERE day = ?", (dumps(attrib), day))
         await self.db.commit()
 
     # ========== 全局试验计数 ==========

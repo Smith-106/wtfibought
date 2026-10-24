@@ -57,9 +57,9 @@ def leg(signal: pd.Series, vol: pd.Series, sign: float, held: Mapping[str, Seque
 
 
 def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights: np.ndarray,
-            held: Mapping[str, Mapping[str, Sequence[str]]], t_ms: int, params: EvalParams) -> dict[str, Any]:
+            held: Mapping[str, Mapping[str, Sequence[str]]], t_ms: int, params: EvalParams, carry: bool) -> dict[str, Any]:
     """factors 与 weights 一一对应（勾选的因子、全部历史上学的 IC 权重），一条都没有时组合腿空仓、它那份资金闲着；
-    held 是上一期各腿的多空集合。出每条腿的多空与每币明细，和每币净权重（只列不是 0 的）。
+    carry 是 carry 腿开没开，停了也空仓、资金闲着。held 是上一期各腿的多空集合。出每条腿的多空与每币明细，和每币净权重（只列不是 0 的）。
     T 那根在池有波动的币不够 min_names 个、或者一条因子全池没值，就报错：数据没补全时出的空目标会把仓位全平掉，
     缺值按 0 合成等于把那条因子静默踢出组合"""
     vol = values_at(panels, VOL, t_ms)
@@ -75,7 +75,8 @@ def compute(panels: Mapping[str, pd.DataFrame], factors: Sequence[Expr], weights
                         tuple(str(e) for e in factors), table.to_numpy(dtype="float64"))
         signal = pd.Series(combo.score(c, weights), index=table.index)
     legs = {"combo": leg(signal, vol, SIGNS["combo"], held.get("combo", {}), params),
-            "carry": leg(values_at(panels, CARRY, t_ms), vol, SIGNS["carry"], held.get("carry", {}), params)}
+            "carry": (leg(values_at(panels, CARRY, t_ms), vol, SIGNS["carry"], held.get("carry", {}), params) if carry
+                      else {"long": [], "short": [], "coins": []})}
     coins: dict[str, dict[str, float]] = {}
     for name, out in legs.items():
         for c in out["coins"]:

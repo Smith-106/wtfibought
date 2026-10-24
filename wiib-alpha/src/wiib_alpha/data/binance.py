@@ -224,6 +224,10 @@ class Binance:
         df = a.merge(b, on="time", how="outer").reindex(columns=METRICS_COLUMNS)
         return df[(df["time"] >= start_ms) & (df["time"] < end_ms)].sort_values("time").reset_index(drop=True)
 
+    def recent_funding(self, symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+        """fapi 的实际结算记录，[start_ms, end_ms) 内的，列同归档 funding"""
+        return self._funding_rest(symbol, start_ms, end_ms)
+
     def mark_prices(self) -> dict[str, float]:
         """全部合约的标记价：/fapi/v1/premiumIndex 不带 symbol 一次全给（权重 10）"""
         return {r["symbol"]: float(r["markPrice"]) for r in self._rest("/fapi/v1/premiumIndex", {})}

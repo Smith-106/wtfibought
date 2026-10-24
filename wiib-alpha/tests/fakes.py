@@ -13,6 +13,9 @@ from wiib_alpha.data.binance import BAR_MS, METRIC_MS, Binance
 from wiib_alpha.data.panel import PanelStore
 from wiib_alpha.trade.executor import Sim
 
+# 假 fapi 的资金费 8 小时结算一次
+FUNDING_MS = 8 * 3_600_000
+
 
 class ScriptedModel(GenericFakeChatModel):
     reply: Any = None
@@ -95,6 +98,10 @@ class FakeFapi:
         """标记价：now 所在那根的价"""
         return self.close(s, self.now - self.now % BAR_MS)
 
+    def rate(self, s: str, t: int) -> float:
+        """t 那次（8 小时一次）结算的费率，隔一次换一次正负"""
+        return 0.0001 * (1 + self.code[s] % 4) * (1 if (t // FUNDING_MS) % 2 == 0 else -1)
+
     def handle(self, request: httpx.Request) -> httpx.Response:
         p, path = request.url.params, request.url.path
         self.log.append((path, dict(p)))
@@ -122,6 +129,9 @@ class FakeFapi:
                     prem = 0.0001 * ((i * 7) % 11 - 5) + 0.00005 * math.sin(k / 13 + i)
                     rows.append([t, "0", "0", "0", str(prem), "0", t + BAR_MS - 1, "0", 0, "0", "0", "0"])
             return httpx.Response(200, json=rows, headers={"X-MBX-USED-WEIGHT-1M": "3"})
+        if path == "/fapi/v1/fundingRate":
+            return httpx.Response(200, json=[{"symbol": s, "fundingTime": t, "fundingRate": str(self.rate(s, t))}
+                                             for t in range(-(-a // FUNDING_MS) * FUNDING_MS, b + 1, FUNDING_MS)][:limit])
         points = range(-(-a // METRIC_MS) * METRIC_MS, b + 1, METRIC_MS)[:limit]
         if path.endswith("openInterestHist"):
             rows = [{"symbol": s, "sumOpenInterest": str(1000 + i + t // METRIC_MS % 7),

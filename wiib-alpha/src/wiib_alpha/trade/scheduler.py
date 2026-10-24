@@ -9,6 +9,7 @@
 刷新期间不跑；调仓、因子对比跑着的时候刷新接口拒绝（main 里那串互斥）。
 月初自动刷新数据：每月 1 日 UTC 14 点起，当月币池还没排出来（这个月还没刷成过）就起一次，换上当月币池；
 有 campaign 或别的后台任务占着就下一分钟再看，刷失败了隔一小时再起，不分白天晚上。
+按腿归因（attrib）：调仓时段之外，出过目标、下一次调仓已经发生、还没归因的调仓日，拉价格和资金费算一遍存进 trade_run。
 组合权重和方向（全部历史、24h 档、晚一根成交的答案学的）按装载时刻缓存，骨架就是挖掘装载的那份：库因子的值取自 main 的库缓存，不每天全池重算。
 """
 
@@ -32,7 +33,7 @@ from ..data.pool import month_label, month_of
 from ..dsl import Expr, parse
 from ..eval.params import EvalParams
 from ..store import Store, now_ms
-from . import executor, live, scheme, targets
+from . import attrib, executor, live, scheme, targets
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +66,13 @@ async def tick(app: FastAPI, library: Library, refresh: Refresh, now: int) -> No
     store: Store = app.state.store
     if (await store.last_equity_ts() or 0) // HOUR_MS < now // HOUR_MS:
         await snapshot(app, now)
-    if (PREPARE_AFTER_MS <= now % DAY_MS < GIVE_UP_AFTER_MS and app.state.data is not None
-            and not app.state.runs.jobs["refresh"].get("running") and _due(await store.trade_run(day_label(now)))):
-        await rebalance(app, library, now)
+    if PREPARE_AFTER_MS <= now % DAY_MS < GIVE_UP_AFTER_MS:
+        if (app.state.data is not None and not app.state.runs.jobs["refresh"].get("running")
+                and _due(await store.trade_run(day_label(now)))):
+            await rebalance(app, library, now)
+    else:
+        # 和补 live 尾巴错开：两边都走 fapi、排着队发
+        await attribute(app)
     start = utc(now).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     month = f"{start:%Y-%m}"
     # 当月币池还没排出来就起刷新；上一次（点的或自动的）起了不到一小时不再起，失败的隔一小时再试
@@ -137,10 +142,11 @@ async def rebalance(app: FastAPI, library: Library, now: int) -> None:
                               "weight": float(w)} for j, w in zip(cols, weights)]
         board = await board_factors(app, lib)
         held = await store.last_trade_legs() or {}
+        carry = (await store.carry())["enabled"]
         exprs = [parse(lib.factors[j]["expr"], FEATURE_COLUMNS) for j in cols]
         await asyncio.to_thread(_rebalance, app.state.fapi, app.state.sim, data.pool.store, pool,
-                                universe_table.months_by_symbol(table), exprs, weights, held, app.state.params, now,
-                                record, job, board, list(data.products))
+                                universe_table.months_by_symbol(table), exprs, weights, carry, held, app.state.params,
+                                now, record, job, board, list(data.products))
     except Exception as exc:
         logger.exception("调仓失败")
         record["error"] = str(exc)[:500]
@@ -151,7 +157,7 @@ async def rebalance(app: FastAPI, library: Library, now: int) -> None:
 
 
 def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Sequence[str],
-               months: Mapping[str, frozenset[str]], factors: Sequence[Expr], weights: np.ndarray,
+               months: Mapping[str, frozenset[str]], factors: Sequence[Expr], weights: np.ndarray, carry: bool,
                held: Mapping[str, Any], params: EvalParams, now: int, record: dict[str, Any],
                job: dict[str, Any], board: Sequence[Mapping[str, Any]], products: Sequence[str]) -> None:
     """在线程里跑；做到哪一步就往 record 里记到哪一步，中途出错外面照样落库。下完单再用同一批面板算看板"""
@@ -167,7 +173,7 @@ def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Seq
     live.update(store, binance, sorted({*trading, BENCHMARK}), now, job)
     job["stage"] = "targets"
     panels = live.window(live.loader(store, signal_ms), trading, months, signal_ms)
-    out = targets.compute(panels, factors, weights, held, signal_ms, params)
+    out = targets.compute(panels, factors, weights, held, signal_ms, params, carry)
     job["stage"] = "waiting"
     time.sleep(max(0.0, (signal_ms + 1 + TRADE_AT_MS - now_ms()) / 1000))
     # 01:00 前开始的重试，补数据、算目标拖过了 01:00 的，这一天也跳过
@@ -182,7 +188,7 @@ def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Seq
     for row in coins:
         row.update({k: out["coins"].get(row["symbol"], {}).get(k, 0.0) for k in targets.SIGNS})
     record["targets"] = {"coins": coins, "signals": {name: leg["coins"] for name, leg in out["legs"].items()},
-                         "notTrading": [s for s in pool if s not in trading]}
+                         "notTrading": [s for s in pool if s not in trading], "carry": carry}
     # 开始下单才记这一期的多空集合：下一期的缓冲按它算
     record["legs"] = {name: {"long": leg["long"], "short": leg["short"]} for name, leg in out["legs"].items()}
     executor.execute(sim, user_id, orders, record["orders"])
@@ -198,6 +204,24 @@ def _rebalance(binance: Binance, sim: executor.Sim, store: PanelStore, pool: Seq
     except Exception:
         # 看板只是展示：算不出来不算这次调仓出错
         logger.exception("算因子看板失败")
+
+
+async def attribute(app: FastAPI) -> None:
+    """出过目标、下一次调仓已经发生、还没归因的调仓日，按腿归因存进 trade_run；一天一条，算过不再算"""
+    store: Store = app.state.store
+    days = await store.trade_days()
+    pending = [(a, b) for a, b in zip(days, days[1:]) if a["has_targets"] and a["attrib"] is None]
+    if not pending:
+        return
+    universe = await store.universe()
+    for a, b in pending:
+        run = await store.trade_run(a["day"])
+        prev = await store.prev_targets(a["day"])
+        closes, funding = await asyncio.to_thread(attrib.inputs, app.state.fapi, run, b)
+        out = attrib.attribute(run, b, prev, closes, funding, attrib.tiers(universe, run["signal_ms"]), app.state.params)
+        await store.set_trade_attrib(a["day"], out)
+        logger.info("%s 按腿归因：实际 %+.2f、回测应得 %+.2f（组合腿 %+.2f、carry 腿 %+.2f）", a["day"], out["actual"],
+                    out["model"], out["legs"]["combo"]["net"], out["legs"]["carry"]["net"])
 
 
 def _status(record: Mapping[str, Any]) -> str:

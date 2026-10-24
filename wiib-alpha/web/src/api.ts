@@ -580,12 +580,61 @@ export interface TraderLive {
 export type TraderLiveFrame = { ts: number; ok: false } | { ts: number; ok: true; userId: null } | ({ ok: true } & TraderLive);
 
 /** 一天：从这天调仓前的净值到下一次调仓前的净值，含调仓手续费和期间的资金费 */
+/** 一条腿这一天按回测口径：价格盈亏、资金费、换仓成本、净、按自己那份资金算的收益率 */
+export interface LegAttrib {
+  price: number;
+  funding: number;
+  cost: number;
+  net: number;
+  ret: number;
+}
+
+export interface AttribCoin {
+  symbol: string;
+  /** 两条腿的权重（已乘份额） */
+  combo: number;
+  carry: number;
+  entry: number;
+  exit: number;
+  ret: number;
+  /** 持有期内结算的费率之和 */
+  fund: number;
+  /** 两条腿各自的价格盈亏加资金费 */
+  legs: Record<TradeLeg, number>;
+}
+
+/** 一天按腿归因（trade/attrib.py）：actual 是到下一次调仓前的净值变化，model 是两腿按回测口径的应得，差额是执行偏差 */
+export interface DayAttrib {
+  until: string;
+  actual: number;
+  model: number;
+  residual: number;
+  legs: Record<TradeLeg, LegAttrib>;
+  /** 拉不到价格、没算进去的币 */
+  missing: string[];
+  /** 每币明细，只在调仓详情里 */
+  coins?: AttribCoin[];
+}
+
+/** 一条腿前向到现在，对止损线 */
+export interface LegSummary {
+  days: number;
+  cumReturn: number;
+  drawdown: number;
+  maxDrawdown: number;
+  stop: number;
+  /** 最深回撤碰过止损线 */
+  hit: boolean;
+}
+
 export interface DailyPnl {
   day: string;
   start: number;
   end: number;
   pnl: number;
   pct: number;
+  /** 还没算是 null */
+  attrib: DayAttrib | null;
 }
 
 export interface TraderDaily {
@@ -594,6 +643,13 @@ export interface TraderDaily {
   maxDrawdown: number;
   /** 旧的在前；最近一次调仓之后的还没完，在 TraderLive 的 dayPnl 里 */
   days: DailyPnl[];
+  legs: Record<TradeLeg, LegSummary>;
+}
+
+/** carry 腿的开关；没改过 changedAt 是 null */
+export interface TraderCarry {
+  enabled: boolean;
+  changedAt: number | null;
 }
 
 /** done 全成；partial 有币失败或停在半路但有成交；failed 一笔没成 */
@@ -660,8 +716,10 @@ export interface TradeRunDetail extends TradeRunBrief {
   userId: number | null;
   factors: { id: string; name: string; expr: string; weight: number }[];
   legs: Record<TradeLeg, { long: string[]; short: string[] }> | null;
-  targets: { coins: TradeCoin[]; signals: Record<TradeLeg, LegSignal[]>; notTrading: string[] } | null;
+  /** carry 是那天 carry 腿开没开；有开关之前的记录没有这个字段 */
+  targets: { coins: TradeCoin[]; signals: Record<TradeLeg, LegSignal[]>; notTrading: string[]; carry?: boolean } | null;
   orders: TradeOrder[];
+  attrib: DayAttrib | null;
 }
 
 /** 库里的因子与交易员的勾选；missing 是 live 尾巴补不出来的列，有就不能勾 */
@@ -857,10 +915,12 @@ export const alpha = {
   },
   traderRuns: () => call<{ items: TradeRunBrief[]; job: TraderJob }>('GET', `${ALPHA}/trader/runs`),
   traderRun: (day: string) => call<TradeRunDetail>('GET', `${ALPHA}/trader/runs/${day}`),
-  traderFactors: () => call<{ items: TraderFactor[]; compare: CompareJob }>('GET', `${ALPHA}/trader/factors`),
+  traderFactors: () => call<{ items: TraderFactor[]; carry: TraderCarry; compare: CompareJob }>('GET', `${ALPHA}/trader/factors`),
   /** 勾上或取消，下一次调仓起生效；live 补不出来的列是 409 */
   selectTraderFactor: (id: string, selected: boolean) =>
     call<{ id: string; selected: boolean }>('PUT', `${ALPHA}/trader/factors/${id}`, { selected }),
+  /** 开或停 carry 腿，下一次调仓起生效；停了那 1/4 资金闲着 */
+  setTraderCarry: (enabled: boolean) => call<TraderCarry>('PUT', `${ALPHA}/trader/carry`, { enabled }),
   /** 后台比"当前勾选"和"加上 / 去掉这条"，进度看 traderFactors().compare */
   compareTraderFactor: (id: string) => call<{ started: boolean }>('POST', `${ALPHA}/trader/compare/${id}`),
 };

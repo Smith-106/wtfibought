@@ -89,7 +89,7 @@ def test_targets_split_capital_between_the_legs(planted_store, planted_pool):
     signal = targets.values_at(panels, PLANTED, t).sort_values(ascending=False)
     # 上一期组合腿多头里有个现在排第 7 的币（24 个币的头部 2/5 以内）：留着
     kept = signal.index[6]
-    out = targets.compute(panels, [PLANTED], np.array([0.03]), {"combo": {"long": [kept]}}, t, PARAMS)
+    out = targets.compute(panels, [PLANTED], np.array([0.03]), {"combo": {"long": [kept]}}, t, PARAMS, True)
     legs = out["legs"]
     assert legs["combo"]["long"] == sorted([*signal.index[:4], kept])
     for leg in legs.values():
@@ -105,11 +105,15 @@ def test_targets_split_capital_between_the_legs(planted_store, planted_pool):
     weights = np.array([c["weight"] for c in out["coins"].values()])
     assert weights.sum() == pytest.approx(0.0, abs=1e-12) and np.abs(weights).sum() <= 2.0 + 1e-12
     # 一条因子都没勾：组合腿空仓，carry 腿照旧
-    bare = targets.compute(panels, [], np.empty(0), {}, t, PARAMS)
+    bare = targets.compute(panels, [], np.empty(0), {}, t, PARAMS, True)
     assert bare["legs"]["combo"]["long"] == [] and bare["legs"]["carry"] == legs["carry"]
+    # carry 腿停了：空仓，每币只剩组合腿那份
+    off = targets.compute(panels, [PLANTED], np.array([0.03]), {}, t, PARAMS, False)
+    assert off["legs"]["carry"] == {"long": [], "short": [], "coins": []}
+    assert all(c["carry"] == 0 and c["weight"] == c["combo"] for c in off["coins"].values())
     # T 那根有数的币不够：不出空目标（那会把仓位全平掉），报错
     with pytest.raises(targets.TradeError):
-        targets.compute(dict(list(panels.items())[:10]), [PLANTED], np.array([0.03]), {}, t, PARAMS)
+        targets.compute(dict(list(panels.items())[:10]), [PLANTED], np.array([0.03]), {}, t, PARAMS, True)
 
 
 def test_backtest_and_weights(planted_pool):
