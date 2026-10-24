@@ -29,7 +29,7 @@ import java.util.List;
 @Component
 public class ByokModelBuilder {
 
-    /** 阻塞调用整体超时，四个协议同一个值：思考模型长回答，openai SDK 默认 60s 不够 */
+    /** 阻塞调用整体超时，四个协议同一个值：思考模型长回答，Spring AI 默认 60s 不够 */
     static final Duration CALL_TIMEOUT = Duration.ofMinutes(10);
 
     /**
@@ -101,9 +101,8 @@ public class ByokModelBuilder {
                 false, false, model, CALL_TIMEOUT, 3, null, null,
                 observationRegistry, null, REJECT_CROSS_HOST_REDIRECT);
         // 不设 temperature：走各模型默认值，思考模型（多数拒收或忽略温度）也安全。
-        // timeout 必须显式给：2.0.1 起每请求都把它传给 SDK，缺省 60s 会盖掉上面 client 的 10 分钟
-        OpenAiChatOptions.Builder options = OpenAiChatOptions.builder().model(model)
-                .timeout(CALL_TIMEOUT);
+        // 不设 timeout：留空就用上面 client 的 10 分钟
+        OpenAiChatOptions.Builder options = OpenAiChatOptions.builder().model(model);
         if (effort != null) {
             options.reasoningEffort(effort);
         }
